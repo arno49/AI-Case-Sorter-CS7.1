@@ -42,11 +42,16 @@
 #define SORT_HOMING_SENSOR 11  //connects to the sorter homing sensor
 #define SORT_HOMING_SENSOR_TYPE 1 //1=NO (default) normally open, 0=NC (normally closed) (optical switches) 
 #define SORT_HOMING_OFFSET_STEPS 0 //additional steps to continue after homing sensor triggered
+#define SORT_FULL_REVOLUTION_STEPS 200
+#define SORT_HOMING_MARGIN_STEPS 10 //allows for a sensor offset beyond one nominal revolution
 
 #define AIR_DROP_ENABLED false //enables airdrop
 
 #define MOTOR_Enable 8 //maps to the enable pin for the FEED MOTOR (on r3 shield enable is shared by motors)
 #define AUTO_MOTORSTANDBY_TIMEOUT 60 // 0 = disabled; The time in seconds to wait after no motor movement before putting motors in standby
+static_assert(AUTO_MOTORSTANDBY_TIMEOUT >= 0, "Motor standby timeout cannot be negative");
+static_assert(AUTO_MOTORSTANDBY_TIMEOUT <= MAX_STANDBY_TIMEOUT_SECONDS,
+              "Motor standby timeout is too large");
 //ARDUINO CONFIGURATIONS
 
 //number of steps between chutes. With the 8 and 10 slot attachments, 20 is the default. 
@@ -116,7 +121,8 @@ int feedCyclePostDelay = FEED_CYCLE_COMPLETE_POSTDELAY;
 int slotDropDelay = SLOT_DROP_DELAY;
 int dropDelay =  airDropEnabled ? feedCyclePostDelay : slotDropDelay;
 
-long autoMotorStandbyTimeout = AUTO_MOTORSTANDBY_TIMEOUT;
+uint32_t autoMotorStandbyTimeout = AUTO_MOTORSTANDBY_TIMEOUT;
+uint32_t autoMotorStandbyTimeoutMs = AUTO_MOTORSTANDBY_TIMEOUT * 1000UL;
 
 int feedSpeed = FEED_MOTOR_SPEED; //represents a number between 1-100
 int feedSteps = FEED_STEPS;
@@ -225,7 +231,6 @@ void loop() {
    runFeedMotor();
    homeFeedMotor();
    homeSortMotor();
-   serialMessenger();
    onFeedComplete();
    runAux();
    MotorStandByCheck();
@@ -518,7 +523,16 @@ void checkSerial(){
 
       if (input.startsWith("automotorstandbytimeout:")) {
         input.replace("automotorstandbytimeout:", "");
-        autoMotorStandbyTimeout = input.toDouble();
+        uint32_t timeoutSeconds;
+        uint32_t timeoutMilliseconds;
+        if (!parseUint32(input.c_str(), MAX_STANDBY_TIMEOUT_SECONDS, &timeoutSeconds) ||
+            !secondsToMilliseconds(timeoutSeconds, &timeoutMilliseconds)) {
+          Serial.print(F("error:invalid automotorstandbytimeout\n"));
+          resetCommand();
+          return;
+        }
+        autoMotorStandbyTimeout = timeoutSeconds;
+        autoMotorStandbyTimeoutMs = timeoutMilliseconds;
         Serial.print(F("ok\n"));
         resetCommand();
         return;
@@ -756,12 +770,6 @@ void checkFeedErrors(){
       Serial.println("error:feed overtravel detected");
  }
 }
-void serialMessenger(){
-  
- return; 
-
-}
-
 void onFeedComplete(){
   if(FeedCycleComplete==true&& IsFeedError==false){
    
@@ -934,7 +942,7 @@ void homeSortMotor(){
      //if not, we are going to step the motor until it is or we have reached 200 steps (1 complete turn)
     if(IsSorting==true){
          if(digitalRead(SORT_HOMING_SENSOR)!=SORT_HOMING_SENSOR_TYPE){ //
-          if(homingSteps < (200*SORT_MICROSTEPS)){
+          if(homingSteps < (SORT_FULL_REVOLUTION_STEPS*SORT_MICROSTEPS)){
               stepSortMotor(true);  
               homingSteps++; 
           }
@@ -950,7 +958,7 @@ void homeSortMotor(){
     //activated, lets keep moving until it is or we hit 210 homing steps (otherwise we turn indefinitely)
     else if(IsSortHomingOffset != true){
       if(digitalRead(SORT_HOMING_SENSOR)!=SORT_HOMING_SENSOR_TYPE){
-          if(homingSteps < (210*SORT_MICROSTEPS)){
+          if(homingSteps < ((SORT_FULL_REVOLUTION_STEPS + SORT_HOMING_MARGIN_STEPS)*SORT_MICROSTEPS)){
               stepSortMotor(true);  
               homingSteps++;          
           }
@@ -1043,7 +1051,7 @@ void MotorStandByCheck(){
 
   theTime = millis();
 
-  if(theTime - timeSinceLastMotorMove > (autoMotorStandbyTimeout*1000) ) 
+  if(hasElapsed(theTime, timeSinceLastMotorMove, autoMotorStandbyTimeoutMs))
      digitalWrite(MOTOR_Enable, HIGH);
 }
 int js=0;
@@ -1053,12 +1061,8 @@ void jogSorter(){
       stepSortMotor(false);
     }
 }
-void adjustCameraLED(int level)
+void adjustCameraLED(int32_t level)
  {
-   // Trim to acceptable values
-   level > 255 ? 255: level;
-   level = level < 0 ? 0 : level;
- 
-   analogWrite(CAMERA_LED_PWM, level);
-   cameraLEDLevel = level;
+   cameraLEDLevel = clampByte(level);
+   analogWrite(CAMERA_LED_PWM, cameraLEDLevel);
  }
