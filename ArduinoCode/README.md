@@ -1,6 +1,15 @@
 # AI-Case-Sorter-CS7.1
 This repo was created to isolate all the code and resources for the CS7.1 Version
 
+## Release validation status
+
+Firmware `7.1.260714.6` compiles for Arduino Uno with PlatformIO and has 65
+passing native tests. CI verifies both on every firmware pull request. Physical
+bench validation is still required before treating this firmware as a hardware
+release: motor direction, homing and offsets, stop latency, AirDrop pulse
+timing, PWM output, sensor behavior, and Windows application compatibility have
+not been exercised from the development environment.
+
 ## Build and test
 
 The canonical sketch remains
@@ -57,6 +66,32 @@ settings reset at restart. To change the firmware default, edit
 
 Frames containing an embedded NUL byte are discarded with
 `error:invalid command`.
+
+## Serial command reference
+
+| Command | Response and behavior |
+| --- | --- |
+| `{slot}` | Queues a destination and starts the pipelined feed/sort cycle; eventually emits `done`. |
+| `xf:{slot}` | Same cycle while bypassing the feed sensor; eventually emits `done`. |
+| `sortto:{slot}` | Acknowledges with `ok` and moves directly for diagnostics. |
+| `homefeeder`, `homesorter` | Acknowledge with `ok` when recovery starts. |
+| `stop` | Cancels active work, disables the shared driver, and emits `stopped`. |
+| `test:{count}`, `sorttest:{count}` | Emit `testing started`, progress lines, and run the requested diagnostics. |
+| `version` | Emits the firmware version alone. |
+| `getconfig` | Emits one line of JSON containing the supported runtime settings. |
+| `ping` | Emits the legacy response ` ok` with a leading space. |
+
+Runtime setters acknowledge valid values with `ok` and use these exact names:
+`feedspeed:`, `feedsteps:`, `feedhomingoffset:`, `sortspeed:`, `sortsteps:`,
+`sorthomingoffset:`, `slotcount:`, `notificationdelay:`, `slotdropdelay:`,
+`automotorstandbytimeout:`, `debounceTimeout:`, `debounceTime:`,
+`airdropenabled:`, `airdroppredelay:`, `airdroppostdelay:`,
+`airdropdsignalduration:`, and `cameraledlevel:`. Preserve the mixed-case
+debounce names and the legacy extra `d` in `airdropdsignalduration:`.
+
+Unknown nonnumeric commands retain the legacy `ok` response. Invalid setters
+emit `error:invalid <setting>`; framing errors, busy state, unavailable position,
+and feed overtravel use their documented `error:` responses.
 
 ## Stop and recovery
 

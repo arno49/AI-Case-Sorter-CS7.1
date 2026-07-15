@@ -2,6 +2,11 @@
 
 This is a project for building a case sorter which uses machine vision, machine learing AI to sort cases by headstamp. This repo contains the Arduino code as well as all the 3d Models required to complete this project. 
 
+The current canonical firmware is `7.1.260714.6`. Its automated Uno build and
+65 native tests pass; hardware and Windows-application regression checks remain
+required before deployment. See [ArduinoCode/README.md](ArduinoCode/README.md)
+for commands, protocol details, and the validation boundary.
+
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
 sensor continuously active for the configured settle time. A sensor drop
