@@ -425,22 +425,23 @@ proximity sensor must remain active for the entire settling period.
 
 ### Problem
 
-`test:` currently uses `random(0,6)` (slots 0–5), while `sorttest:` uses
+`test:` previously used `random(0,6)` (slots 0–5), while `sorttest:` used
 `random(0,8)` (slots 0–7). The upper bound of Arduino `random(min,max)` is
-exclusive. Neither range is linked to the slot count configured in the
-external application, and `SORTER_CHUTE_SEPERATION` describes distance between
-slots, not slot count.
+exclusive. Neither range was linked to an explicit firmware slot count, and
+`SORTER_CHUTE_SEPERATION` describes distance between slots, not slot count.
 
 ### Implementation
 
-1. Add `SORTER_SLOT_COUNT` with a default of 8.
-2. Add a checked runtime `slotcount:` setter only if the Windows application
-   can initialize it alongside `sortsteps:`.
-3. Report the effective slot count from `getconfig` only after confirming that
-   additional JSON properties are accepted by supported application versions.
-4. Use `[0, slotCount)` consistently in both diagnostic modes.
-5. Document that changing slot count also requires mechanically compatible
-   chute spacing; do not derive one value from the other.
+1. Added independent `SORTER_SLOT_COUNT` and runtime `slotCount`, defaulting to
+   8.
+2. Added the exact checked `slotcount:` setter for manual or advanced
+   configuration. It cross-validates with `sortsteps:` against AVR 16-bit
+   movement arithmetic.
+3. Deliberately kept `SlotCount` out of `getconfig`; Windows application
+   tolerance for additional JSON properties has not been verified.
+4. Both diagnostic modes now use `[0, slotCount)`.
+5. Documented that slot count and mechanically compatible chute spacing are
+   independent.
 
 This intentionally expands the default feed/sort diagnostic from slots 0–5 to
 0–7. Treat that as a documented behavior correction, not as “no behavior
@@ -448,12 +449,17 @@ change.”
 
 ### Acceptance criteria
 
-- [ ] Both diagnostic modes select only values in `[0, slotCount)`.
-- [ ] Default diagnostics can reach all eight standard slots.
-- [ ] Slot count and chute separation remain independent settings.
-- [ ] Invalid values (`0`, negative, or above a documented mechanical limit)
-      are rejected without changing the active value.
-- [ ] Application compatibility is verified before extending `getconfig`.
+- [x] Both diagnostic modes select only values in `[0, slotCount)`.
+- [x] Default diagnostics can reach all eight standard slots.
+- [x] Slot count and chute separation remain independent settings.
+- [x] Invalid values (`0`, negative, or above the AVR-safe limit for the
+      current geometry) are rejected without changing the active value.
+- [x] The `getconfig` schema remains unchanged pending application
+      compatibility verification.
+
+Native logic tests and an Uno compile cover the arithmetic and build. Physical
+slot reachability, motor direction, homing, and application-driven advanced
+configuration still require hardware/application validation.
 
 ---
 

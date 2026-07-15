@@ -111,6 +111,34 @@ void test_standby_timeout_conversion_checks_overflow() {
       secondsToMilliseconds(MAX_STANDBY_TIMEOUT_SECONDS + 1, &milliseconds));
 }
 
+void test_maximum_representable_slot_count_uses_highest_slot() {
+  TEST_ASSERT_EQUAL_UINT32(
+      103, maximumRepresentableSlotCount(20, 16, 32767));
+  TEST_ASSERT_TRUE(isSlotCountRepresentable(1, 20, 16, 32767));
+  TEST_ASSERT_TRUE(isSlotCountRepresentable(103, 20, 16, 32767));
+  TEST_ASSERT_FALSE(isSlotCountRepresentable(104, 20, 16, 32767));
+}
+
+void test_slot_count_validity_covers_avr_16_bit_edges() {
+  TEST_ASSERT_EQUAL_UINT32(
+      32768, maximumRepresentableSlotCount(1, 1, 32767));
+  TEST_ASSERT_TRUE(isSlotCountRepresentable(32768, 1, 1, 32767));
+  TEST_ASSERT_FALSE(isSlotCountRepresentable(32769, 1, 1, 32767));
+  TEST_ASSERT_EQUAL_UINT32(
+      2, maximumRepresentableSlotCount(32767, 1, 32767));
+  TEST_ASSERT_TRUE(isSlotCountRepresentable(2, 32767, 1, 32767));
+}
+
+void test_slot_count_validity_rejects_zero_and_invalid_geometry() {
+  TEST_ASSERT_FALSE(isSlotCountRepresentable(0, 20, 16, 32767));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, maximumRepresentableSlotCount(0, 16, 32767));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, maximumRepresentableSlotCount(20, 0, 32767));
+  TEST_ASSERT_FALSE(isSlotCountRepresentable(1, 0, 16, 32767));
+  TEST_ASSERT_FALSE(isSlotCountRepresentable(1, 20, 0, 32767));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_speed_conversion_rejects_out_of_range_values);
@@ -123,5 +151,8 @@ int main(int, char **) {
   RUN_TEST(test_parse_bool_accepts_legacy_values);
   RUN_TEST(test_parse_bool_rejects_malformed_values_without_update);
   RUN_TEST(test_standby_timeout_conversion_checks_overflow);
+  RUN_TEST(test_maximum_representable_slot_count_uses_highest_slot);
+  RUN_TEST(test_slot_count_validity_covers_avr_16_bit_edges);
+  RUN_TEST(test_slot_count_validity_rejects_zero_and_invalid_geometry);
   return UNITY_END();
 }

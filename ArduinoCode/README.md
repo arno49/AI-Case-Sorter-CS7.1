@@ -39,6 +39,22 @@ supported ranges. Boolean settings accept `true`/`false` (case-insensitive) or
 `1`/`0`; malformed values return `error:invalid <setting>` without changing the
 previous value.
 
+`slotcount:{count}` sets the number of destinations used by both diagnostic
+commands and replies `ok`. The value must be at least 1 and no greater than
+`floor(32767 / (SortSteps * SORT_MICROSTEPS)) + 1`; invalid input replies
+`error:invalid slotcount` and preserves the previous value. Changing
+`sortsteps:` is also rejected when it would make the current diagnostic slot
+count unsafe. Slot count does not limit ordinary numeric, `xf:`, or `sortto:`
+commands, whose existing AVR-safe range is unchanged.
+
+`SlotCount` is deliberately absent from `getconfig`: supported Windows
+application versions have not been verified to tolerate an additional JSON
+property. Set it manually in a 9600-baud serial terminal with, for example,
+`slotcount:8`, or send that exact command from the application's advanced
+configuration facility after its usual `sortsteps:` initialization. Runtime
+settings reset at restart. To change the firmware default, edit
+`SORTER_SLOT_COUNT` in the user configuration section.
+
 Frames containing an embedded NUL byte are discarded with
 `error:invalid command`.
 
@@ -103,9 +119,12 @@ completion, forces `FEED_DONE_SIGNAL` low, and suppresses stale `done` output.
 ## Cooperative sorter diagnostics
 
 `sorttest:` uses a cooperative 40 ms `RuntimeTimer` gate before each random
-sorter move. Progress output, the existing random slot range, return-to-zero
-move, and pending-command blocking are unchanged. `stop` cancels the pacing
-gate and test. Runtime firmware contains no `delay()` calls; only
+sorter move. Both `test:` and `sorttest:` choose from the upper-exclusive range
+`[0, slotCount)`. The independent default of 8 covers slots 0–7; this expands
+the former `test:` default range of 0–5. Chute spacing and slot count must both
+match the installed mechanics and are not derived from each other. The
+return-to-zero move and pending-command blocking are unchanged. `stop` cancels
+the pacing gate and test. Runtime firmware contains no `delay()` calls; only
 `delayMicroseconds()` calls for step pulse width and motor speed remain.
 
 ## Proximity settling
