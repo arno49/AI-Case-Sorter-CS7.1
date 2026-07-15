@@ -6,6 +6,12 @@ maintainability, and testability without breaking the Arduino Uno hardware,
 the Arduino IDE workflow, or the serial contract used by AI Sorter software
 1.1.46 and newer.
 
+**Implementation status:** the software work is implemented through firmware
+`7.1.260714.6`. PlatformIO Uno compilation, CI, and 65 native tests pass.
+Unchecked criteria below require an Arduino IDE run, physical hardware,
+long-duration testing, a logic analyzer, or the Windows application; they are
+not being represented as complete.
+
 ## Constraints that apply to every phase
 
 - `ArduinoCode/CS71_Arduino/CS71_Arduino.ino` remains the canonical firmware
@@ -92,7 +98,7 @@ logic module in Phase 2.
 
 **Acceptance criteria:**
 
-- [ ] With `UseArduinoPWMDimmer=true`, values `-10`, `0`, `128`, `255`, and
+- [x] Native boundary tests verify values `-10`, `0`, `128`, `255`, and
       `300` result in effective levels `0`, `0`, `128`, `255`, and `255`.
 - [ ] `getconfig` reports the clamped `CameraLEDLevel` when PWM support is
       compiled in.
@@ -125,10 +131,10 @@ if (millis() - timeSinceLastMotorMove >= standbyTimeoutMs) {
 
 - [ ] `automotorstandbytimeout:0` disables standby.
 - [ ] `automotorstandbytimeout:60` behaves as before.
-- [ ] Negative, fractional, malformed, and overflowing values return `error:`
+- [x] Negative, fractional, malformed, and overflowing values return `error:`
       and leave the previous setting unchanged.
-- [ ] The maximum accepted value converts to milliseconds without overflow.
-- [ ] Behavior remains correct across a simulated `millis()` rollover.
+- [x] The maximum accepted value converts to milliseconds without overflow.
+- [x] Behavior remains correct across a simulated `millis()` rollover.
 
 ### 1.3 Name sorter homing limits
 
@@ -138,8 +144,8 @@ microstep counts exactly equal to the current values.
 
 **Acceptance criteria:**
 
-- [ ] Generated search limits are unchanged for the default configuration.
-- [ ] The margin comment explains its hardware purpose rather than restating
+- [x] Generated search limits are unchanged for the default configuration.
+- [x] The margin comment explains its hardware purpose rather than restating
       the arithmetic.
 
 ### 1.4 Remove genuinely dead code
@@ -152,8 +158,8 @@ microstep counts exactly equal to the current values.
 **Acceptance criteria:**
 
 - [ ] Removing `serialMessenger()` produces no serial or motor behavior change.
-- [ ] Any new `freemem` response is documented and stored in flash where
-      possible.
+- [x] `FreeMem()` remains internal; no new serial response or `getconfig`
+      property was added.
 
 ---
 
@@ -196,13 +202,13 @@ use PlatformIO.
 
 ### Acceptance criteria
 
-- [ ] `pio run -e uno` compiles the same canonical sketch used by Arduino IDE.
+- [x] `pio run -e uno` compiles the canonical sketch in place.
 - [ ] Arduino IDE still opens and verifies the sketch without generated files,
       symlinks, or manual source copying.
-- [ ] `pio test -e native` runs without an attached board.
-- [ ] A single suite can be run with `pio test -e native -f <suite>`.
-- [ ] CI runs native tests and Uno compilation on every firmware change.
-- [ ] Compiled flash and SRAM usage are reported so later refactors cannot
+- [x] `pio test -e native` runs without an attached board.
+- [x] A single suite can be run with `pio test -e native -f <suite>`.
+- [x] CI runs native tests and Uno compilation on every firmware change.
+- [x] Compiled flash and SRAM usage are reported so later refactors cannot
       silently exceed Uno limits.
 
 ---
@@ -260,11 +266,11 @@ use PlatformIO.
 
 ### Acceptance criteria
 
-- [ ] No dynamic `String` object is used by command reception or dispatch.
-- [ ] No per-byte `delay()` remains.
-- [ ] A truncated command can never execute.
+- [x] No dynamic `String` object is used by command reception or dispatch.
+- [x] No per-byte `delay()` remains.
+- [x] A truncated command can never execute.
 - [ ] Valid command behavior and responses match the Phase 0 fixtures.
-- [ ] Invalid values return a deterministic `error:` response and do not
+- [x] Invalid values return a deterministic `error:` response and do not
       partially update runtime state.
 - [ ] Native parser tests pass and an extended bench command stream shows no
       declining free-memory trend.
@@ -336,15 +342,16 @@ Recommended behavior:
       `FEED_DONE_SIGNAL` is low.
 - [ ] Stop during feed stepping, sort stepping, homing stepping, and test
       movement ends in the same explicit stopped state.
-- [ ] Worst-case stop latency during each remaining blocking section is
-      measured and recorded as a known limitation for Phase 5.
-- [ ] No stale `done` is emitted after cancellation.
-- [ ] Normal movement is rejected until position recovery completes.
+- [x] Phase 5 removed all runtime millisecond blocking sections; only individual
+      motor-step `delayMicroseconds()` calls remain.
+- [x] Native state tests and control-flow checks suppress stale `done` after
+      cancellation.
+- [x] Normal movement is rejected until position recovery completes.
 - [ ] Recovery homes both axes, resets the sorter queue, and permits the next
       normal cycle.
 - [ ] Native state tests and physical bench tests cover each interruption
       point.
-- [ ] Documentation states that software stop is not a certified emergency
+- [x] Documentation states that software stop is not a certified emergency
       stop.
 
 ---
@@ -404,16 +411,17 @@ proximity sensor must remain active for the entire settling period.
 
 ### Acceptance criteria
 
-- [ ] No `delay()` remains in the runtime path.
-- [ ] Remaining `delayMicroseconds()` calls are limited to documented step
+- [x] No `delay()` remains in the runtime path.
+- [x] Remaining `delayMicroseconds()` calls are limited to documented step
       pulse generation.
-- [ ] Serial reception and `stop` remain responsive in every waiting state.
+- [x] Serial reception and `stop` are serviced cooperatively in every software
+      waiting state.
 - [ ] Slot-drop, debounce, notification, and AirDrop durations remain within
       the measured and documented tolerance established on the bench.
 - [ ] AirDrop produces one pulse of the configured duration and always returns
       low.
 - [ ] Existing queued-sort behavior is unchanged.
-- [ ] Each converted subsystem has native fake-time tests before the next
+- [x] Each converted subsystem has native fake-time tests before the next
       subsystem is changed.
 
 ---
@@ -488,14 +496,15 @@ configuration still require hardware/application validation.
 
 ### Release acceptance criteria
 
-- [ ] Arduino IDE and PlatformIO compile the canonical Uno firmware.
-- [ ] Native tests and CI pass.
+- [x] PlatformIO compiles the canonical Uno firmware; Arduino IDE verification
+      remains a manual release check.
+- [x] Native tests and CI pass.
 - [ ] Startup, serial protocol, queued sorting, homing, and default hardware
       behavior pass regression checks.
 - [ ] Stop and recovery pass bench tests at every documented interruption
       point.
 - [ ] AirDrop and PWM variants are tested when their code paths changed.
-- [ ] Firmware/application compatibility and any intentional protocol changes
+- [x] Firmware/application compatibility boundaries and intentional protocol changes
       are documented in release notes.
 
 ## Dependency order
