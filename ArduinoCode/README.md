@@ -22,6 +22,7 @@ pio test -e native -f test_command_parser
 pio test -e native -f test_machine_state
 pio test -e native -f test_runtime_timer
 pio test -e native -f test_feed_completion
+pio test -e native -f test_proximity_settler
 ```
 
 ## Serial command framing
@@ -53,9 +54,8 @@ stopped
 It disables the shared motor driver, forces the feed-done output low, cancels
 motion, homing, tests, completion notifications, and the pending command, and
 marks both axis positions unknown. Serial input is checked on each cooperative
-loop pass. The remaining proximity debounce and diagnostic pacing `delay()`
-calls, and the synchronous sorter jog, still defer all serial handling,
-including `stop`, until they return.
+loop pass. The remaining diagnostic pacing `delay()` calls and the synchronous
+sorter jog still defer all serial handling, including `stop`, until they return.
 
 The machine starts in `Recovering` mode and enters `Running` only after both
 axes finish homing, including configured offsets. After `stop`, issue
@@ -92,6 +92,20 @@ Completion remains busy until `done` is emitted, preserving one-command pending
 behavior. `stop`, feed overtravel, or leaving `Running` mode cancels the
 completion, forces `FEED_DONE_SIGNAL` low, and suppresses stale `done` output.
 `AirDropPostDelay` remains the independent slot/drop clearance gate.
+
+## Proximity settling
+
+After the feed sensor has remained inactive for longer than
+`DebounceTimeout`, the next detected case must keep the sensor continuously
+active for `DebouncePauseTime` before feeding can begin. This settling interval
+is cooperative, so serial handling and `stop` remain responsive. If the sensor
+drops inactive during settling, the timer is canceled and a full active
+interval is required when the case returns. A case already active at boot does
+not settle until a qualifying absence occurs.
+
+`xf:` and builds with `FEEDSENSOR_ENABLED=false` bypass readiness without
+clearing a pending settle requirement. Stop and feed-fault/recovery paths reset
+active settling so stale expiry cannot start movement.
 
 A feed-overtravel fault disables the motor driver and marks the feeder position
 unknown. An already accepted pending command is processed afterward under the

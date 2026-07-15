@@ -2,6 +2,12 @@
 
 This is a project for building a case sorter which uses machine vision, machine learing AI to sort cases by headstamp. This repo contains the Arduino code as well as all the 3d Models required to complete this project. 
 
+The canonical firmware uses cooperative proximity settling: after the feed
+sensor has been inactive longer than its debounce timeout, brass must keep the
+sensor continuously active for the configured settle time. A sensor drop
+cancels and restarts the full interval; brass already active at boot does not
+settle until a qualifying absence occurs.
+
 ## Instructions
 Most of the information you need to build this project is available in [Instructions.pdf](Instructions.pdf).
 
