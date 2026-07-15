@@ -20,6 +20,8 @@ Run one native test suite with:
 pio test -e native -f test_logic
 pio test -e native -f test_command_parser
 pio test -e native -f test_machine_state
+pio test -e native -f test_runtime_timer
+pio test -e native -f test_feed_completion
 ```
 
 ## Serial command framing
@@ -51,8 +53,9 @@ stopped
 It disables the shared motor driver, forces the feed-done output low, cancels
 motion, homing, tests, completion notifications, and the pending command, and
 marks both axis positions unknown. Serial input is checked on each cooperative
-loop pass. Existing blocking `delay()` calls and the synchronous sorter jog
-still defer all serial handling, including `stop`, until they return.
+loop pass. The remaining proximity debounce and diagnostic pacing `delay()`
+calls, and the synchronous sorter jog, still defer all serial handling,
+including `stop`, until they return.
 
 The machine starts in `Recovering` mode and enters `Running` only after both
 axes finish homing, including configured offsets. After `stop`, issue
@@ -75,6 +78,20 @@ Any additional completed ordinary frame replies `error:busy`; it starts a new
 frame and is never appended to the pending command. A pending command is not
 dispatched until motion and homing are idle and any preceding feed-cycle
 `done` notification has been emitted.
+
+## Nonblocking feed completion
+
+After feed homing completes, feed notification runs cooperatively without
+`delay()`. With AirDrop enabled, firmware waits `AirDropPreDelay`, drives
+`FEED_DONE_SIGNAL` high for `AirDropSignalTime`, drives it low, waits
+`NotificationDelay`, and then emits `done`. Without AirDrop, it waits only
+`NotificationDelay`. AirDrop mode and all three durations are snapshotted when
+completion starts, so a queued runtime setter affects the next cycle.
+
+Completion remains busy until `done` is emitted, preserving one-command pending
+behavior. `stop`, feed overtravel, or leaving `Running` mode cancels the
+completion, forces `FEED_DONE_SIGNAL` low, and suppresses stale `done` output.
+`AirDropPostDelay` remains the independent slot/drop clearance gate.
 
 A feed-overtravel fault disables the motor driver and marks the feeder position
 unknown. An already accepted pending command is processed afterward under the
