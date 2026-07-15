@@ -69,3 +69,33 @@ void CommandParser::append(char byte) {
   buffer_[length_++] = byte;
   buffer_[length_] = '\0';
 }
+
+PendingCommand::PendingCommand() {
+  clear();
+}
+
+bool PendingCommand::enqueue(const char *frame, size_t length) {
+  if (available_ || frame == 0 || length > COMMAND_MAX_LENGTH) {
+    return false;
+  }
+
+  for (size_t index = 0; index < length; ++index) {
+    buffer_[index] = frame[index];
+  }
+  buffer_[length] = '\0';
+  available_ = true;
+  return true;
+}
+
+bool PendingCommand::available() const {
+  return available_;
+}
+
+const char *PendingCommand::frame() const {
+  return buffer_;
+}
+
+void PendingCommand::clear() {
+  buffer_[0] = '\0';
+  available_ = false;
+}

@@ -20,7 +20,7 @@
 
 - Hardware defaults and compile-time options belong above `///END OF USER CONFIGURATIONS ///`; runtime state and behavior belong below it. The desktop application can temporarily override many defaults with `key:value` serial commands, but those values reset when the Arduino restarts unless the application reinitializes them.
 - Preserve the serial protocol when changing firmware: commands are newline-delimited, numeric commands drive the queued feed/sort cycle, setters acknowledge with `ok`, `getconfig` returns one-line JSON, feed completion emits `done`, and errors use the `error:` prefix. The desktop application depends on exact command names and response timing.
-- Serial commands are accepted only while neither a feed cycle nor sorter movement is in progress. `recvWithEndMarker()` accumulates input until `\n`; keep commands and responses on one line and reset the input buffer on every completed handler.
+- Serial bytes are consumed on every cooperative loop pass. During motion or homing, one ordinary command may be pending; further complete ordinary frames receive `error:busy`. Exact `stop` frames dispatch immediately outside the documented blocking delays and sorter jog.
 - Preserve these command families and response semantics:
 
   | Command | Behavior and response |
@@ -29,7 +29,7 @@
   | `xf:{slot}` | Same cycle, but bypasses the feed proximity sensor; completion is asynchronous via `done`. |
   | `sortto:{slot}` | Moves directly to a slot for diagnostics and immediately acknowledges with `ok`; sorter movement continues through the state machine. |
   | `homefeeder`, `homesorter` | Starts homing and immediately acknowledges with `ok`. |
-  | `stop` | Cancels feed/homing state without an immediate `ok`; the normal completion path may subsequently emit `done`. |
+  | `stop` | Enters explicit stopped mode, disables motion, clears pending work, invalidates both axes, and emits `stopped`. Both axes must home before movement resumes. |
   | `test:{count}`, `sorttest:{count}` | Starts repeated hardware diagnostics and emits `testing started`, followed by progress lines. |
   | `getconfig` | Emits a single JSON object containing the effective runtime values. Keep existing property names stable when extending it. |
   | `version` | Emits `FIRMWARE_VERSION` alone. |
@@ -38,6 +38,7 @@
 - Runtime setters use the exact lowercase spellings implemented in `checkSerial()`: `feedspeed:`, `feedsteps:`, `feedhomingoffset:`, `sortspeed:`, `sortsteps:`, `sorthomingoffset:`, `notificationdelay:`, `slotdropdelay:`, `automotorstandbytimeout:`, `debounceTimeout:`, `debounceTime:`, `airdropenabled:`, `airdroppredelay:`, `airdroppostdelay:`, `airdropdsignalduration:`, and `cameraledlevel:`. Preserve the existing mixed-case debounce names and the legacy extra `d` in `airdropdsignalduration:` unless the desktop application is updated in lockstep. Successful setters emit `ok`.
 - Unknown nonnumeric commands currently receive `ok`; do not silently tighten that legacy behavior without confirming application compatibility.
 - Feed overtravel aborts the cycle with `error:feed overtravel detected` and does not emit a success-shaped response. Keep error paths distinct from `done`/`ok`.
+- While stopped or recovering, movement and test commands emit `error:not homed`; diagnostics, setters, and both home commands remain available.
 - Keep `FIRMWARE_VERSION` and the version banner at the top of the sketch synchronized. The current firmware declares the minimum compatible AI Sorter application version there.
 - Store fixed serial messages in flash with Arduino's `F("...")` macro to conserve Uno SRAM. Dynamic values and the firmware version are printed separately.
 - Pin assignments are coupled to hardware options. In particular, enabling `UseArduinoPWMDimmer` swaps the feed sensor from pin 9 to pin 13 and uses pin 9 for camera LED PWM; firmware changes to this option require the matching wiring change.

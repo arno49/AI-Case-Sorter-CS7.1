@@ -31,4 +31,18 @@ class CommandParser {
   bool pendingCarriageReturn_;
 };
 
+class PendingCommand {
+ public:
+  PendingCommand();
+
+  bool enqueue(const char *frame, size_t length);
+  bool available() const;
+  const char *frame() const;
+  void clear();
+
+ private:
+  char buffer_[COMMAND_MAX_LENGTH + 1];
+  bool available_;
+};
+
 #endif
