@@ -1,0 +1,156 @@
+# CS7.1 firmware 7.1.260714.6 legacy wire baseline
+#
+# Bytes are represented with C escapes. Requests exclude transport timing.
+# Responses are exact: spaces, case, spelling, JSON order, and LF are normative.
+
+[startup]
+request=<reset>
+response=Ready\n
+
+[inspection]
+request=ping\n
+response=\x20ok\n
+request=version\n
+response=7.1.260714.6\n
+request=getconfig\n
+response={"FeedMotorSpeed":90,"FeedCycleSteps":70,"SortMotorSpeed":90,"SortSteps":20,"NotificationDelay":90,"SlotDropDelay":400,"AirDropEnabled":0,"AirDropPostDelay":0,"AirDropPreDelay":30,"AirDropSignalTime":50,"FeedHomingOffset":3,"SortHomingOffset":0,"AutoMotorStandbyTimeout":60,"DebounceTimeout":300,"DebouncePauseTime":500}\n
+
+[negotiation-on-old-firmware]
+request=protocol:2?\n
+response=ok\n
+request=protocol:2\n
+response=ok\n
+
+[framing]
+request=\n
+response=ok\n
+request=ping\r\n
+response=\x20ok\n
+request=<41 printable bytes>\n
+response=error:command too long\n
+request=pi\x00ng\n
+response=error:invalid command\n
+
+[setters-valid]
+request=feedspeed:90\n
+response=ok\n
+request=feedsteps:70\n
+response=ok\n
+request=feedhomingoffset:3\n
+response=ok\n
+request=sortspeed:90\n
+response=ok\n
+request=sortsteps:20\n
+response=ok\n
+request=sorthomingoffset:0\n
+response=ok\n
+request=slotcount:8\n
+response=ok\n
+request=notificationdelay:90\n
+response=ok\n
+request=slotdropdelay:400\n
+response=ok\n
+request=automotorstandbytimeout:60\n
+response=ok\n
+request=debounceTimeout:300\n
+response=ok\n
+request=debounceTime:500\n
+response=ok\n
+request=airdropenabled:false\n
+response=ok\n
+request=airdroppredelay:30\n
+response=ok\n
+request=airdroppostdelay:0\n
+response=ok\n
+request=airdropdsignalduration:50\n
+response=ok\n
+request=cameraledlevel:78\n
+response=ok\n
+
+[setters-invalid]
+request=feedspeed:0\n
+response=error:invalid feedspeed\n
+request=feedsteps:1001\n
+response=error:invalid feedsteps\n
+request=feedhomingoffset:201\n
+response=error:invalid feedhomingoffset\n
+request=sortspeed:101\n
+response=error:invalid sortspeed\n
+request=sortsteps:0\n
+response=error:invalid sortsteps\n
+request=sorthomingoffset:201\n
+response=error:invalid sorthomingoffset\n
+request=slotcount:0\n
+response=error:invalid slotcount\n
+request=notificationdelay:-1\n
+response=error:invalid notificationdelay\n
+request=slotdropdelay:-1\n
+response=error:invalid slotdropdelay\n
+request=automotorstandbytimeout:4294968\n
+response=error:invalid automotorstandbytimeout\n
+request=debounceTimeout:-1\n
+response=error:invalid debounceTimeout\n
+request=debounceTime:-1\n
+response=error:invalid debounceTime\n
+request=airdropenabled:yes\n
+response=error:invalid airdropenabled\n
+request=airdroppredelay:-1\n
+response=error:invalid airdroppredelay\n
+request=airdroppostdelay:-1\n
+response=error:invalid airdroppostdelay\n
+request=airdropdsignalduration:-1\n
+response=error:invalid airdropdsignalduration\n
+request=cameraledlevel:not-a-number\n
+response=error:invalid cameraledlevel\n
+
+[commands]
+precondition=running
+request=homefeeder\n
+response=ok\n
+request=homesorter\n
+response=ok\n
+request=sortto:3\n
+response=ok\n
+request=test:1\n
+response=testing started\n
+request=sorttest:1\n
+response=testing started\n
+request=stop\n
+response=stopped\n
+
+[commands-invalid]
+request=3x\n
+response=error:invalid slot\n
+request=xf:3x\n
+response=error:invalid xf\n
+request=sortto:3x\n
+response=error:invalid sortto\n
+request=test:-1\n
+response=error:invalid test\n
+request=sorttest:-1\n
+response=error:invalid sorttest\n
+request=unknown\n
+response=ok\n
+
+[state-and-queue]
+precondition=not-homed
+request=3\n
+response=error:not homed\n
+precondition=busy-with-one-pending-command
+request=version\n
+response=error:busy\n
+precondition=running,queue=(0,0)
+request=1\n
+response=<none until physical feed completion>,done\n
+postcondition=queue=(0,1)
+request=1\n
+response=<none until physical feed completion>,done\n
+postcondition=queue=(1,1)
+
+[progress-and-fault]
+precondition=feed-request-waiting-for-material
+response=waiting for brass\n
+maximum-rate=1 line per second
+precondition=feed-home-search-exceeds-threshold
+response=error:feed overtravel detected\n
+
