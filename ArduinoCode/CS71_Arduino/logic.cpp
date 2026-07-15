@@ -128,7 +128,3 @@ bool secondsToMilliseconds(uint32_t seconds, uint32_t *milliseconds) {
   *milliseconds = seconds * 1000UL;
   return true;
 }
-
-bool hasElapsed(uint32_t now, uint32_t started, uint32_t duration) {
-  return static_cast<uint32_t>(now - started) >= duration;
-}

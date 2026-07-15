@@ -111,11 +111,6 @@ void test_standby_timeout_conversion_checks_overflow() {
       secondsToMilliseconds(MAX_STANDBY_TIMEOUT_SECONDS + 1, &milliseconds));
 }
 
-void test_elapsed_check_handles_millis_rollover() {
-  TEST_ASSERT_FALSE(hasElapsed(20, UINT32_MAX - 20, 42));
-  TEST_ASSERT_TRUE(hasElapsed(21, UINT32_MAX - 20, 42));
-}
-
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_speed_conversion_rejects_out_of_range_values);
@@ -128,6 +123,5 @@ int main(int, char **) {
   RUN_TEST(test_parse_bool_accepts_legacy_values);
   RUN_TEST(test_parse_bool_rejects_malformed_values_without_update);
   RUN_TEST(test_standby_timeout_conversion_checks_overflow);
-  RUN_TEST(test_elapsed_check_handles_millis_rollover);
   return UNITY_END();
 }
