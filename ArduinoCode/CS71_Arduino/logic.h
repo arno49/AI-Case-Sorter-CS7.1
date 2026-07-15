@@ -12,6 +12,5 @@ bool parseInt32(const char *text, int32_t minimum, int32_t maximum,
                 int32_t *value);
 bool parseBool(const char *text, bool *value);
 bool secondsToMilliseconds(uint32_t seconds, uint32_t *milliseconds);
-bool hasElapsed(uint32_t now, uint32_t started, uint32_t duration);
 
 #endif

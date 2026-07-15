@@ -7,6 +7,7 @@
 #include "command_parser.h"
 #include "logic.h"
 #include "machine_state.h"
+#include "runtime_timer.h"
 
 #define FIRMWARE_VERSION "7.1.260714.2"
 
@@ -172,7 +173,8 @@ int sortHomingOffset = sortOffsetSteps * SORT_MICROSTEPS;
 bool IsSortHoming = false;
 bool IsSortHomingOffset = false;
 int SortHomingOffsetSteps = sortHomingOffset;
-int slotDelayCalc = 0;
+RuntimeTimer slotDropGate;
+int pendingQueuedDestination = 0;
 
 bool IsTestCycle=false;
 bool IsSortTestCycle=false;
@@ -194,7 +196,7 @@ bool sensorDelay = false;
 bool executionBusy() {
   return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
          FeedCycleInProgress || (FeedCycleComplete && !IsFeedError) ||
-         SortInProgress ||
+         SortInProgress || slotDropGate.isActive() ||
          IsSorting || IsSortHoming || IsSortHomingOffset || IsTestCycle ||
          IsSortTestCycle;
 }
@@ -276,7 +278,8 @@ void enterStoppedState() {
   sortToSlot = 0;
   SortHomingOffsetSteps = 0;
   homingSteps = 0;
-  slotDelayCalc = 0;
+  slotDropGate.cancel();
+  pendingQueuedDestination = 0;
 
   IsTestCycle = false;
   IsSortTestCycle = false;
@@ -326,6 +329,8 @@ void setup() {
 void loop() {
    checkSerial();
    getProxState();
+   const uint32_t now = millis();
+   updateSlotDropGate(now);
    runSortMotor();
    onSortComplete();
    scheduleRun();
@@ -843,26 +848,43 @@ void runAux(){
 }
 
 
-void moveSorterToNextPosition(int position){
+void beginQueuedSorterTransition(int position) {
     sortToSlot=position;
     sortStepsToNextPosition = (qPos1 * sortSteps * SORT_MICROSTEPS) - (qPos2 * sortSteps * SORT_MICROSTEPS);
     sortStepsToNextPositionTracker = sortStepsToNextPosition;
-    if(sortStepsToNextPosition !=0){
-      theTime = millis();
-       slotDelayCalc = (dropDelay - (theTime - timeSinceLastSortMove));
-       slotDelayCalc = slotDelayCalc > 0? slotDelayCalc : 1;
-       if(slotDelayCalc > dropDelay){
-         slotDelayCalc=dropDelay;
-       }
-
-      // Serial.println(slotDelayCalc);
-      delay(slotDelayCalc);
-    }
     qPos1 = qPos2;
     qPos2 =position;
     SortInProgress = true;
     SortComplete = false;
     IsSorting = true;
+}
+
+void moveSorterToNextPosition(int position){
+    const int queuedSortSteps =
+       (qPos1 * sortSteps * SORT_MICROSTEPS) -
+       (qPos2 * sortSteps * SORT_MICROSTEPS);
+    const uint32_t now = millis();
+    const uint32_t dropDelayMs = static_cast<uint32_t>(dropDelay);
+
+    if (queuedSortSteps != 0 &&
+       !hasElapsed(now, timeSinceLastSortMove, dropDelayMs)) {
+      pendingQueuedDestination = position;
+      slotDropGate.start(timeSinceLastSortMove, dropDelayMs);
+      return;
+    }
+
+    beginQueuedSorterTransition(position);
+}
+
+void updateSlotDropGate(uint32_t now) {
+  if (!slotDropGate.hasElapsed(now)) {
+    return;
+  }
+
+  const int destination = pendingQueuedDestination;
+  pendingQueuedDestination = 0;
+  slotDropGate.cancel();
+  beginQueuedSorterTransition(destination);
 }
 
 void moveSorterToPosition(int position){
@@ -1015,7 +1037,10 @@ void onFeedComplete(){
 }
 
 void scheduleRun(){
- 
+  if (slotDropGate.isActive()) {
+    return;
+  }
+
   if(FeedScheduled==true && IsFeeding==false){
     if(readyToFeed()){
       //set run variables
