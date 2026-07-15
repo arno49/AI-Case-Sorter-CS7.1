@@ -1,15 +1,16 @@
-/// VERSION CS 7.1.260714.2 ///
+/// VERSION CS 7.1.260714.3 ///
 /// REQUIRES AI SORTER SOFTWARE VERSION 1.1.46 or newer
 
 #include <Wire.h>
 #include <SoftwareSerial.h>
 #include <string.h>
 #include "command_parser.h"
+#include "feed_completion.h"
 #include "logic.h"
 #include "machine_state.h"
 #include "runtime_timer.h"
 
-#define FIRMWARE_VERSION "7.1.260714.2"
+#define FIRMWARE_VERSION "7.1.260714.3"
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -159,6 +160,7 @@ int sortDelayMS = 400;
 
 bool forceFeed=false;
 CommandParser commandParser;
+FeedCompletion feedCompletion;
 MachineState machineState;
 PendingCommand pendingCommand;
 int qPos1 = 0;
@@ -196,7 +198,7 @@ bool sensorDelay = false;
 bool executionBusy() {
   return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
          FeedCycleInProgress || (FeedCycleComplete && !IsFeedError) ||
-         SortInProgress || slotDropGate.isActive() ||
+         feedCompletion.isActive() || SortInProgress || slotDropGate.isActive() ||
          IsSorting || IsSortHoming || IsSortHomingOffset || IsTestCycle ||
          IsSortTestCycle;
 }
@@ -253,10 +255,15 @@ void completeSorterRecoveryHoming() {
   updateRecoveryCompletion(MachineAxis::Sorter);
 }
 
+void cancelFeedCompletion() {
+  feedCompletion.cancel();
+  digitalWrite(FEED_DONE_SIGNAL, LOW);
+}
+
 void enterStoppedState() {
   machineState.enterStopped();
   digitalWrite(MOTOR_Enable, HIGH);
-  digitalWrite(FEED_DONE_SIGNAL, LOW);
+  cancelFeedCompletion();
 
   FeedScheduled = false;
   IsFeeding = false;
@@ -338,7 +345,7 @@ void loop() {
    runFeedMotor();
    homeFeedMotor();
    homeSortMotor();
-   onFeedComplete();
+   onFeedComplete(now);
    runAux();
    MotorStandByCheck();
 }
@@ -802,6 +809,9 @@ void runAux(){
   if (!machineState.isRunning()) {
     return;
   }
+  if (feedCompletion.isActive()) {
+    return;
+  }
 
   //This runs the feed and sort test if scheduled
   if(IsTestCycle==true&&FeedScheduled==false&&FeedCycleInProgress==false){
@@ -1007,33 +1017,47 @@ void checkFeedErrors(){
         machineState.invalidateAxis(MachineAxis::Sorter);
       }
       digitalWrite(MOTOR_Enable, HIGH);
-      digitalWrite(FEED_DONE_SIGNAL, LOW);
+      cancelFeedCompletion();
       Serial.println(F("error:feed overtravel detected"));
   }
 }
-void onFeedComplete(){
-  if(FeedCycleComplete==true && IsFeedError==false &&
-     machineState.isRunning()){
-   
-    timeSinceLastMotorMove = millis();
-   //this allows some time for the brass to start dropping before generating the airblast
-
-    if(airDropEnabled)
-    {
-      delay(feedCyclePreDelay);
-      digitalWrite(FEED_DONE_SIGNAL, HIGH);
-      delay(feedCycleSignalTime);
-      digitalWrite(FEED_DONE_SIGNAL,LOW);
-     
+void onFeedComplete(uint32_t now){
+  if (!machineState.isRunning()) {
+    if (feedCompletion.isActive()) {
+      cancelFeedCompletion();
+      FeedCycleComplete = false;
+      forceFeed = false;
     }
-    delay(notificationDelay);
-    Serial.print(F("done\n"));
-    //Serial.flush();
-    FeedCycleComplete=false;
-    forceFeed= false;
     return;
   }
-  
+
+  if (FeedCycleComplete && !IsFeedError && !feedCompletion.isActive()) {
+    const FeedCompletionConfig config = {
+        airDropEnabled,
+        static_cast<uint32_t>(feedCyclePreDelay),
+        static_cast<uint32_t>(feedCycleSignalTime),
+        static_cast<uint32_t>(notificationDelay)};
+    if (feedCompletion.start(now, config)) {
+      timeSinceLastMotorMove = now;
+    }
+  }
+
+  for (uint8_t transitions = 0; transitions < 3; ++transitions) {
+    const FeedCompletionEvent event = feedCompletion.update(now);
+    if (event == FeedCompletionEvent::None) {
+      return;
+    }
+    if (event == FeedCompletionEvent::SignalHigh) {
+      digitalWrite(FEED_DONE_SIGNAL, HIGH);
+    } else if (event == FeedCompletionEvent::SignalLow) {
+      digitalWrite(FEED_DONE_SIGNAL, LOW);
+    } else if (event == FeedCompletionEvent::Notify) {
+      Serial.print(F("done\n"));
+      FeedCycleComplete = false;
+      forceFeed = false;
+      return;
+    }
+  }
 }
 
 void scheduleRun(){
