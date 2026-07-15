@@ -3,6 +3,7 @@
 
 #include <Wire.h>
 #include <SoftwareSerial.h>
+#include "logic.h"
 
 #define FIRMWARE_VERSION "7.1.260131.1"
 
@@ -1027,18 +1028,10 @@ void setAccFeedDelay(){
 }
 
 void setSorterMotorSpeed(int speed) {
-  sortMotorSpeed = setSpeedConversion(speed);
+  sortMotorSpeed = convertSpeedToDelay(speed);
 }
 void setFeedMotorSpeed(int speed) {
-  feedMotorSpeed = setSpeedConversion(speed);
-}
-
-int setSpeedConversion(int speed) {
-  if (speed < 1 || speed > 100) {
-    return 500;
-  }
-
-  return 1060 - ((int)(((double)(speed - 1) / 99) * (1000 - 60)) + 60);
+  feedMotorSpeed = convertSpeedToDelay(speed);
 }
 
 void MotorStandByCheck(){
@@ -1069,4 +1062,3 @@ void adjustCameraLED(int level)
    analogWrite(CAMERA_LED_PWM, level);
    cameraLEDLevel = level;
  }
-

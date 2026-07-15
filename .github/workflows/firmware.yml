@@ -1,0 +1,30 @@
+name: Firmware
+
+on:
+  push:
+    paths:
+      - "ArduinoCode/**"
+      - "test/**"
+      - "platformio.ini"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "ArduinoCode/**"
+      - "test/**"
+      - "platformio.ini"
+      - ".github/workflows/firmware.yml"
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install PlatformIO
+        run: pip install --disable-pip-version-check platformio==6.1.19
+      - name: Compile Arduino Uno firmware
+        run: pio run -e uno
+      - name: Run native tests
+        run: pio test -e native
