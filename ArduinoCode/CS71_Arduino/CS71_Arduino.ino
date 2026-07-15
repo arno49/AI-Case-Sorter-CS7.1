@@ -8,11 +8,12 @@
 #include "feed_completion.h"
 #include "logic.h"
 #include "machine_state.h"
+#include "protocol.h"
 #include "proximity_settler.h"
 #include "runtime_timer.h"
 #include "step_sequence.h"
 
-#define FIRMWARE_VERSION "7.1.260714.6"
+#define FIRMWARE_VERSION CS71_FIRMWARE_VERSION
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -125,26 +126,49 @@ static_assert(
 
 ///END OF USER CONFIGURATIONS ///
 ///DO NOT EDIT BELOW THIS LINE ///
-int cameraLEDLevel = CAMERA_LED_LEVEL; 
+Configuration configuration = {
+    FEED_MOTOR_SPEED,
+    FEED_STEPS,
+    SORT_MOTOR_SPEED,
+    SORTER_CHUTE_SEPERATION,
+    SORTER_SLOT_COUNT,
+    FEED_CYCLE_NOTIFICATION_DELAY,
+    SLOT_DROP_DELAY,
+    AIR_DROP_ENABLED,
+    FEED_CYCLE_COMPLETE_POSTDELAY,
+    FEED_CYCLE_COMPLETE_PRESIGNALDELAY,
+    FEED_CYCLE_COMPLETE_SIGNALTIME,
+    FEED_HOMING_OFFSET_STEPS,
+    SORT_HOMING_OFFSET_STEPS,
+    AUTO_MOTORSTANDBY_TIMEOUT,
+    DEBOUNCE_TIMEOUT,
+    DEBOUNCE_PAUSE_TIME,
+    CAMERA_LED_LEVEL};
 
-int notificationDelay = FEED_CYCLE_NOTIFICATION_DELAY;
-bool airDropEnabled = AIR_DROP_ENABLED;
-int feedCycleSignalTime = FEED_CYCLE_COMPLETE_SIGNALTIME;
-int feedCyclePreDelay = FEED_CYCLE_COMPLETE_PRESIGNALDELAY;
-int feedCyclePostDelay = FEED_CYCLE_COMPLETE_POSTDELAY;
-int slotDropDelay = SLOT_DROP_DELAY;
+#define cameraLEDLevel configuration.cameraLedLevel
+#define notificationDelay configuration.notificationDelay
+#define airDropEnabled configuration.airDropEnabled
+#define feedCycleSignalTime configuration.airDropSignalTime
+#define feedCyclePreDelay configuration.airDropPreDelay
+#define feedCyclePostDelay configuration.airDropPostDelay
+#define slotDropDelay configuration.slotDropDelay
+#define autoMotorStandbyTimeout configuration.autoMotorStandbyTimeout
+#define feedSpeed configuration.feedSpeed
+#define feedSteps configuration.feedSteps
+#define sortSpeed configuration.sortSpeed
+#define sortSteps configuration.sortSteps
+#define slotCount configuration.slotCount
+#define feedOffsetSteps configuration.feedHomingOffset
+#define sortOffsetSteps configuration.sortHomingOffset
+#define triggerTimeout configuration.debounceTimeout
+#define debounceTime configuration.debouncePauseTime
+
 int dropDelay =  airDropEnabled ? feedCyclePostDelay : slotDropDelay;
 
-uint32_t autoMotorStandbyTimeout = AUTO_MOTORSTANDBY_TIMEOUT;
 uint32_t autoMotorStandbyTimeoutMs = AUTO_MOTORSTANDBY_TIMEOUT * 1000UL;
 
-int feedSpeed = FEED_MOTOR_SPEED; //represents a number between 1-100
-int feedSteps = FEED_STEPS;
 int feedMotorSpeed = 500;//this is default and calculated at runtime. do not change this value
 
-int sortSpeed = SORT_MOTOR_SPEED; //represents a number between 1-100
-int sortSteps = SORTER_CHUTE_SEPERATION;
-uint32_t slotCount = SORTER_SLOT_COUNT;
 int sortMotorSpeed = 500;//this is default and calculated at runtime. do not change this value
 int homingSteps = 0;
 
@@ -153,7 +177,6 @@ int feedMicroSteps = feedSteps * FEED_MICROSTEPS;
 const int feedramp = (ACC_FACTOR + (FEED_MOTOR_SPEED /2)) / FEED_ACC_SLOPE;
 const int sortramp = (ACC_FACTOR + (SORT_MOTOR_SPEED /2)) / SORT_ACC_SLOPE;
 int feedOverTravelSteps = feedMicroSteps - (FEED_OVERSTEP_THRESHOLD * FEED_MICROSTEPS);
-int feedOffsetSteps = FEED_HOMING_OFFSET_STEPS;
 int feedHomingOffset = feedOffsetSteps * FEED_MICROSTEPS;
 
 bool FeedScheduled = false;
@@ -172,6 +195,7 @@ bool forceFeed=false;
 CommandParser commandParser;
 FeedCompletion feedCompletion;
 MachineState machineState;
+ProtocolSession protocolSession;
 PendingCommand pendingCommand;
 ProximitySettler proximitySettler;
 int qPos1 = 0;
@@ -181,7 +205,6 @@ int sortStepsToNextPositionTracker=0;
 bool SortInProgress = false;
 bool SortComplete = false;
 bool IsSorting = false;
-int sortOffsetSteps = SORT_HOMING_OFFSET_STEPS;
 int sortHomingOffset = sortOffsetSteps * SORT_MICROSTEPS;
 bool IsSortHoming = false;
 bool IsSortHomingOffset = false;
@@ -203,10 +226,50 @@ unsigned long timeSinceLastSortMove;
 unsigned long timeSinceLastMotorMove;
 unsigned long msgResetTimer;
 
-//debounce variables
-uint32_t triggerTimeout = static_cast<uint32_t>(DEBOUNCE_TIMEOUT);
-uint32_t debounceTime = static_cast<uint32_t>(DEBOUNCE_PAUSE_TIME);
 bool proxActivated = false;
+
+void emitV1Response(void *, V1Response response) {
+  switch (response) {
+#define CS71_EMIT_V1_RESPONSE(name, text) \
+  case V1Response::name:                  \
+    Serial.print(F(text));                 \
+    return;
+    CS71_V1_RESPONSE_LIST(CS71_EMIT_V1_RESPONSE)
+#undef CS71_EMIT_V1_RESPONSE
+  }
+}
+
+#if PROTOCOL_V2_ENABLED
+ResponseSink responseSink = {0, emitV1Response, 0};
+#else
+ResponseSink responseSink = {0, emitV1Response};
+#endif
+
+void emitV1ConfigurationText(void *, V1ConfigurationText text) {
+  switch (text) {
+#define CS71_EMIT_V1_CONFIGURATION_TEXT(name, value) \
+  case V1ConfigurationText::name:                    \
+    Serial.print(F(value));                           \
+    return;
+    CS71_V1_CONFIGURATION_TEXT_LIST(CS71_EMIT_V1_CONFIGURATION_TEXT)
+#undef CS71_EMIT_V1_CONFIGURATION_TEXT
+  }
+}
+
+void emitV1Unsigned(void *, uint32_t value) {
+  Serial.print(value);
+}
+
+void emitV1Version(void *) {
+  Serial.print(F(FIRMWARE_VERSION));
+  Serial.print(F("\n"));
+}
+
+V1OutputWriter v1OutputWriter = {
+    0, emitV1Response, emitV1ConfigurationText, emitV1Unsigned, emitV1Version};
+V1DispatchLimits v1DispatchLimits = {
+    MAX_AVR_INT, MAX_STANDBY_TIMEOUT_SECONDS, SORT_FULL_REVOLUTION_STEPS,
+    SORT_MICROSTEPS};
 
 bool executionBusy() {
   return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
@@ -214,16 +277,6 @@ bool executionBusy() {
          feedCompletion.isActive() || SortInProgress || slotDropGate.isActive() ||
          IsSorting || IsSortHoming || IsSortHomingOffset ||
          sorterJog.isActive() || IsTestCycle || IsSortTestCycle;
-}
-
-bool commandRequiresHomedPosition(const char *command) {
-  if (isNumericCommand(command)) {
-    return true;
-  }
-  return strncmp(command, "xf:", 3) == 0 ||
-         strncmp(command, "sortto:", 7) == 0 ||
-         strncmp(command, "test:", 5) == 0 ||
-         strncmp(command, "sorttest:", 9) == 0;
 }
 
 void clearPendingCommand() {
@@ -320,13 +373,13 @@ void enterStoppedState() {
   proxActivated = false;
   proximitySettler.reset();
   clearPendingCommand();
-  Serial.print(F("stopped\n"));
 }
 
 
 void setup() {
   Serial.begin(9600);
-  Serial.print(F("Ready\n"));
+  protocolSession.reset();
+  responseSink.v1(V1Response::Ready);
   
   setSorterMotorSpeed(SORT_MOTOR_SPEED);
   setFeedMotorSpeed(FEED_MOTOR_SPEED);
@@ -379,435 +432,113 @@ int FreeMem(){
   return(int) &v - (__brkval ==0 ? (int) &__heap_start : (int) __brkval);
 }
 
-const char *commandValue(const char *command, const char *prefix) {
-  const size_t prefixLength = strlen(prefix);
-  return strncmp(command, prefix, prefixLength) == 0
-             ? command + prefixLength
-             : 0;
-}
-
-bool parseAvrInt(const char *text, uint32_t minimum, uint32_t maximum,
-                 int *value) {
-  uint32_t parsed;
-  if (!parseUint32(text, maximum, &parsed) || parsed < minimum) {
-    return false;
+void applyV1Action(const V1DispatchResult &result) {
+  switch (result.action) {
+    case V1Action::Stop:
+      enterStoppedState();
+      return;
+    case V1Action::HomeFeeder:
+      digitalWrite(MOTOR_Enable, LOW);
+      machineState.beginRecovery(MachineAxis::Feeder);
+      feedDelayMS = 400;
+      FeedSteps = feedMicroSteps;
+      FeedHomingOffsetSteps = 0;
+      FeedCycleInProgress = false;
+      FeedCycleComplete = false;
+      IsFeedError = false;
+      IsFeeding = false;
+      IsFeedHomingOffset = false;
+      IsFeedHoming = true;
+      return;
+    case V1Action::HomeSorter:
+      digitalWrite(MOTOR_Enable, LOW);
+      machineState.beginRecovery(MachineAxis::Sorter);
+      sortDelayMS = 400;
+      SortComplete = false;
+      IsSorting = false;
+      IsSortHomingOffset = false;
+      SortHomingOffsetSteps = 0;
+      homingSteps = 0;
+      IsSortHoming = false;
+      jogSorter(false);
+      return;
+    case V1Action::QueueFeed:
+    case V1Action::QueueForcedFeed:
+      forceFeed = result.action == V1Action::QueueForcedFeed;
+      moveSorterToNextPosition(result.value);
+      FeedScheduled = true;
+      IsFeeding = false;
+      scheduleRun();
+      return;
+    case V1Action::SortTo:
+      moveSorterToPosition(result.value);
+      return;
+    case V1Action::StartTest:
+      IsTestCycle = true;
+      testCycleInterval = result.value;
+      testsCompleted = 0;
+      FeedScheduled = false;
+      FeedCycleInProgress = false;
+      return;
+    case V1Action::StartSortTest:
+      IsSortTestCycle = true;
+      sortTestPacing.cancel();
+      testCycleInterval = result.value;
+      testsCompleted = 0;
+      return;
+    case V1Action::ApplyFeedSpeed:
+      setFeedMotorSpeed(feedSpeed);
+      return;
+    case V1Action::ApplySortSpeed:
+      setSorterMotorSpeed(sortSpeed);
+      return;
+    case V1Action::ApplyFeedHomingOffset:
+      feedHomingOffset = feedOffsetSteps * FEED_MICROSTEPS;
+      FeedHomingOffsetSteps = feedHomingOffset;
+      return;
+    case V1Action::ApplySortHomingOffset:
+      sortHomingOffset = sortOffsetSteps * SORT_MICROSTEPS;
+      SortHomingOffsetSteps = sortHomingOffset;
+      return;
+    case V1Action::ApplyFeedSteps:
+      feedMicroSteps = feedSteps * FEED_MICROSTEPS;
+      feedOverTravelSteps =
+          feedMicroSteps - (FEED_OVERSTEP_THRESHOLD * FEED_MICROSTEPS);
+      return;
+    case V1Action::ApplyDropDelay:
+      dropDelay = airDropEnabled ? feedCyclePostDelay : slotDropDelay;
+      return;
+    case V1Action::ApplyAutoMotorStandbyTimeout:
+      autoMotorStandbyTimeoutMs = autoMotorStandbyTimeout * 1000UL;
+      return;
+    case V1Action::ApplyCameraLedLevel:
+      adjustCameraLED(result.value);
+      return;
+    default:
+      return;
   }
-  *value = static_cast<int>(parsed);
-  return true;
 }
 
-int maximumSortPosition(int stepSeparation) {
-  return static_cast<int>(
-      maximumRepresentableSlotCount(stepSeparation, SORT_MICROSTEPS) - 1UL);
-}
-
-bool parseSortPosition(const char *text, int *position) {
-  const uint32_t maximumPosition = maximumSortPosition(sortSteps);
-  return parseAvrInt(text, 0, maximumPosition, position);
-}
-
-bool isNumericCommand(const char *command) {
-  return (command[0] >= '0' && command[0] <= '9') ||
-         ((command[0] == '-' || command[0] == '+') &&
-          command[1] >= '0' && command[1] <= '9');
+void handleV1Frame(V1FrameStatus status, const char *command, size_t length,
+                   bool dispatchingPending = false) {
+  V1DispatchContext context = {
+      machineState.isRunning(), executionBusy(),
+      pendingCommand.available() && !dispatchingPending, qPos1, qPos2};
+  V1DispatchResult result = dispatchV1Frame(
+      status, command, length, context, &configuration, v1DispatchLimits);
+  if (result.action == V1Action::QueuePending) {
+    if (!pendingCommand.enqueue(command, length)) {
+      responseSink.v1(V1Response::Busy);
+    }
+    return;
+  }
+  applyV1Action(result);
+  writeV1Output(result, configuration, UseArduinoPWMDimmer == true,
+                v1OutputWriter);
 }
 
 void dispatchCommand(const char *command) {
-      int parsedInt;
-      const char *value;
-
-      if (strcmp(command, "stop") == 0) {
-        enterStoppedState();
-        return;
-      }
-
-      if (!machineState.isRunning() &&
-          commandRequiresHomedPosition(command)) {
-        Serial.print(F("error:not homed\n"));
-        return;
-      }
-
-      if (isNumericCommand(command)) {
-        if (!parseSortPosition(command, &parsedInt)) {
-          Serial.print(F("error:invalid slot\n"));
-          return;
-        }
-        moveSorterToNextPosition(parsedInt);
-        FeedScheduled = true;
-        IsFeeding = false;
-        scheduleRun();
-        return;
-      }
-
-      if (strcmp(command, "version") == 0) {
-        Serial.print(F(FIRMWARE_VERSION));
-        Serial.print(F("\n"));
-        return;
-      }
-
-      if (strcmp(command, "homefeeder") == 0) {
-        digitalWrite(MOTOR_Enable, LOW);
-        machineState.beginRecovery(MachineAxis::Feeder);
-        feedDelayMS = 400;
-        FeedSteps = feedMicroSteps;
-        FeedHomingOffsetSteps = 0;
-        FeedCycleInProgress = false;
-        FeedCycleComplete = false;
-        IsFeedError = false;
-        IsFeeding = false;
-        IsFeedHomingOffset = false;
-        IsFeedHoming = true;
-        Serial.print(F("ok\n"));
-        return;
-      } 
-      if (strcmp(command, "homesorter") == 0) {
-        digitalWrite(MOTOR_Enable, LOW);
-        machineState.beginRecovery(MachineAxis::Sorter);
-        sortDelayMS = 400;
-        SortComplete = false;
-        IsSorting = false;
-        IsSortHomingOffset = false;
-        SortHomingOffsetSteps = 0;
-        homingSteps = 0;
-        IsSortHoming = false;
-        jogSorter(false);
-        Serial.print(F("ok\n"));
-        return;
-      } 
-
-      value = commandValue(command, "sortto:");
-      if (value != 0) {
-        if (!parseSortPosition(value, &parsedInt)) {
-          Serial.print(F("error:invalid sortto\n"));
-          return;
-        }
-        moveSorterToPosition(parsedInt);
-        Serial.print(F("ok\n"));
-        return;
-      } 
-
-      value = commandValue(command, "xf:");
-      if (value != 0) {
-        if (!parseSortPosition(value, &parsedInt)) {
-          Serial.print(F("error:invalid xf\n"));
-          return;
-        }
-        forceFeed = true;
-        moveSorterToNextPosition(parsedInt);
-        FeedScheduled = true;
-        IsFeeding = false;
-        scheduleRun();
-        return;
-      }
-
-      if (strcmp(command, "getconfig") == 0) {
-     
-        Serial.print(F("{\"FeedMotorSpeed\":"));
-        Serial.print(feedSpeed);
-
-        Serial.print(F(",\"FeedCycleSteps\":"));
-        Serial.print(feedSteps);
-
-        Serial.print(F(",\"SortMotorSpeed\":"));
-        Serial.print(sortSpeed);
-
-        Serial.print(F(",\"SortSteps\":"));
-        Serial.print(sortSteps);
-
-        Serial.print(F(",\"NotificationDelay\":"));
-        Serial.print(notificationDelay);
-
-        Serial.print(F(",\"SlotDropDelay\":"));
-        Serial.print(slotDropDelay);
-
-        Serial.print(F(",\"AirDropEnabled\":"));
-        Serial.print(airDropEnabled);
-
-        Serial.print(F(",\"AirDropPostDelay\":"));
-        Serial.print(feedCyclePostDelay);
-
-        Serial.print(F(",\"AirDropPreDelay\":"));
-        Serial.print(feedCyclePreDelay);
-
-        Serial.print(F(",\"AirDropSignalTime\":"));
-        Serial.print(feedCycleSignalTime);
-
-        Serial.print(F(",\"FeedHomingOffset\":"));
-        Serial.print(feedOffsetSteps);
-        
-         Serial.print(F(",\"SortHomingOffset\":"));
-        Serial.print(sortOffsetSteps);
-
-        Serial.print(F(",\"AutoMotorStandbyTimeout\":"));
-        Serial.print(autoMotorStandbyTimeout);
-        
-        Serial.print(F(",\"DebounceTimeout\":"));
-        Serial.print(triggerTimeout);
-
-        Serial.print(F(",\"DebouncePauseTime\":"));
-        Serial.print(debounceTime);
-
-        #if UseArduinoPWMDimmer == true 
-                Serial.print(F(",\"CameraLEDLevel\":"));
-                Serial.print(cameraLEDLevel);
-        #endif
-   
-        Serial.print(F("}\n"));
-        return;      
-      }
-
-      value = commandValue(command, "debounceTimeout:");
-      if (value != 0) {
-          if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-            Serial.print(F("error:invalid debounceTimeout\n"));
-            return;
-          }
-          triggerTimeout = static_cast<uint32_t>(parsedInt);
-          Serial.print(F("ok\n"));
-          return;
-      }
-
-      value = commandValue(command, "debounceTime:");
-      if (value != 0) {
-          if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-            Serial.print(F("error:invalid debounceTime\n"));
-            return;
-          }
-          debounceTime = static_cast<uint32_t>(parsedInt);
-          Serial.print(F("ok\n"));
-          return;
-      }
-
-       //set feed speed. Values 1-100. Def 60
-      value = commandValue(command, "feedspeed:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 1, 100, &parsedInt)) {
-          Serial.print(F("error:invalid feedspeed\n"));
-          return;
-        }
-        feedSpeed = parsedInt;
-        setFeedMotorSpeed(feedSpeed);
-        Serial.print(F("ok\n"));
-        return;
-      }
-      //set feed homing offset
-      value = commandValue(command, "feedhomingoffset:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, SORT_FULL_REVOLUTION_STEPS, &parsedInt)) {
-          Serial.print(F("error:invalid feedhomingoffset\n"));
-          return;
-        }
-        feedOffsetSteps = parsedInt;
-        feedHomingOffset = feedOffsetSteps * FEED_MICROSTEPS; //48
-        FeedHomingOffsetSteps = feedHomingOffset; //48
-
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      value = commandValue(command, "sorthomingoffset:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, SORT_FULL_REVOLUTION_STEPS, &parsedInt)) {
-          Serial.print(F("error:invalid sorthomingoffset\n"));
-          return;
-        }
-        sortOffsetSteps = parsedInt;
-        sortHomingOffset = sortOffsetSteps * SORT_MICROSTEPS; //48
-        SortHomingOffsetSteps = sortHomingOffset; //48
-
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      value = commandValue(command, "sortspeed:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 1, 100, &parsedInt)) {
-          Serial.print(F("error:invalid sortspeed\n"));
-          return;
-        }
-        sortSpeed = parsedInt;
-        setSorterMotorSpeed(sortSpeed);
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      //set sort steps. Values 1-100. Def 20
-      value = commandValue(command, "sortsteps:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 1, 100, &parsedInt)) {
-          Serial.print(F("error:invalid sortsteps\n"));
-          return;
-        }
-        const int maximumPosition = maximumSortPosition(parsedInt);
-        if (qPos1 > maximumPosition || qPos2 > maximumPosition ||
-            !isSlotCountRepresentable(slotCount, parsedInt, SORT_MICROSTEPS)) {
-          Serial.print(F("error:invalid sortsteps\n"));
-          return;
-        }
-        sortSteps = parsedInt;
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      value = commandValue(command, "slotcount:");
-      if (value != 0) {
-        uint32_t parsedSlotCount;
-        const uint32_t maximumSlotCount =
-            maximumRepresentableSlotCount(sortSteps, SORT_MICROSTEPS);
-        if (!parseUint32(value, maximumSlotCount, &parsedSlotCount) ||
-            !isSlotCountRepresentable(parsedSlotCount, sortSteps,
-                                      SORT_MICROSTEPS)) {
-          Serial.print(F("error:invalid slotcount\n"));
-          return;
-        }
-        slotCount = parsedSlotCount;
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      //set feed steps. Values 1-1000. Def 100
-      value = commandValue(command, "feedsteps:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 1, 1000, &parsedInt)) {
-          Serial.print(F("error:invalid feedsteps\n"));
-          return;
-        }
-        feedSteps = parsedInt;
-        feedMicroSteps = feedSteps * FEED_MICROSTEPS;
-        feedOverTravelSteps = feedMicroSteps - (FEED_OVERSTEP_THRESHOLD * FEED_MICROSTEPS);
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "notificationdelay:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid notificationdelay\n"));
-          return;
-        }
-        notificationDelay = parsedInt;
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "slotdropdelay:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid slotdropdelay\n"));
-          return;
-        }
-        slotDropDelay = parsedInt;
-        dropDelay =  airDropEnabled ? feedCyclePostDelay: slotDropDelay;
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "airdropenabled:");
-      if (value != 0) {
-        bool parsedBool;
-        if (!parseBool(value, &parsedBool)) {
-          Serial.print(F("error:invalid airdropenabled\n"));
-          return;
-        }
-        airDropEnabled = parsedBool;
-        dropDelay =  airDropEnabled ? feedCyclePostDelay: slotDropDelay;
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      value = commandValue(command, "airdroppostdelay:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid airdroppostdelay\n"));
-          return;
-        }
-        feedCyclePostDelay = parsedInt;
-        dropDelay =  airDropEnabled ? feedCyclePostDelay: slotDropDelay;
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "airdroppredelay:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid airdroppredelay\n"));
-          return;
-        }
-        feedCyclePreDelay = parsedInt;
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "airdropdsignalduration:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid airdropdsignalduration\n"));
-          return;
-        }
-        feedCycleSignalTime = parsedInt;
-        Serial.print(F("ok\n"));
-        return;
-      }
-
-      value = commandValue(command, "automotorstandbytimeout:");
-      if (value != 0) {
-        uint32_t timeoutSeconds;
-        uint32_t timeoutMilliseconds;
-        if (!parseUint32(value, MAX_STANDBY_TIMEOUT_SECONDS, &timeoutSeconds) ||
-            !secondsToMilliseconds(timeoutSeconds, &timeoutMilliseconds)) {
-          Serial.print(F("error:invalid automotorstandbytimeout\n"));
-          return;
-        }
-        autoMotorStandbyTimeout = timeoutSeconds;
-        autoMotorStandbyTimeoutMs = timeoutMilliseconds;
-        Serial.print(F("ok\n"));
-        return;
-      }
-      value = commandValue(command, "cameraledlevel:");
-      if (value != 0) {
-         int32_t parsedLevel;
-         if (!parseInt32(value, INT32_MIN, INT32_MAX, &parsedLevel)) {
-           Serial.print(F("error:invalid cameraledlevel\n"));
-           return;
-         }
-         adjustCameraLED(parsedLevel);
-         //Serial.print(F("LED: "));
-         //Serial.print((float)cameraLEDLevel/255.0*100.0);
-         //Serial.print(F("%\n"));
-         Serial.print(F("ok\n"));
-         return;
-       }
-
-      value = commandValue(command, "test:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid test\n"));
-          return;
-        }
-        IsTestCycle=true;
-        testCycleInterval=parsedInt;
-        testsCompleted=0;
-        FeedScheduled=false;
-        FeedCycleInProgress=false;
-        Serial.print(F("testing started\n"));
-        return;
-      }
-
-      value = commandValue(command, "sorttest:");
-      if (value != 0) {
-        if (!parseAvrInt(value, 0, MAX_AVR_INT, &parsedInt)) {
-          Serial.print(F("error:invalid sorttest\n"));
-          return;
-        }
-        IsSortTestCycle=true;
-        sortTestPacing.cancel();
-        testCycleInterval=parsedInt;
-        testsCompleted=0;
-        Serial.print(F("testing started\n"));
-        return;
-      }
-
-      if (strcmp(command, "ping") == 0) {
-        //Serial.print(FreeMem());
-        Serial.print(F(" ok\n"));
-        return;
-      }
-      Serial.print(F("ok\n"));
+  handleV1Frame(V1FrameStatus::Ready, command, strlen(command));
 }
 
 void checkSerial(){
@@ -815,29 +546,19 @@ void checkSerial(){
     const CommandParser::Result result =
         commandParser.consume(static_cast<char>(Serial.read()));
     if (result == CommandParser::FrameOverflow) {
-      Serial.print(F("error:command too long\n"));
+      handleV1Frame(V1FrameStatus::TooLong, 0, 0);
     } else if (result == CommandParser::FrameInvalid) {
-      Serial.print(F("error:invalid command\n"));
+      handleV1Frame(V1FrameStatus::Invalid, 0, 0);
     } else if (result == CommandParser::FrameReady) {
       const char *frame = commandParser.frame();
-      if (strcmp(frame, "stop") == 0) {
-        enterStoppedState();
-      } else if (!machineState.isRunning() &&
-                 commandRequiresHomedPosition(frame)) {
-        Serial.print(F("error:not homed\n"));
-      } else if (executionBusy() || pendingCommand.available()) {
-        if (!pendingCommand.enqueue(frame, commandParser.length())) {
-          Serial.print(F("error:busy\n"));
-        }
-      } else {
-        dispatchCommand(frame);
-      }
+      handleV1Frame(V1FrameStatus::Ready, frame, commandParser.length());
       commandParser.reset();
     }
   }
 
   if (pendingCommand.available() && !executionBusy()) {
-    dispatchCommand(pendingCommand.frame());
+    handleV1Frame(V1FrameStatus::Ready, pendingCommand.frame(),
+                  strlen(pendingCommand.frame()), true);
     pendingCommand.clear();
   }
 }
@@ -1069,7 +790,7 @@ void checkFeedErrors(){
       cancelFeedCompletion();
       proximitySettler.reset();
       cancelDiagnosticCycles();
-      Serial.println(F("error:feed overtravel detected"));
+      responseSink.v1(V1Response::FeedOvertravel);
   }
 }
 void onFeedComplete(uint32_t now){
@@ -1103,7 +824,7 @@ void onFeedComplete(uint32_t now){
     } else if (event == FeedCompletionEvent::SignalLow) {
       digitalWrite(FEED_DONE_SIGNAL, LOW);
     } else if (event == FeedCompletionEvent::Notify) {
-      Serial.print(F("done\n"));
+      responseSink.v1(V1Response::Done);
       FeedCycleComplete = false;
       forceFeed = false;
       return;
@@ -1130,7 +851,7 @@ void scheduleRun(){
       theTime = millis();
       if(theTime - msgResetTimer > 1000){
          // Serial.flush();
-          Serial.println(F("waiting for brass"));
+          responseSink.v1(V1Response::WaitingForBrass);
          
           msgResetTimer = millis();
       }

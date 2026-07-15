@@ -26,5 +26,7 @@ jobs:
         run: pip install --disable-pip-version-check platformio==6.1.19
       - name: Compile Arduino Uno firmware
         run: pio run -e uno
+      - name: Compile Arduino Uno v2 foundation
+        run: pio run -e uno_v2
       - name: Run native tests
         run: pio test -e native

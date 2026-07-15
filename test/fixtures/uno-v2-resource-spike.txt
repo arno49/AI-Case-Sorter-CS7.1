@@ -1,0 +1,18 @@
+CS7.1 firmware Protocol V2 foundation resource spike
+baseline_fixture=test/fixtures/uno-resource-baseline.txt
+baseline_flash_used_bytes=14246
+baseline_static_sram_used_bytes=820
+environment=uno_v2
+build_flag=PROTOCOL_V2_ENABLED=1
+compatibility_flash_used_bytes=16768
+compatibility_flash_delta_bytes=2522
+compatibility_static_sram_used_bytes=882
+compatibility_static_sram_delta_bytes=62
+flash_used_bytes=16770
+flash_available_bytes=32256
+flash_delta_bytes=2524
+static_sram_used_bytes=884
+static_sram_available_bytes=2048
+static_sram_delta_bytes=64
+measurement_command=pio run -e uno_v2
+scope=V2 foundation plus shared native-testable v1 dispatch and streaming v1 configuration output; no v2 framing, negotiation, or structured wire output is implemented.
