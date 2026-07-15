@@ -114,7 +114,7 @@ void test_session_resets_to_v1() {
                     static_cast<int>(session.mode()));
 }
 
-void test_startup_inspection_and_negotiation_wire_golden() {
+void test_startup_inspection_and_default_negotiation_wire_golden() {
   Configuration configuration = defaultConfiguration();
   WireCapture capture = {{0}, 0};
   const V1DispatchResult startup = {V1Action::None, V1Output::Response,
@@ -333,7 +333,7 @@ void test_asynchronous_wire_literals_are_byte_exact() {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_session_resets_to_v1);
-  RUN_TEST(test_startup_inspection_and_negotiation_wire_golden);
+  RUN_TEST(test_startup_inspection_and_default_negotiation_wire_golden);
   RUN_TEST(test_framing_wire_golden);
   RUN_TEST(test_every_valid_setter_changes_shared_configuration);
   RUN_TEST(test_every_invalid_setter_wire_golden);

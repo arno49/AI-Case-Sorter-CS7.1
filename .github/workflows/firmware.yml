@@ -30,3 +30,5 @@ jobs:
         run: pio run -e uno_v2
       - name: Run native tests
         run: pio test -e native
+      - name: Run native v2 session tests
+        run: pio test -e native_v2

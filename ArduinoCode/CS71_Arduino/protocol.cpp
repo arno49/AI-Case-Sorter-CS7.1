@@ -14,11 +14,121 @@ ProtocolMode ProtocolSession::mode() const {
 
 void ProtocolSession::reset() {
   mode_ = ProtocolMode::V1;
+#if PROTOCOL_V2_ENABLED
+  activeRequestId_ = 0;
+  eventSequence_ = 0;
+  crcEnabled_ = false;
+#endif
 }
 
 #if PROTOCOL_V2_ENABLED
-void ProtocolSession::setMode(ProtocolMode mode) {
-  mode_ = mode;
+void ProtocolSession::enterV2() {
+  mode_ = ProtocolMode::V2;
+  activeRequestId_ = 0;
+  eventSequence_ = 1;
+  crcEnabled_ = false;
+}
+
+uint16_t ProtocolSession::activeRequestId() const {
+  return activeRequestId_;
+}
+
+uint16_t ProtocolSession::eventSequence() const {
+  return eventSequence_;
+}
+
+bool ProtocolSession::crcEnabled() const {
+  return crcEnabled_;
+}
+
+static bool isExact(const char *command, size_t length, const char *expected) {
+  return command != 0 && strlen(expected) == length &&
+         memcmp(command, expected, length) == 0;
+}
+
+V2NegotiationAction dispatchV2Negotiation(const char *command, size_t length,
+                                          bool executionBusy,
+                                          bool pendingCommand) {
+  if (isExact(command, length, "protocol:2?")) {
+    return executionBusy || pendingCommand ? V2NegotiationAction::Busy
+                                           : V2NegotiationAction::Discovery;
+  }
+  if (isExact(command, length, "protocol:2")) {
+    return executionBusy || pendingCommand ? V2NegotiationAction::Busy
+                                           : V2NegotiationAction::Activate;
+  }
+  return V2NegotiationAction::NotHandled;
+}
+
+static bool parseV2RequestId(const char *command, size_t length,
+                             uint16_t *requestId, size_t *payloadOffset) {
+  if (command == 0 || requestId == 0 || payloadOffset == 0) return false;
+  *requestId = 0;
+  *payloadOffset = 0;
+  if (length == 0 || command[0] != '@') return true;
+
+  uint32_t value = 0;
+  size_t index = 1;
+  const size_t firstDigit = index;
+  while (index < length && command[index] >= '0' && command[index] <= '9') {
+    value = value * 10U + static_cast<uint8_t>(command[index] - '0');
+    if (value > 65535U) return false;
+    ++index;
+  }
+  if (index == firstDigit || value == 0 || index >= length ||
+      command[index] != ' ')
+    return false;
+  *requestId = static_cast<uint16_t>(value);
+  *payloadOffset = index + 1;
+  return true;
+}
+
+V2Protocol1Action dispatchV2Protocol1(const char *command, size_t length,
+                                       bool executionBusy,
+                                       bool pendingCommand,
+                                       uint16_t *requestId) {
+  size_t payloadOffset;
+  if (!parseV2RequestId(command, length, requestId, &payloadOffset) ||
+      !isExact(command + payloadOffset, length - payloadOffset, "protocol:1"))
+    return V2Protocol1Action::NotHandled;
+  return executionBusy || pendingCommand ? V2Protocol1Action::Busy
+                                         : V2Protocol1Action::ReturnToV1;
+}
+
+const char *v2DiscoveryResponse() {
+  return "protocol:2 available\n";
+}
+
+const char *v2ActivationResponse() {
+  return "protocol:2 ready\n";
+}
+
+static size_t appendV2Text(char *buffer, size_t capacity, size_t length,
+                           const char *text) {
+  while (*text != '\0' && length + 1 < capacity) {
+    buffer[length++] = *text++;
+  }
+  return length;
+}
+
+size_t formatV2Protocol1Response(char *buffer, size_t capacity,
+                                 uint16_t requestId, bool busy) {
+  if (buffer == 0 || capacity == 0) return 0;
+  char digits[5];
+  size_t digitCount = 0;
+  do {
+    digits[digitCount++] = static_cast<char>('0' + requestId % 10U);
+    requestId /= 10U;
+  } while (requestId != 0 && digitCount < sizeof(digits));
+
+  size_t length = appendV2Text(buffer, capacity, 0, "@");
+  while (digitCount > 0 && length + 1 < capacity) {
+    buffer[length++] = digits[--digitCount];
+  }
+  length = appendV2Text(buffer, capacity, length,
+                        busy ? " error:2001:busy\n" : " done:protocol=1\n");
+  buffer[length] = '\0';
+  return length;
 }
 #endif
 

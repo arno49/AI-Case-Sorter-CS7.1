@@ -25,12 +25,47 @@ class ProtocolSession {
   void reset();
 
 #if PROTOCOL_V2_ENABLED
-  void setMode(ProtocolMode mode);
+  void enterV2();
+  uint16_t activeRequestId() const;
+  uint16_t eventSequence() const;
+  bool crcEnabled() const;
 #endif
 
  private:
   ProtocolMode mode_;
+#if PROTOCOL_V2_ENABLED
+  uint16_t activeRequestId_;
+  uint16_t eventSequence_;
+  bool crcEnabled_;
+#endif
 };
+
+#if PROTOCOL_V2_ENABLED
+enum class V2NegotiationAction : uint8_t {
+  NotHandled,
+  Discovery,
+  Activate,
+  Busy
+};
+
+enum class V2Protocol1Action : uint8_t {
+  NotHandled,
+  ReturnToV1,
+  Busy
+};
+
+V2NegotiationAction dispatchV2Negotiation(const char *command, size_t length,
+                                          bool executionBusy,
+                                          bool pendingCommand);
+V2Protocol1Action dispatchV2Protocol1(const char *command, size_t length,
+                                       bool executionBusy,
+                                       bool pendingCommand,
+                                       uint16_t *requestId);
+const char *v2DiscoveryResponse();
+const char *v2ActivationResponse();
+size_t formatV2Protocol1Response(char *buffer, size_t capacity,
+                                 uint16_t requestId, bool busy);
+#endif
 
 #define CS71_V1_RESPONSE_LIST(X)                                            \
   X(Ready, "Ready\n")                                                        \

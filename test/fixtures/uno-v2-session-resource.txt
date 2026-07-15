@@ -1,0 +1,26 @@
+CS7.1 firmware Protocol V2 session-negotiation resources
+baseline_fixture=test/fixtures/uno-resource-baseline.txt
+foundation_fixture=test/fixtures/uno-v2-resource-spike.txt
+environment=uno
+build_flag=PROTOCOL_V2_ENABLED=0
+flash_used_bytes=16800
+flash_available_bytes=32256
+static_sram_used_bytes=882
+static_sram_available_bytes=2048
+baseline_flash_delta_bytes=2554
+baseline_static_sram_delta_bytes=62
+measurement_command=pio run -e uno
+v2_environment=uno_v2
+v2_build_flag=PROTOCOL_V2_ENABLED=1
+v2_flash_used_bytes=17740
+v2_flash_available_bytes=32256
+v2_static_sram_used_bytes=959
+v2_static_sram_available_bytes=2048
+baseline_v2_flash_delta_bytes=3494
+baseline_v2_static_sram_delta_bytes=139
+foundation_v2_flash_delta_bytes=970
+foundation_v2_static_sram_delta_bytes=75
+v2_over_default_flash_delta_bytes=940
+v2_over_default_static_sram_delta_bytes=77
+measurement_command_v2=pio run -e uno_v2
+scope=V2-03 exact discovery, activation, session reset, and minimal protocol:1 return; CRC remains disabled.
