@@ -1,0 +1,20 @@
+# Hardware-only v1 qualification record
+#
+# These observations require representative CS7.1 hardware and are intentionally
+# not marked as captured by native tests.
+
+firmware=7.1.260714.6
+status=NOT_EXECUTED
+
+startup_jog_and_dual_home=NOT_EXECUTED
+homefeeder_ack_before_physical_completion=NOT_EXECUTED
+homesorter_ack_before_physical_completion=NOT_EXECUTED
+sortto_ack_before_physical_completion=NOT_EXECUTED
+numeric_feed_two_position_queue=NOT_EXECUTED
+forced_feed_two_position_queue=NOT_EXECUTED
+feed_done_after_notification_delay=NOT_EXECUTED
+feed_overtravel_output_and_motor_disable=NOT_EXECUTED
+stop_latency_and_feed_done_signal_low=NOT_EXECUTED
+airdrop_signal_timing=NOT_EXECUTED
+windows_application_1.1.46_or_newer=NOT_EXECUTED
+
