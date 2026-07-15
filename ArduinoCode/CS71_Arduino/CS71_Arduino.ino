@@ -1,4 +1,4 @@
-/// VERSION CS 7.1.260714.3 ///
+/// VERSION CS 7.1.260714.4 ///
 /// REQUIRES AI SORTER SOFTWARE VERSION 1.1.46 or newer
 
 #include <Wire.h>
@@ -8,9 +8,10 @@
 #include "feed_completion.h"
 #include "logic.h"
 #include "machine_state.h"
+#include "proximity_settler.h"
 #include "runtime_timer.h"
 
-#define FIRMWARE_VERSION "7.1.260714.3"
+#define FIRMWARE_VERSION "7.1.260714.4"
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -107,11 +108,11 @@ static_assert(AUTO_MOTORSTANDBY_TIMEOUT <= MAX_STANDBY_TIMEOUT_SECONDS,
 
 //DEBOUNCE is a feature to counteract case bounce which can occur if the machine runs out of brass and a peice of brass drops a distance from
 //from the collator to the feeder. It developes speed and bounces of the prox sensor triggering the sensor and bouncing back up to cause a jam. 
-//this seeks to eliminate that by adding a small pause to let the case bounce and settle. 
+//this requires the sensor to remain continuously active while the case settles.
 
 #define DEBOUNCE_TIMEOUT 300 //default 500. The number of milliseconds without sensor activation (meaning no brass in the feed) required to trigger a debounce pause.
 
-#define DEBOUNCE_PAUSE_TIME 500 //default 500.  Set to 0 to disable. The number of milliseconds to pause to wait for case to settle. 
+#define DEBOUNCE_PAUSE_TIME 500 //default 500. Set to 0 to disable. The number of milliseconds the sensor must remain continuously active.
 
 
 ///END OF USER CONFIGURATIONS ///
@@ -163,6 +164,7 @@ CommandParser commandParser;
 FeedCompletion feedCompletion;
 MachineState machineState;
 PendingCommand pendingCommand;
+ProximitySettler proximitySettler;
 int qPos1 = 0;
 int qPos2 = 0;
 int sortStepsToNextPosition = 0;
@@ -189,11 +191,9 @@ unsigned long timeSinceLastMotorMove;
 unsigned long msgResetTimer;
 
 //debounce variables
-unsigned long lastTrigger = millis();
-int triggerTimeout = DEBOUNCE_TIMEOUT;
-int debounceTime= DEBOUNCE_PAUSE_TIME;
+uint32_t triggerTimeout = static_cast<uint32_t>(DEBOUNCE_TIMEOUT);
+uint32_t debounceTime = static_cast<uint32_t>(DEBOUNCE_PAUSE_TIME);
 bool proxActivated = false;
-bool sensorDelay = false;
 
 bool executionBusy() {
   return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
@@ -294,7 +294,7 @@ void enterStoppedState() {
   testsCompleted = 0;
   forceFeed = false;
   proxActivated = false;
-  sensorDelay = false;
+  proximitySettler.reset();
   clearPendingCommand();
   Serial.print(F("stopped\n"));
 }
@@ -542,7 +542,7 @@ void dispatchCommand(const char *command) {
             Serial.print(F("error:invalid debounceTimeout\n"));
             return;
           }
-          triggerTimeout = parsedInt;
+          triggerTimeout = static_cast<uint32_t>(parsedInt);
           Serial.print(F("ok\n"));
           return;
       }
@@ -553,7 +553,7 @@ void dispatchCommand(const char *command) {
             Serial.print(F("error:invalid debounceTime\n"));
             return;
           }
-          debounceTime = parsedInt;
+          debounceTime = static_cast<uint32_t>(parsedInt);
           Serial.print(F("ok\n"));
           return;
       }
@@ -1018,6 +1018,7 @@ void checkFeedErrors(){
       }
       digitalWrite(MOTOR_Enable, HIGH);
       cancelFeedCompletion();
+      proximitySettler.reset();
       Serial.println(F("error:feed overtravel detected"));
   }
 }
@@ -1091,42 +1092,15 @@ void scheduleRun(){
 
 
 void getProxState(){
-
-  //if the sensor is triggered, update the last trigger time and set the variable proxActivated
-  if(digitalRead(FEED_SENSOR) == FEEDSENSOR_TYPE){
-      proxActivated=true;
-      lastTrigger = millis();
-      return;
-  }
-
-  //sensor is not triggered, set the offTimer and set the variable to false
-  proxActivated=false;
-    
-  //check to see if the time since last trigger is longer than the timeout, if so set the delay variable. 
-  if(millis() - lastTrigger > triggerTimeout){
-    sensorDelay = true;
-  }
+  const uint32_t now = millis();
+  proxActivated = digitalRead(FEED_SENSOR) == FEEDSENSOR_TYPE;
+  proximitySettler.observe(now, proxActivated, triggerTimeout);
 }
 
 bool readyToFeed()
 {
- //if feedsensor is not enabled, or it is a forcefeed,  we are always ready!
-  if(FEEDSENSOR_ENABLED==false || forceFeed==true){
-    return true;
-  }
-
-  //if no brass is detected, we are not ready
-  if(proxActivated == false){
-    return false;
-  }
-
-  //sensorDelay is calcualted in the getProxState() state method above. 
-  if(sensorDelay){
-        delay(debounceTime);
-        sensorDelay = false;
-        return false;
-  }
-   return true;
+  const bool bypass = FEEDSENSOR_ENABLED == false || forceFeed == true;
+  return proximitySettler.ready(millis(), debounceTime, bypass);
 }
 
 
