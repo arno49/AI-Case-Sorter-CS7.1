@@ -278,6 +278,14 @@ void cancelSorterJog() {
   sorterJogStartsFeedHoming = false;
 }
 
+void cancelDiagnosticCycles() {
+  IsTestCycle = false;
+  IsSortTestCycle = false;
+  sortTestPacing.cancel();
+  testCycleInterval = 0;
+  testsCompleted = 0;
+}
+
 void enterStoppedState() {
   machineState.enterStopped();
   digitalWrite(MOTOR_Enable, HIGH);
@@ -307,11 +315,7 @@ void enterStoppedState() {
   slotDropGate.cancel();
   pendingQueuedDestination = 0;
 
-  IsTestCycle = false;
-  IsSortTestCycle = false;
-  sortTestPacing.cancel();
-  testCycleInterval = 0;
-  testsCompleted = 0;
+  cancelDiagnosticCycles();
   forceFeed = false;
   proxActivated = false;
   proximitySettler.reset();
@@ -1064,6 +1068,7 @@ void checkFeedErrors(){
       digitalWrite(MOTOR_Enable, HIGH);
       cancelFeedCompletion();
       proximitySettler.reset();
+      cancelDiagnosticCycles();
       Serial.println(F("error:feed overtravel detected"));
   }
 }
