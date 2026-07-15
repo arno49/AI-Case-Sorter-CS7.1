@@ -13,6 +13,12 @@ cooperative. Serial commands, including `stop`, remain responsive between
 sorter steps and diagnostic moves. Runtime code uses no millisecond `delay()`;
 only the microsecond delays that form and pace individual step pulses remain.
 
+The `test:` and `sorttest:` diagnostics use the independent
+`SORTER_SLOT_COUNT` setting (default 8), selecting slots from 0 through 7 by
+default. It can be changed for the current session with the exact serial command
+`slotcount:{count}`; see [ArduinoCode/README.md](ArduinoCode/README.md) for
+limits and application compatibility details.
+
 ## Instructions
 Most of the information you need to build this project is available in [Instructions.pdf](Instructions.pdf).
 

@@ -1,4 +1,4 @@
-/// VERSION CS 7.1.260714.5 ///
+/// VERSION CS 7.1.260714.6 ///
 /// REQUIRES AI SORTER SOFTWARE VERSION 1.1.46 or newer
 
 #include <Wire.h>
@@ -12,7 +12,7 @@
 #include "runtime_timer.h"
 #include "step_sequence.h"
 
-#define FIRMWARE_VERSION "7.1.260714.5"
+#define FIRMWARE_VERSION "7.1.260714.6"
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -65,6 +65,13 @@ static_assert(AUTO_MOTORSTANDBY_TIMEOUT <= MAX_STANDBY_TIMEOUT_SECONDS,
 //If you have customized sorter output drops, you will need to change this setting to meet your needs. 
 //Note there are 200 steps in 1 revolution of the sorter motor. 
 #define SORTER_CHUTE_SEPERATION 20 
+// Number of slots exercised by test: and sorttest:. This is independent of
+// SORTER_CHUTE_SEPERATION and may also be changed at runtime with slotcount:.
+#define SORTER_SLOT_COUNT 8
+static_assert(
+    isSlotCountRepresentable(SORTER_SLOT_COUNT, SORTER_CHUTE_SEPERATION,
+                             SORT_MICROSTEPS),
+    "Highest diagnostic slot exceeds AVR int movement range");
 
 
 #define FEED_HOMING_OFFSET_STEPS 3 //additional steps to continue after homing sensor triggered
@@ -137,6 +144,7 @@ int feedMotorSpeed = 500;//this is default and calculated at runtime. do not cha
 
 int sortSpeed = SORT_MOTOR_SPEED; //represents a number between 1-100
 int sortSteps = SORTER_CHUTE_SEPERATION;
+uint32_t slotCount = SORTER_SLOT_COUNT;
 int sortMotorSpeed = 500;//this is default and calculated at runtime. do not change this value
 int homingSteps = 0;
 
@@ -367,8 +375,6 @@ int FreeMem(){
   return(int) &v - (__brkval ==0 ? (int) &__heap_start : (int) __brkval);
 }
 
-const uint32_t MAX_AVR_INT = 32767UL;
-
 const char *commandValue(const char *command, const char *prefix) {
   const size_t prefixLength = strlen(prefix);
   return strncmp(command, prefix, prefixLength) == 0
@@ -388,8 +394,7 @@ bool parseAvrInt(const char *text, uint32_t minimum, uint32_t maximum,
 
 int maximumSortPosition(int stepSeparation) {
   return static_cast<int>(
-      MAX_AVR_INT /
-      (static_cast<uint32_t>(stepSeparation) * SORT_MICROSTEPS));
+      maximumRepresentableSlotCount(stepSeparation, SORT_MICROSTEPS) - 1UL);
 }
 
 bool parseSortPosition(const char *text, int *position) {
@@ -630,11 +635,28 @@ void dispatchCommand(const char *command) {
           return;
         }
         const int maximumPosition = maximumSortPosition(parsedInt);
-        if (qPos1 > maximumPosition || qPos2 > maximumPosition) {
+        if (qPos1 > maximumPosition || qPos2 > maximumPosition ||
+            !isSlotCountRepresentable(slotCount, parsedInt, SORT_MICROSTEPS)) {
           Serial.print(F("error:invalid sortsteps\n"));
           return;
         }
         sortSteps = parsedInt;
+        Serial.print(F("ok\n"));
+        return;
+      }
+
+      value = commandValue(command, "slotcount:");
+      if (value != 0) {
+        uint32_t parsedSlotCount;
+        const uint32_t maximumSlotCount =
+            maximumRepresentableSlotCount(sortSteps, SORT_MICROSTEPS);
+        if (!parseUint32(value, maximumSlotCount, &parsedSlotCount) ||
+            !isSlotCountRepresentable(parsedSlotCount, sortSteps,
+                                      SORT_MICROSTEPS)) {
+          Serial.print(F("error:invalid slotcount\n"));
+          return;
+        }
+        slotCount = parsedSlotCount;
         Serial.print(F("ok\n"));
         return;
       }
@@ -828,7 +850,7 @@ void runAux(){
   //This runs the feed and sort test if scheduled
   if(IsTestCycle==true&&FeedScheduled==false&&FeedCycleInProgress==false){
     if(testsCompleted<testCycleInterval){
-       int slot = random(0,6);
+       int slot = random(0, slotCount);
          moveSorterToNextPosition(slot);
         
         FeedScheduled = true;
@@ -861,7 +883,7 @@ void runAux(){
          return;
        }
        sortTestPacing.cancel();
-       int slot = random(0,8);
+       int slot = random(0, slotCount);
        Serial.print(testsCompleted);
        Serial.print(F(" - Sorting to: "));
        Serial.println(slot);
