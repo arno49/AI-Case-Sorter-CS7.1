@@ -8,6 +8,11 @@ sensor continuously active for the configured settle time. A sensor drop
 cancels and restarts the full interval; brass already active at boot does not
 settle until a qualifying absence occurs.
 
+Sorter pre-homing jogs and the 40 ms `sorttest:` pacing interval are also
+cooperative. Serial commands, including `stop`, remain responsive between
+sorter steps and diagnostic moves. Runtime code uses no millisecond `delay()`;
+only the microsecond delays that form and pace individual step pulses remain.
+
 ## Instructions
 Most of the information you need to build this project is available in [Instructions.pdf](Instructions.pdf).
 

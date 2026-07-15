@@ -23,6 +23,7 @@ pio test -e native -f test_machine_state
 pio test -e native -f test_runtime_timer
 pio test -e native -f test_feed_completion
 pio test -e native -f test_proximity_settler
+pio test -e native -f test_step_sequence
 ```
 
 ## Serial command framing
@@ -54,8 +55,8 @@ stopped
 It disables the shared motor driver, forces the feed-done output low, cancels
 motion, homing, tests, completion notifications, and the pending command, and
 marks both axis positions unknown. Serial input is checked on each cooperative
-loop pass. The remaining diagnostic pacing `delay()` calls and the synchronous
-sorter jog still defer all serial handling, including `stop`, until they return.
+loop pass, including between pre-homing sorter jog steps and sorter diagnostic
+moves.
 
 The machine starts in `Recovering` mode and enters `Running` only after both
 axes finish homing, including configured offsets. After `stop`, issue
@@ -64,6 +65,12 @@ starts. The motor driver is re-enabled for recovery. Once both axes are known,
 the sorter queue is reset to zero and normal commands are accepted. Builds with
 either homing sensor disabled mark that axis known deterministically when its
 home operation is serviced.
+
+The startup sorter pre-jog runs as one step per loop pass. Feeder and sorter
+homing begin together only after that jog completes, preserving startup
+ordering without blocking serial input. `homesorter` acknowledges immediately,
+runs the same cooperative pre-jog, and then homes only the sorter. Stop and
+feed faults cancel a pending jog so it cannot later start homing.
 
 While stopped or recovering, `stop`, `version`, `getconfig`, `ping`, all runtime
 configuration setters, `homefeeder`, and `homesorter` remain available. Numeric
@@ -92,6 +99,14 @@ Completion remains busy until `done` is emitted, preserving one-command pending
 behavior. `stop`, feed overtravel, or leaving `Running` mode cancels the
 completion, forces `FEED_DONE_SIGNAL` low, and suppresses stale `done` output.
 `AirDropPostDelay` remains the independent slot/drop clearance gate.
+
+## Cooperative sorter diagnostics
+
+`sorttest:` uses a cooperative 40 ms `RuntimeTimer` gate before each random
+sorter move. Progress output, the existing random slot range, return-to-zero
+move, and pending-command blocking are unchanged. `stop` cancels the pacing
+gate and test. Runtime firmware contains no `delay()` calls; only
+`delayMicroseconds()` calls for step pulse width and motor speed remain.
 
 ## Proximity settling
 

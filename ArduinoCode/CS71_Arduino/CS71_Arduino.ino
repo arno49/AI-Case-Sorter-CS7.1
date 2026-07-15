@@ -1,4 +1,4 @@
-/// VERSION CS 7.1.260714.4 ///
+/// VERSION CS 7.1.260714.5 ///
 /// REQUIRES AI SORTER SOFTWARE VERSION 1.1.46 or newer
 
 #include <Wire.h>
@@ -10,8 +10,9 @@
 #include "machine_state.h"
 #include "proximity_settler.h"
 #include "runtime_timer.h"
+#include "step_sequence.h"
 
-#define FIRMWARE_VERSION "7.1.260714.4"
+#define FIRMWARE_VERSION "7.1.260714.5"
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -179,9 +180,13 @@ bool IsSortHomingOffset = false;
 int SortHomingOffsetSteps = sortHomingOffset;
 RuntimeTimer slotDropGate;
 int pendingQueuedDestination = 0;
+StepSequence sorterJog;
+bool sorterJogStartsFeedHoming = false;
 
 bool IsTestCycle=false;
 bool IsSortTestCycle=false;
+RuntimeTimer sortTestPacing;
+const uint32_t SORT_TEST_PACING_MS = 40;
 int testCycleInterval=0;
 int testsCompleted=0;
 int sortToSlot=0;
@@ -199,8 +204,8 @@ bool executionBusy() {
   return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
          FeedCycleInProgress || (FeedCycleComplete && !IsFeedError) ||
          feedCompletion.isActive() || SortInProgress || slotDropGate.isActive() ||
-         IsSorting || IsSortHoming || IsSortHomingOffset || IsTestCycle ||
-         IsSortTestCycle;
+         IsSorting || IsSortHoming || IsSortHomingOffset ||
+         sorterJog.isActive() || IsTestCycle || IsSortTestCycle;
 }
 
 bool commandRequiresHomedPosition(const char *command) {
@@ -260,10 +265,16 @@ void cancelFeedCompletion() {
   digitalWrite(FEED_DONE_SIGNAL, LOW);
 }
 
+void cancelSorterJog() {
+  sorterJog.cancel();
+  sorterJogStartsFeedHoming = false;
+}
+
 void enterStoppedState() {
   machineState.enterStopped();
   digitalWrite(MOTOR_Enable, HIGH);
   cancelFeedCompletion();
+  cancelSorterJog();
 
   FeedScheduled = false;
   IsFeeding = false;
@@ -290,6 +301,7 @@ void enterStoppedState() {
 
   IsTestCycle = false;
   IsSortTestCycle = false;
+  sortTestPacing.cancel();
   testCycleInterval = 0;
   testsCompleted = 0;
   forceFeed = false;
@@ -326,9 +338,7 @@ void setup() {
 
   digitalWrite(MOTOR_Enable, LOW);
   digitalWrite(FEED_DIRPIN, LOW);
-  jogSorter();
-  IsFeedHoming=true;
-  IsSortHoming=true;
+  jogSorter(true);
   msgResetTimer = millis();
 }
 
@@ -345,6 +355,7 @@ void loop() {
    runFeedMotor();
    homeFeedMotor();
    homeSortMotor();
+   serviceSorterJog();
    onFeedComplete(now);
    runAux();
    MotorStandByCheck();
@@ -449,8 +460,8 @@ void dispatchCommand(const char *command) {
         IsSortHomingOffset = false;
         SortHomingOffsetSteps = 0;
         homingSteps = 0;
-        jogSorter();
-        IsSortHoming = true;
+        IsSortHoming = false;
+        jogSorter(false);
         Serial.print(F("ok\n"));
         return;
       } 
@@ -758,6 +769,7 @@ void dispatchCommand(const char *command) {
           return;
         }
         IsSortTestCycle=true;
+        sortTestPacing.cancel();
         testCycleInterval=parsedInt;
         testsCompleted=0;
         Serial.print(F("testing started\n"));
@@ -840,14 +852,23 @@ void runAux(){
   //this runs the sorter only test cycles if scheduled
   if(IsSortTestCycle==true&&SortInProgress==false){
     if(testsCompleted<testCycleInterval){
+       const uint32_t now = millis();
+       if (!sortTestPacing.isActive()) {
+         sortTestPacing.start(now, SORT_TEST_PACING_MS);
+         return;
+       }
+       if (!sortTestPacing.hasElapsed(now)) {
+         return;
+       }
+       sortTestPacing.cancel();
        int slot = random(0,8);
-       delay(40);
        Serial.print(testsCompleted);
        Serial.print(F(" - Sorting to: "));
        Serial.println(slot);
        moveSorterToPosition(slot);
         testsCompleted++;
     }else{
+      sortTestPacing.cancel();
       moveSorterToPosition(0);
       Serial.println(F("Sort Test Completed"));
       IsSortTestCycle=false;
@@ -994,7 +1015,8 @@ void checkFeedErrors(){
   if(feedSearchActive && FeedCycleComplete == false &&
      FeedSteps < feedOverTravelSteps){
       const bool sorterWasMoving =
-          SortInProgress || IsSorting || IsSortHoming || IsSortHomingOffset;
+          SortInProgress || IsSorting || IsSortHoming || IsSortHomingOffset ||
+          sorterJog.isActive();
       FeedScheduled=false;
       FeedCycleComplete=true;
       IsFeeding=false;
@@ -1013,6 +1035,7 @@ void checkFeedErrors(){
       sortStepsToNextPositionTracker = 0;
       SortHomingOffsetSteps = 0;
       homingSteps = 0;
+      cancelSorterJog();
       if (sorterWasMoving) {
         machineState.invalidateAxis(MachineAxis::Sorter);
       }
@@ -1278,7 +1301,7 @@ void setFeedMotorSpeed(int speed) {
 
 void MotorStandByCheck(){
   if(SortInProgress || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
-     IsSortHoming || IsSortHomingOffset)
+     IsSortHoming || IsSortHomingOffset || sorterJog.isActive())
     return;
   
   if(autoMotorStandbyTimeout==0)
@@ -1289,12 +1312,31 @@ void MotorStandByCheck(){
   if(hasElapsed(theTime, timeSinceLastMotorMove, autoMotorStandbyTimeoutMs))
      digitalWrite(MOTOR_Enable, HIGH);
 }
-int js=0;
-int jogSteps = 25 * SORT_MICROSTEPS;
-void jogSorter(){
-    for(js=0;js<jogSteps;js++){
+void jogSorter(bool startFeedHoming){
+  sorterJogStartsFeedHoming = startFeedHoming;
+  sorterJog.start(25UL * SORT_MICROSTEPS);
+}
+void serviceSorterJog(){
+  if (sorterJog.isActive()) {
+    if (sorterJog.takeStep()) {
       stepSortMotor(false);
     }
+  }
+
+  if (!sorterJog.isComplete()) {
+    return;
+  }
+
+  const bool startFeedHoming = sorterJogStartsFeedHoming;
+  cancelSorterJog();
+  if (machineState.mode() == MachineMode::Stopped) {
+    return;
+  }
+
+  IsSortHoming = true;
+  if (startFeedHoming) {
+    IsFeedHoming = true;
+  }
 }
 void adjustCameraLED(int32_t level)
  {
