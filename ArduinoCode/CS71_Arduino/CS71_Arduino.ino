@@ -379,6 +379,8 @@ void enterStoppedState() {
 void setup() {
   Serial.begin(9600);
   protocolSession.reset();
+  commandParser.reset();
+  clearPendingCommand();
   responseSink.v1(V1Response::Ready);
   
   setSorterMotorSpeed(SORT_MOTOR_SPEED);
@@ -521,6 +523,28 @@ void applyV1Action(const V1DispatchResult &result) {
 
 void handleV1Frame(V1FrameStatus status, const char *command, size_t length,
                    bool dispatchingPending = false) {
+#if PROTOCOL_V2_ENABLED
+  if (!dispatchingPending && status == V1FrameStatus::Ready) {
+    const V2NegotiationAction negotiation = dispatchV2Negotiation(
+        command, length, executionBusy(), pendingCommand.available());
+    if (negotiation == V2NegotiationAction::Busy) {
+      responseSink.v1(V1Response::Busy);
+      return;
+    }
+    if (negotiation == V2NegotiationAction::Discovery) {
+      Serial.print(F("protocol:2 available\n"));
+      return;
+    }
+    if (negotiation == V2NegotiationAction::Activate) {
+      Serial.print(F("protocol:2 ready\n"));
+      Serial.flush();
+      commandParser.reset();
+      clearPendingCommand();
+      protocolSession.enterV2();
+      return;
+    }
+  }
+#endif
   V1DispatchContext context = {
       machineState.isRunning(), executionBusy(),
       pendingCommand.available() && !dispatchingPending, qPos1, qPos2};
@@ -541,16 +565,58 @@ void dispatchCommand(const char *command) {
   handleV1Frame(V1FrameStatus::Ready, command, strlen(command));
 }
 
+#if PROTOCOL_V2_ENABLED
+void handleV2Frame(V1FrameStatus status, const char *command, size_t length) {
+  if (status != V1FrameStatus::Ready) {
+    return;
+  }
+
+  uint16_t requestId;
+  const V2Protocol1Action action =
+      dispatchV2Protocol1(command, length, executionBusy(),
+                          pendingCommand.available(), &requestId);
+  if (action == V2Protocol1Action::NotHandled) {
+    return;
+  }
+
+  char response[32];
+  formatV2Protocol1Response(response, sizeof(response), requestId,
+                            action == V2Protocol1Action::Busy);
+  Serial.print(response);
+  if (action == V2Protocol1Action::ReturnToV1) {
+    Serial.flush();
+    commandParser.reset();
+    clearPendingCommand();
+    protocolSession.reset();
+  }
+}
+#endif
+
 void checkSerial(){
   while (Serial.available() > 0) {
     const CommandParser::Result result =
         commandParser.consume(static_cast<char>(Serial.read()));
     if (result == CommandParser::FrameOverflow) {
+#if PROTOCOL_V2_ENABLED
+      if (protocolSession.mode() == ProtocolMode::V2) {
+        handleV2Frame(V1FrameStatus::TooLong, 0, 0);
+      } else
+#endif
       handleV1Frame(V1FrameStatus::TooLong, 0, 0);
     } else if (result == CommandParser::FrameInvalid) {
+#if PROTOCOL_V2_ENABLED
+      if (protocolSession.mode() == ProtocolMode::V2) {
+        handleV2Frame(V1FrameStatus::Invalid, 0, 0);
+      } else
+#endif
       handleV1Frame(V1FrameStatus::Invalid, 0, 0);
     } else if (result == CommandParser::FrameReady) {
       const char *frame = commandParser.frame();
+#if PROTOCOL_V2_ENABLED
+      if (protocolSession.mode() == ProtocolMode::V2) {
+        handleV2Frame(V1FrameStatus::Ready, frame, commandParser.length());
+      } else
+#endif
       handleV1Frame(V1FrameStatus::Ready, frame, commandParser.length());
       commandParser.reset();
     }
