@@ -37,6 +37,13 @@ pio test -e native -f test_step_sequence
 
 ## Serial command framing
 
+For the normative engineering contract used to build host applications, see
+[`PROTOCOL.md`](PROTOCOL.md).
+
+The approved opt-in protocol v2 and legacy compatibility switcher are specified
+in [`PROTOCOL_V2.md`](PROTOCOL_V2.md). Its dependency-ordered implementation and
+rollout plan is in [`PROTOCOL_V2_PLAN.md`](PROTOCOL_V2_PLAN.md).
+
 The firmware accepts commands at 9600 baud. Each command is terminated by
 newline (`\n`); a single carriage return immediately before newline is ignored,
 so CRLF is also accepted. Command payloads may contain up to 40 bytes.
