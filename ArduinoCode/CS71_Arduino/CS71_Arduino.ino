@@ -1,4 +1,4 @@
-/// VERSION CS 7.1.260714.1 ///
+/// VERSION CS 7.1.260714.2 ///
 /// REQUIRES AI SORTER SOFTWARE VERSION 1.1.46 or newer
 
 #include <Wire.h>
@@ -6,8 +6,9 @@
 #include <string.h>
 #include "command_parser.h"
 #include "logic.h"
+#include "machine_state.h"
 
-#define FIRMWARE_VERSION "7.1.260714.1"
+#define FIRMWARE_VERSION "7.1.260714.2"
 
 //PIN CONFIGURATIONS
 //ARDUINO UNO WITH 4 MOTOR CONTROLLER
@@ -157,6 +158,8 @@ int sortDelayMS = 400;
 
 bool forceFeed=false;
 CommandParser commandParser;
+MachineState machineState;
+PendingCommand pendingCommand;
 int qPos1 = 0;
 int qPos2 = 0;
 int sortStepsToNextPosition = 0;
@@ -170,7 +173,6 @@ bool IsSortHoming = false;
 bool IsSortHomingOffset = false;
 int SortHomingOffsetSteps = sortHomingOffset;
 int slotDelayCalc = 0;
-bool sorterIsHomed = false;
 
 bool IsTestCycle=false;
 bool IsSortTestCycle=false;
@@ -188,6 +190,104 @@ int triggerTimeout = DEBOUNCE_TIMEOUT;
 int debounceTime= DEBOUNCE_PAUSE_TIME;
 bool proxActivated = false;
 bool sensorDelay = false;
+
+bool executionBusy() {
+  return FeedScheduled || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
+         FeedCycleInProgress || (FeedCycleComplete && !IsFeedError) ||
+         SortInProgress ||
+         IsSorting || IsSortHoming || IsSortHomingOffset || IsTestCycle ||
+         IsSortTestCycle;
+}
+
+bool commandRequiresHomedPosition(const char *command) {
+  if (isNumericCommand(command)) {
+    return true;
+  }
+  return strncmp(command, "xf:", 3) == 0 ||
+         strncmp(command, "sortto:", 7) == 0 ||
+         strncmp(command, "test:", 5) == 0 ||
+         strncmp(command, "sorttest:", 9) == 0;
+}
+
+void clearPendingCommand() {
+  pendingCommand.clear();
+}
+
+void updateRecoveryCompletion(MachineAxis axis) {
+  if (!machineState.axis(axis).recoveryInProgress) {
+    return;
+  }
+
+  if (machineState.completeRecovery(axis) &&
+      machineState.queueResetRequired()) {
+    qPos1 = 0;
+    qPos2 = 0;
+    machineState.acknowledgeQueueReset();
+  }
+}
+
+void completeFeedHoming() {
+  IsFeedHoming = false;
+  IsFeedHomingOffset = false;
+  FeedHomingOffsetSteps = 0;
+  timeSinceLastMotorMove = millis();
+  updateRecoveryCompletion(MachineAxis::Feeder);
+
+  if (FeedCycleInProgress) {
+    FeedCycleComplete = true;
+    FeedCycleInProgress = false;
+  }
+}
+
+void completeSorterRecoveryHoming() {
+  IsSorting = false;
+  IsSortHoming = false;
+  IsSortHomingOffset = false;
+  SortHomingOffsetSteps = 0;
+  homingSteps = 0;
+  timeSinceLastMotorMove = millis();
+  qPos1 = 0;
+  qPos2 = 0;
+  updateRecoveryCompletion(MachineAxis::Sorter);
+}
+
+void enterStoppedState() {
+  machineState.enterStopped();
+  digitalWrite(MOTOR_Enable, HIGH);
+  digitalWrite(FEED_DONE_SIGNAL, LOW);
+
+  FeedScheduled = false;
+  IsFeeding = false;
+  IsFeedHoming = false;
+  IsFeedHomingOffset = false;
+  FeedCycleInProgress = false;
+  FeedCycleComplete = false;
+  IsFeedError = false;
+  FeedSteps = 0;
+  FeedHomingOffsetSteps = 0;
+
+  SortInProgress = false;
+  SortComplete = false;
+  IsSorting = false;
+  IsSortHoming = false;
+  IsSortHomingOffset = false;
+  sortStepsToNextPosition = 0;
+  sortStepsToNextPositionTracker = 0;
+  sortToSlot = 0;
+  SortHomingOffsetSteps = 0;
+  homingSteps = 0;
+  slotDelayCalc = 0;
+
+  IsTestCycle = false;
+  IsSortTestCycle = false;
+  testCycleInterval = 0;
+  testsCompleted = 0;
+  forceFeed = false;
+  proxActivated = false;
+  sensorDelay = false;
+  clearPendingCommand();
+  Serial.print(F("stopped\n"));
+}
 
 
 void setup() {
@@ -284,6 +384,17 @@ void dispatchCommand(const char *command) {
       int parsedInt;
       const char *value;
 
+      if (strcmp(command, "stop") == 0) {
+        enterStoppedState();
+        return;
+      }
+
+      if (!machineState.isRunning() &&
+          commandRequiresHomedPosition(command)) {
+        Serial.print(F("error:not homed\n"));
+        return;
+      }
+
       if (isNumericCommand(command)) {
         if (!parseSortPosition(command, &parsedInt)) {
           Serial.print(F("error:invalid slot\n"));
@@ -297,33 +408,38 @@ void dispatchCommand(const char *command) {
       }
 
       if (strcmp(command, "version") == 0) {
-        Serial.print(FIRMWARE_VERSION);
+        Serial.print(F(FIRMWARE_VERSION));
         Serial.print(F("\n"));
         return;
       }
 
       if (strcmp(command, "homefeeder") == 0) {
-        feedDelayMS=400;
-        IsFeedHoming=true;
+        digitalWrite(MOTOR_Enable, LOW);
+        machineState.beginRecovery(MachineAxis::Feeder);
+        feedDelayMS = 400;
+        FeedSteps = feedMicroSteps;
+        FeedHomingOffsetSteps = 0;
+        FeedCycleInProgress = false;
+        FeedCycleComplete = false;
+        IsFeedError = false;
+        IsFeeding = false;
+        IsFeedHomingOffset = false;
+        IsFeedHoming = true;
         Serial.print(F("ok\n"));
         return;
       } 
       if (strcmp(command, "homesorter") == 0) {
-        sortDelayMS=400;
-        jogSorter();
-        qPos1 = 0;
-        qPos2 = 0;
-        IsSortHoming=true;
-        Serial.print(F("ok\n"));
-        return;
-      } 
-      if (strcmp(command, "stop") == 0) {
-        FeedScheduled=false;
-        IsFeedHoming=false;
-        IsFeedHomingOffset = false;
+        digitalWrite(MOTOR_Enable, LOW);
+        machineState.beginRecovery(MachineAxis::Sorter);
+        sortDelayMS = 400;
+        SortComplete = false;
+        IsSorting = false;
         IsSortHomingOffset = false;
-        FeedCycleComplete=true;
-        FeedCycleInProgress = false;
+        SortHomingOffsetSteps = 0;
+        homingSteps = 0;
+        jogSorter();
+        IsSortHoming = true;
+        Serial.print(F("ok\n"));
         return;
       } 
 
@@ -645,12 +761,7 @@ void dispatchCommand(const char *command) {
 }
 
 void checkSerial(){
-  if(FeedCycleInProgress || SortInProgress){
-    return;
-  }
-
-  while (Serial.available() > 0 &&
-         FeedCycleInProgress == false && SortInProgress == false) {
+  while (Serial.available() > 0) {
     const CommandParser::Result result =
         commandParser.consume(static_cast<char>(Serial.read()));
     if (result == CommandParser::FrameOverflow) {
@@ -658,14 +769,34 @@ void checkSerial(){
     } else if (result == CommandParser::FrameInvalid) {
       Serial.print(F("error:invalid command\n"));
     } else if (result == CommandParser::FrameReady) {
-      dispatchCommand(commandParser.frame());
+      const char *frame = commandParser.frame();
+      if (strcmp(frame, "stop") == 0) {
+        enterStoppedState();
+      } else if (!machineState.isRunning() &&
+                 commandRequiresHomedPosition(frame)) {
+        Serial.print(F("error:not homed\n"));
+      } else if (executionBusy() || pendingCommand.available()) {
+        if (!pendingCommand.enqueue(frame, commandParser.length())) {
+          Serial.print(F("error:busy\n"));
+        }
+      } else {
+        dispatchCommand(frame);
+      }
       commandParser.reset();
     }
+  }
+
+  if (pendingCommand.available() && !executionBusy()) {
+    dispatchCommand(pendingCommand.frame());
+    pendingCommand.clear();
   }
 }
 
 //this method is to run all "other" routines not in the main duty cycles (such as tests)
 void runAux(){
+  if (!machineState.isRunning()) {
+    return;
+  }
 
   //This runs the feed and sort test if scheduled
   if(IsTestCycle==true&&FeedScheduled==false&&FeedCycleInProgress==false){
@@ -703,7 +834,7 @@ void runAux(){
         testsCompleted++;
     }else{
       moveSorterToPosition(0);
-      Serial.println("Sort Test Completed");
+      Serial.println(F("Sort Test Completed"));
       IsSortTestCycle=false;
       testsCompleted=0;
       testCycleInterval=0;
@@ -827,7 +958,11 @@ void onSortComplete(){
 }
 
 void checkFeedErrors(){
- if(FeedCycleComplete == false && FeedSteps < feedOverTravelSteps){
+  const bool feedSearchActive = IsFeeding || IsFeedHoming;
+  if(feedSearchActive && FeedCycleComplete == false &&
+     FeedSteps < feedOverTravelSteps){
+      const bool sorterWasMoving =
+          SortInProgress || IsSorting || IsSortHoming || IsSortHomingOffset;
       FeedScheduled=false;
       FeedCycleComplete=true;
       IsFeeding=false;
@@ -835,11 +970,28 @@ void checkFeedErrors(){
       IsFeedHomingOffset=false;
       IsFeedError = true;
       FeedCycleInProgress = false;
-      Serial.println("error:feed overtravel detected");
- }
+      forceFeed = false;
+      machineState.invalidateAxis(MachineAxis::Feeder);
+      SortInProgress = false;
+      SortComplete = false;
+      IsSorting = false;
+      IsSortHoming = false;
+      IsSortHomingOffset = false;
+      sortStepsToNextPosition = 0;
+      sortStepsToNextPositionTracker = 0;
+      SortHomingOffsetSteps = 0;
+      homingSteps = 0;
+      if (sorterWasMoving) {
+        machineState.invalidateAxis(MachineAxis::Sorter);
+      }
+      digitalWrite(MOTOR_Enable, HIGH);
+      digitalWrite(FEED_DONE_SIGNAL, LOW);
+      Serial.println(F("error:feed overtravel detected"));
+  }
 }
 void onFeedComplete(){
-  if(FeedCycleComplete==true&& IsFeedError==false){
+  if(FeedCycleComplete==true && IsFeedError==false &&
+     machineState.isRunning()){
    
     timeSinceLastMotorMove = millis();
    //this allows some time for the brass to start dropping before generating the airblast
@@ -878,7 +1030,7 @@ void scheduleRun(){
       theTime = millis();
       if(theTime - msgResetTimer > 1000){
          // Serial.flush();
-          Serial.println("waiting for brass");
+          Serial.println(F("waiting for brass"));
          
           msgResetTimer = millis();
       }
@@ -954,32 +1106,26 @@ void homeFeedMotor(){
   if(IsFeedHoming==true ){
    
     if(FEED_HOMING_ENABLED == false){
-      IsFeedHoming=false;
-       IsFeedHomingOffset = false;
-      FeedCycleComplete=true;
-      FeedCycleInProgress = false;
+      completeFeedHoming();
       return;
     }
     
     if (digitalRead(FEED_HOMING_SENSOR) == FEED_HOMING_SENSOR_TYPE) {
       IsFeedHoming=false;
-      if(FeedCycleInProgress){ //if we are homing initially, we don't need to apply offsets
-          IsFeedHomingOffset = true;
-          FeedHomingOffsetSteps = feedHomingOffset;
-      }
+      IsFeedHomingOffset = true;
+      FeedHomingOffsetSteps = feedHomingOffset;
+    }
+    else {
+      stepFeedMotor();
+      FeedSteps--;
       return;
     }
-    stepFeedMotor();
-    FeedSteps--;
-    return;
   }
 
   if(IsFeedHomingOffset == true){
     if(feedHomingOffset == 0)
     {
-      IsFeedHomingOffset = false;
-      FeedCycleComplete=true;
-      FeedCycleInProgress = false;
+      completeFeedHoming();
       return;
     }
     if(IsFeedHomingOffset == true && FeedHomingOffsetSteps > 0){
@@ -988,20 +1134,22 @@ void homeFeedMotor(){
       FeedSteps--;
     }
     else if(IsFeedHomingOffset == true && FeedHomingOffsetSteps<=0){
-      IsFeedHomingOffset = false;
-      FeedCycleComplete=true;
-      FeedCycleInProgress = false;
+      completeFeedHoming();
     }
   }
 }
 
 void homeSortMotor(){
   if(IsSortHoming==true && SORT_HOMING_ENABLED == false){
-     IsSorting=false;
-         SortComplete = true;
-         IsSortHoming =false;
-         IsSortHomingOffset = false;
-         return;
+     if (machineState.axis(MachineAxis::Sorter).recoveryInProgress) {
+       completeSorterRecoveryHoming();
+     } else {
+       IsSorting = false;
+       SortComplete = true;
+       IsSortHoming = false;
+       IsSortHomingOffset = false;
+     }
+     return;
   }
   if(IsSortHoming==true){
      //if a sort is in progress and the arm is moving from any position to zero
@@ -1041,9 +1189,7 @@ void homeSortMotor(){
     if(IsSortHomingOffset == true){
       if(sortHomingOffset == 0) //if there are no offset steps, we are done
       {
-        IsSortHomingOffset = false;
-        IsSortHoming=false;
-        SortComplete=true;
+        completeSorterRecoveryHoming();
         return;
       }
       if(SortHomingOffsetSteps > 0){
@@ -1051,10 +1197,7 @@ void homeSortMotor(){
         SortHomingOffsetSteps--;
       }
       else if(IsSortHomingOffset == true && SortHomingOffsetSteps<=0){
-        IsSortHomingOffset = false;
-        IsSortHoming=false;
-        SortComplete=true;
-        homingSteps=0;
+        completeSorterRecoveryHoming();
       }
     }
   }
@@ -1111,7 +1254,8 @@ void setFeedMotorSpeed(int speed) {
 }
 
 void MotorStandByCheck(){
-  if(SortInProgress || IsFeeding)
+  if(SortInProgress || IsFeeding || IsFeedHoming || IsFeedHomingOffset ||
+     IsSortHoming || IsSortHomingOffset)
     return;
   
   if(autoMotorStandbyTimeout==0)

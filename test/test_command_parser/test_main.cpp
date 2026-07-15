@@ -116,6 +116,29 @@ void test_embedded_null_discards_frame_and_recovers() {
   TEST_ASSERT_EQUAL_STRING("ping", parser.frame());
 }
 
+void test_pending_command_holds_exactly_one_complete_frame() {
+  PendingCommand pending;
+
+  TEST_ASSERT_TRUE(pending.enqueue("version", 7));
+  TEST_ASSERT_TRUE(pending.available());
+  TEST_ASSERT_EQUAL_STRING("version", pending.frame());
+
+  TEST_ASSERT_FALSE(pending.enqueue("ping", 4));
+  TEST_ASSERT_EQUAL_STRING("version", pending.frame());
+}
+
+void test_pending_command_clear_allows_a_fresh_frame() {
+  PendingCommand pending;
+
+  TEST_ASSERT_TRUE(pending.enqueue("version", 7));
+  pending.clear();
+  TEST_ASSERT_FALSE(pending.available());
+  TEST_ASSERT_EQUAL_STRING("", pending.frame());
+
+  TEST_ASSERT_TRUE(pending.enqueue("ping", 4));
+  TEST_ASSERT_EQUAL_STRING("ping", pending.frame());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_partial_input_waits_for_newline);
@@ -127,5 +150,7 @@ int main(int, char **) {
   RUN_TEST(test_parser_recovers_after_overflow);
   RUN_TEST(test_empty_frame_is_safe_and_deterministic);
   RUN_TEST(test_embedded_null_discards_frame_and_recovers);
+  RUN_TEST(test_pending_command_holds_exactly_one_complete_frame);
+  RUN_TEST(test_pending_command_clear_allows_a_fresh_frame);
   return UNITY_END();
 }
