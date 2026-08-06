@@ -17,30 +17,76 @@ enum class ProtocolMode : uint8_t {
 #endif
 };
 
-class ProtocolSession {
- public:
-  ProtocolSession();
-
-  ProtocolMode mode() const;
-  void reset();
-
 #if PROTOCOL_V2_ENABLED
-  void enterV2();
-  uint16_t activeRequestId() const;
-  uint16_t eventSequence() const;
-  bool crcEnabled() const;
-#endif
+#include "v2_parser.h"
 
- private:
-  ProtocolMode mode_;
-#if PROTOCOL_V2_ENABLED
-  uint16_t activeRequestId_;
-  uint16_t eventSequence_;
-  bool crcEnabled_;
-#endif
+enum class V2EnvelopeStatus : uint8_t {
+  Ready,
+  BadFrame,
+  BadId
 };
 
-#if PROTOCOL_V2_ENABLED
+struct V2RequestEnvelope {
+  uint16_t requestId;
+  const char *payload;
+  size_t payloadLength;
+  bool explicitId;
+};
+
+V2EnvelopeStatus parseV2RequestEnvelope(const char *frame, size_t length,
+                                        V2RequestEnvelope *envelope);
+
+enum class V2BeginResult : uint8_t {
+  Started,
+  Busy,
+  DuplicateId
+};
+
+class V2RequestLifecycle {
+ public:
+  V2RequestLifecycle();
+
+  void reset();
+  V2BeginResult beginActive(uint16_t requestId);
+  V2BeginResult beginReadOnly(uint16_t requestId);
+  bool isActive() const;
+  uint16_t activeRequestId() const;
+  bool isIdlessActive() const;
+  bool owns(uint16_t requestId) const;
+  bool terminal(uint16_t requestId);
+
+ private:
+  bool active_;
+  uint16_t activeRequestId_;
+  bool readOnly_;
+  uint16_t readOnlyRequestId_;
+};
+
+enum class V2ResponseKind : uint8_t {
+  Accepted,
+  Progress,
+  Data,
+  Done,
+  Error
+};
+
+struct V2OutputWriter {
+  typedef bool (*LineWriter)(void *context, const char *line, size_t length);
+
+  void *context;
+  LineWriter writeLine;
+};
+
+bool formatV2Response(char *buffer, size_t capacity, uint16_t requestId,
+                      V2ResponseKind kind, const char *detail);
+bool formatV2Event(char *buffer, size_t capacity, uint16_t sequence,
+                   const char *detail);
+bool emitV2Response(const V2OutputWriter &writer, uint16_t requestId,
+                    V2ResponseKind kind, const char *detail);
+bool emitV2Terminal(V2RequestLifecycle *lifecycle,
+                    const V2OutputWriter &writer, uint16_t requestId,
+                    V2ResponseKind kind, const char *detail);
+
 enum class V2NegotiationAction : uint8_t {
   NotHandled,
   Discovery,
@@ -66,6 +112,34 @@ const char *v2ActivationResponse();
 size_t formatV2Protocol1Response(char *buffer, size_t capacity,
                                  uint16_t requestId, bool busy);
 #endif
+
+class ProtocolSession {
+ public:
+  ProtocolSession();
+
+  ProtocolMode mode() const;
+  void reset();
+
+#if PROTOCOL_V2_ENABLED
+  void enterV2();
+  uint16_t activeRequestId() const;
+  uint16_t eventSequence() const;
+  uint16_t nextEventSequence();
+  bool crcEnabled() const;
+  V2FrameParser &parser();
+  V2RequestLifecycle &lifecycle();
+  bool emitEvent(const V2OutputWriter &writer, const char *detail);
+#endif
+
+ private:
+  ProtocolMode mode_;
+#if PROTOCOL_V2_ENABLED
+  uint16_t eventSequence_;
+  bool crcEnabled_;
+  V2FrameParser parser_;
+  V2RequestLifecycle lifecycle_;
+#endif
+};
 
 #define CS71_V1_RESPONSE_LIST(X)                                            \
   X(Ready, "Ready\n")                                                        \
