@@ -242,6 +242,41 @@ Gate:
    the reserve.
 7. Preserve at least 75 AIC until V2-11 integration is complete.
 
+### Post-stage-3 rebaseline
+
+Stages 1 through 3 were completed in PRs #13 through #22. The resulting
+`uno_v2` build uses 24,834 of 32,256 flash bytes and 971 of 2,048 static SRAM
+bytes. This leaves 7,422 flash bytes and 1,077 static SRAM bytes before the
+physical-operation and CRC work.
+
+The original plan assigned 560 AIC to stages 1 through 3 and 640 AIC to the
+remaining work. AIC is an account-side usage unit, so repository artifacts
+cannot prove the actual balance consumed. The 640 figure is therefore the
+remaining **planning envelope** if the first three stage caps are treated as
+spent; the maintainer MUST compare it with `/usage` before V2-08.
+
+Rebalanced remaining envelope:
+
+| Remaining work | Included tasks | AIC cap |
+| --- | --- | ---: |
+| Physical lifecycle | V2-08, V2-08H, V2-09 | 280 |
+| Integrity and host tooling | V2-10, HOST-01, HOST-02 | 180 |
+| Qualification and release | V2-11 through V2-14 | 70 |
+| Protected reserve | AVR reduction, HIL corrections, Windows regressions | 110 |
+| **Remaining planning envelope** |  | **640** |
+
+This is safer than the original split because physical lifecycle integration
+now receives 30 additional AIC and the reserve remains above the mandatory
+75-AIC floor. HOST-01 and HOST-02 do not consume Uno flash, while V2-08 through
+V2-10 do. Start a scope review before V2-11 if firmware exceeds 29,000 flash
+bytes or 1,250 static SRAM bytes; those thresholds preserve approximately 10%
+flash and 39% static SRAM for stack/runtime behavior and corrective changes.
+
+If `/usage` reports fewer than 640 AIC available, preserve the 110-AIC reserve
+and reduce scope in this order: defer CRC, reduce optional aliases/progress
+detail, then split host packaging from the reference library. Do not reduce
+stop, fault, physical-completion, HIL, or legacy Windows compatibility gates.
+
 ## 6. Task backlog
 
 ### V2-00 — Approve protocol and implementation ADR
@@ -295,14 +330,14 @@ Tasks:
 
 Acceptance:
 
-- [ ] Authoritative v1 wire transcripts are captured as fixtures even though
+- [x] Authoritative v1 wire transcripts are captured as fixtures even though
       `.ino` dispatch is not yet native-testable.
-- [ ] Existing native-testable helpers and parsers have automated coverage.
-- [ ] Fixtures preserve leading spaces, mixed case, spelling mistakes, and
+- [x] Existing native-testable helpers and parsers have automated coverage.
+- [x] Fixtures preserve leading spaces, mixed case, spelling mistakes, and
       exact JSON shape.
-- [ ] The baseline includes the two-position queue.
-- [ ] Resource measurements are stored for later comparison.
-- [ ] `pio run -e uno` and `pio test -e native` pass.
+- [x] The baseline includes the two-position queue.
+- [x] Resource measurements are stored for later comparison.
+- [x] `pio run -e uno` and `pio test -e native` pass.
 
 Automated byte-for-byte wire regression becomes mandatory in V2-02 after the
 wire-facing dispatcher/output is extracted from the `.ino`.
@@ -335,17 +370,17 @@ Tasks:
 
 Acceptance:
 
-- [ ] V2 remains disabled and unreachable in the default build for this PR.
-- [ ] Golden v1 traces remain byte-identical.
-- [ ] A change to any covered v1 response causes a native test failure.
-- [ ] V1 and future v2 parser/session/dispatch modules compile under
+- [x] V2 remains disabled and unreachable in the default build for this PR.
+- [x] Golden v1 traces remain byte-identical.
+- [x] A change to any covered v1 response causes a native test failure.
+- [x] V1 and future v2 parser/session/dispatch modules compile under
       `env:native`.
-- [ ] No second motor-control path is created.
-- [ ] Response selection uses a mode branch or another measured low-overhead
+- [x] No second motor-control path is created.
+- [x] Response selection uses a mode branch or another measured low-overhead
       mechanism; virtual dispatch is not introduced without explicit budget.
-- [ ] No dynamic allocation or `String` appears.
-- [ ] Both `pio run -e uno` and `pio run -e uno_v2` pass.
-- [ ] Resource delta is reported from `uno_v2`, not from a build that compiles
+- [x] No dynamic allocation or `String` appears.
+- [x] Both `pio run -e uno` and `pio run -e uno_v2` pass.
+- [x] Resource delta is reported from `uno_v2`, not from a build that compiles
       v2 out.
 
 ### V2-03 — Add discovery, activation, and session fallback
@@ -368,11 +403,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] Old firmware behavior is represented by the discovery `ok` fixture.
-- [ ] Exact responses are required; `ok` never activates v2.
-- [ ] Lost activation response is recoverable only through stop/reset.
-- [ ] Existing Windows traffic cannot enter v2 accidentally.
-- [ ] V1 golden and native session-transition tests pass.
+- [x] Old firmware behavior is represented by the discovery `ok` fixture.
+- [x] Exact responses are required; `ok` never activates v2.
+- [x] Lost activation response is recoverable only through stop/reset.
+- [x] Existing Windows traffic cannot enter v2 accidentally.
+- [x] V1 golden and native session-transition tests pass.
 
 ### V2-04 — Implement the readable envelope and request lifecycle
 
@@ -396,12 +431,12 @@ Tasks:
 
 Acceptance:
 
-- [ ] Commands can be entered manually with or without IDs.
-- [ ] Duplicate/invalid IDs cannot terminate another request.
-- [ ] Partial, concatenated, overlong, NUL, malformed, and unknown frames are
+- [x] Commands can be entered manually with or without IDs.
+- [x] Duplicate/invalid IDs cannot terminate another request.
+- [x] Partial, concatenated, overlong, NUL, malformed, and unknown frames are
       covered.
-- [ ] V2 does not inherit the v1 pending state-changing queue.
-- [ ] Golden v1 traces remain unchanged.
+- [x] V2 does not inherit the v1 pending state-changing queue.
+- [x] Golden v1 traces remain unchanged.
 
 ### V2-05 — Add read-only observability
 
@@ -425,11 +460,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] Every required field from the specification is emitted.
-- [ ] Every response line remains within 64 bytes.
-- [ ] Event gaps can be repaired with a complete `status` snapshot.
-- [ ] Queue fields reflect `qPos1`/`qPos2` semantics.
-- [ ] Unknown future fields can be ignored by the host fixture.
+- [x] Every required field from the specification is emitted.
+- [x] Every response line remains within 64 bytes.
+- [x] Event gaps can be repaired with a complete `status` snapshot.
+- [x] Queue fields reflect `qPos1`/`qPos2` semantics.
+- [x] Unknown future fields can be ignored by the host fixture.
 
 ### V2-06 — Route configuration through shared handlers
 
@@ -450,11 +485,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] Every v1 setter has an equivalent v2 trace using the same payload.
-- [ ] Invalid values leave configuration unchanged.
-- [ ] V1 and v2 update the same underlying variables.
-- [ ] Optional PWM capability and configuration remain consistent.
-- [ ] Reconnect/reset is documented and tested as volatile configuration loss.
+- [x] Every v1 setter has an equivalent v2 trace using the same payload.
+- [x] Invalid values leave configuration unchanged.
+- [x] V1 and v2 update the same underlying variables.
+- [x] Optional PWM capability and configuration remain consistent.
+- [x] Reconnect/reset is documented and tested as volatile configuration loss.
 
 ### V2-07A — Integrate priority stop and cancellation
 
@@ -475,11 +510,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] Stop ordering matches the specification.
-- [ ] ID-less stop works with v1, v2, malformed correlation state, and later
+- [x] Stop ordering matches the specification.
+- [x] ID-less stop works with v1, v2, malformed correlation state, and later
       CRC-enabled sessions.
-- [ ] No stale `done` appears after stop.
-- [ ] Existing stop latency is not regressed in native timing/state tests.
+- [x] No stale `done` appears after stop.
+- [x] Existing stop latency is not regressed in native timing/state tests.
 
 ### V2-07B — Add fault mapping and state events
 
@@ -500,11 +535,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] A machine fault emits one event and one correlated terminal error.
-- [ ] Protocol rejects never masquerade as machine faults.
-- [ ] Fault state and affected homing validity agree.
-- [ ] Event sequence and status resynchronization tests pass.
-- [ ] V1 feed-overtravel output remains byte-identical.
+- [x] A machine fault emits one event and one correlated terminal error.
+- [x] Protocol rejects never masquerade as machine faults.
+- [x] Fault state and affected homing validity agree.
+- [x] Event sequence and status resynchronization tests pass.
+- [x] V1 feed-overtravel output remains byte-identical.
 
 ### V2-08 — Add physical completion for homing and direct sort
 
