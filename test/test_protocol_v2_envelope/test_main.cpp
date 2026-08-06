@@ -213,6 +213,152 @@ void test_v2_terminal_is_emitted_once_and_events_wrap() {
   TEST_ASSERT_EQUAL(2, session.eventSequence());
 }
 
+void test_v2_stop_cancellation_clears_active_and_read_only_owners() {
+  V2RequestLifecycle lifecycle;
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(42)));
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginReadOnly(7)));
+
+  const V2StopCancellation cancellation = lifecycle.cancelForStop(99);
+  TEST_ASSERT_EQUAL(static_cast<int>(V2StopResult::Stopped),
+                    static_cast<int>(cancellation.result));
+  TEST_ASSERT_TRUE(cancellation.activeCancelled);
+  TEST_ASSERT_EQUAL(42, cancellation.activeRequestId);
+  TEST_ASSERT_FALSE(lifecycle.owns(42));
+  TEST_ASSERT_FALSE(lifecycle.owns(7));
+
+  V2Capture capture = {};
+  V2OutputWriter writer = {&capture, captureV2Line};
+  TEST_ASSERT_FALSE(emitV2Terminal(&lifecycle, writer, 42,
+                                   V2ResponseKind::Done, 0));
+  TEST_ASSERT_EQUAL(0, capture.writes);
+}
+
+void test_v2_stop_cancellation_handles_idless_and_no_active_requests() {
+  V2RequestLifecycle lifecycle;
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(0)));
+  V2StopCancellation cancellation = lifecycle.cancelForStop(12);
+  TEST_ASSERT_EQUAL(static_cast<int>(V2StopResult::Stopped),
+                    static_cast<int>(cancellation.result));
+  TEST_ASSERT_TRUE(cancellation.activeCancelled);
+  TEST_ASSERT_EQUAL(0, cancellation.activeRequestId);
+  TEST_ASSERT_FALSE(lifecycle.owns(0));
+  V2Capture capture = {};
+  V2OutputWriter writer = {&capture, captureV2Line};
+  TEST_ASSERT_TRUE(emitV2Response(writer, cancellation.activeRequestId,
+                                  V2ResponseKind::Error,
+                                  "2004:cancelled by=12"));
+  TEST_ASSERT_EQUAL_STRING("@0 error:2004:cancelled by=12\n", capture.line);
+
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginReadOnly(8)));
+  cancellation = lifecycle.cancelForStop(12);
+  TEST_ASSERT_EQUAL(static_cast<int>(V2StopResult::Stopped),
+                    static_cast<int>(cancellation.result));
+  TEST_ASSERT_FALSE(cancellation.activeCancelled);
+  TEST_ASSERT_FALSE(lifecycle.owns(8));
+}
+
+void test_v2_stop_rejects_a_duplicate_active_request_id() {
+  V2RequestLifecycle lifecycle;
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(99)));
+
+  const V2StopCancellation cancellation = lifecycle.cancelForStop(99);
+  TEST_ASSERT_EQUAL(static_cast<int>(V2StopResult::DuplicateId),
+                    static_cast<int>(cancellation.result));
+  TEST_ASSERT_FALSE(cancellation.activeCancelled);
+  TEST_ASSERT_TRUE(lifecycle.owns(99));
+}
+
+void test_v2_stop_wire_order_is_cancellation_state_then_done() {
+  V2RequestLifecycle lifecycle;
+  V2Capture capture = {};
+  V2OutputWriter writer = {&capture, captureV2Line};
+  ProtocolSession session;
+  session.enterV2();
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(42)));
+
+  const V2StopCancellation cancellation = lifecycle.cancelForStop(99);
+  TEST_ASSERT_TRUE(cancellation.activeCancelled);
+  TEST_ASSERT_TRUE(emitV2Response(writer, cancellation.activeRequestId,
+                                  V2ResponseKind::Error,
+                                  "2004:cancelled by=99"));
+  TEST_ASSERT_TRUE(session.emitEvent(writer, "state:mode=stopped phase=idle"));
+  TEST_ASSERT_TRUE(
+      emitV2Response(writer, 99, V2ResponseKind::Done, "mode=stopped"));
+  TEST_ASSERT_EQUAL(3, capture.writes);
+  TEST_ASSERT_EQUAL_STRING("@42 error:2004:cancelled by=99\n",
+                           capture.lines[0]);
+  TEST_ASSERT_EQUAL_STRING("!1 state:mode=stopped phase=idle\n",
+                           capture.lines[1]);
+  TEST_ASSERT_EQUAL_STRING("@99 done:mode=stopped\n", capture.lines[2]);
+}
+
+void test_v2_raw_stop_keeps_the_v2_session_and_uses_unframed_stopped() {
+  ProtocolSession session;
+  session.enterV2();
+  V2RequestLifecycle &lifecycle = session.lifecycle();
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(42)));
+  TEST_ASSERT_TRUE(lifecycle.cancel().activeCancelled);
+  session.parser().consume('x');
+  session.parser().reset();
+
+  V2Capture capture = {};
+  V2OutputWriter writer = {&capture, captureV2Line};
+  TEST_ASSERT_TRUE(session.emitEvent(writer, "state:mode=stopped phase=idle"));
+  TEST_ASSERT_TRUE(captureV2Line(&capture, v1ResponseText(V1Response::Stopped),
+                                 strlen(v1ResponseText(V1Response::Stopped))));
+  TEST_ASSERT_EQUAL(static_cast<int>(ProtocolMode::V2),
+                    static_cast<int>(session.mode()));
+  TEST_ASSERT_EQUAL(2, session.eventSequence());
+  TEST_ASSERT_FALSE(lifecycle.isActive());
+  TEST_ASSERT_EQUAL_STRING("!1 state:mode=stopped phase=idle\n",
+                           capture.lines[0]);
+  TEST_ASSERT_EQUAL_STRING("stopped\n", capture.lines[1]);
+}
+
+void test_raw_stop_detector_accepts_only_complete_exact_lines() {
+  const char *valid[] = {"stop\n", "stop\r\n"};
+  for (size_t index = 0; index < sizeof(valid) / sizeof(valid[0]); ++index) {
+    RawStopLineDetector detector;
+    bool stopped = false;
+    for (size_t byte = 0; byte < strlen(valid[index]); ++byte)
+      stopped = detector.consume(valid[index][byte]) || stopped;
+    TEST_ASSERT_TRUE(stopped);
+  }
+
+  const char *invalid[] = {" stop\n", "stop \n", "xstop\n", "stop\rx\n"};
+  for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
+    RawStopLineDetector detector;
+    for (size_t byte = 0; byte < strlen(invalid[index]); ++byte)
+      TEST_ASSERT_FALSE(detector.consume(invalid[index][byte]));
+  }
+  RawStopLineDetector overlong;
+  for (size_t byte = 0; byte <= V2_MAX_LINE_LENGTH; ++byte)
+    TEST_ASSERT_FALSE(overlong.consume('x'));
+  const char *suffix = "stop\n";
+  for (size_t byte = 0; byte < strlen(suffix); ++byte)
+    TEST_ASSERT_FALSE(overlong.consume(suffix[byte]));
+
+  V2FrameParser parser;
+  RawStopLineDetector detector;
+  parser.consume('\0');
+  TEST_ASSERT_FALSE(detector.consume('\0'));
+  TEST_ASSERT_EQUAL(static_cast<int>(V2FrameParser::FrameInvalid),
+                    static_cast<int>(parser.consume('\n')));
+  TEST_ASSERT_FALSE(detector.consume('\n'));
+  const char *stop = "stop\n";
+  bool stopped = false;
+  for (size_t byte = 0; byte < strlen(stop); ++byte)
+    stopped = detector.consume(stop[byte]) || stopped;
+  TEST_ASSERT_TRUE(stopped);
+}
+
 static V2ObservabilitySnapshot observabilitySnapshot() {
   V2ObservabilitySnapshot snapshot = {
       {102, 8, false, true, true, true, true},
@@ -650,6 +796,12 @@ int main(int, char **) {
   RUN_TEST(test_v2_lifecycle_allows_one_active_and_one_immediate_read_only);
   RUN_TEST(test_v2_formatters_are_bounded_and_emit_one_lf);
   RUN_TEST(test_v2_terminal_is_emitted_once_and_events_wrap);
+  RUN_TEST(test_v2_stop_cancellation_clears_active_and_read_only_owners);
+  RUN_TEST(test_v2_stop_cancellation_handles_idless_and_no_active_requests);
+  RUN_TEST(test_v2_stop_rejects_a_duplicate_active_request_id);
+  RUN_TEST(test_v2_stop_wire_order_is_cancellation_state_then_done);
+  RUN_TEST(test_v2_raw_stop_keeps_the_v2_session_and_uses_unframed_stopped);
+  RUN_TEST(test_raw_stop_detector_accepts_only_complete_exact_lines);
   RUN_TEST(test_v2_setters_reuse_v1_validation_actions_and_generation);
   RUN_TEST(test_v2_configuration_support_keeps_v1_setter_bytes_unchanged);
   RUN_TEST(test_v2_setter_terminal_semantics_are_correlated_and_bounded);

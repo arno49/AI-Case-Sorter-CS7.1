@@ -43,6 +43,17 @@ enum class V2BeginResult : uint8_t {
   DuplicateId
 };
 
+enum class V2StopResult : uint8_t {
+  Stopped,
+  DuplicateId
+};
+
+struct V2StopCancellation {
+  V2StopResult result;
+  bool activeCancelled;
+  uint16_t activeRequestId;
+};
+
 class V2RequestLifecycle {
  public:
   V2RequestLifecycle();
@@ -55,12 +66,25 @@ class V2RequestLifecycle {
   bool isIdlessActive() const;
   bool owns(uint16_t requestId) const;
   bool terminal(uint16_t requestId);
+  V2StopCancellation cancel();
+  V2StopCancellation cancelForStop(uint16_t stopRequestId);
 
  private:
   bool active_;
   uint16_t activeRequestId_;
   bool readOnly_;
   uint16_t readOnlyRequestId_;
+};
+
+class RawStopLineDetector {
+ public:
+  RawStopLineDetector();
+
+  bool consume(char byte);
+  void reset();
+
+ private:
+  uint8_t state_;
 };
 
 enum class V2ResponseKind : uint8_t {

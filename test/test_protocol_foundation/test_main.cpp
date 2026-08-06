@@ -330,6 +330,23 @@ void test_asynchronous_wire_literals_are_byte_exact() {
                            v1ResponseText(V1Response::FeedOvertravel));
 }
 
+void test_v1_exact_raw_stop_response_is_unchanged() {
+  RawStopLineDetector detector;
+  const char *request = "stop\r\n";
+  bool stopped = false;
+  for (size_t index = 0; index < strlen(request); ++index)
+    stopped = detector.consume(request[index]) || stopped;
+  TEST_ASSERT_TRUE(stopped);
+
+  Configuration configuration = defaultConfiguration();
+  WireCapture capture;
+  const V1DispatchResult result =
+      dispatchText("stop", runningContext(), &configuration, &capture);
+  TEST_ASSERT_EQUAL(static_cast<int>(V1Action::Stop),
+                    static_cast<int>(result.action));
+  TEST_ASSERT_EQUAL_STRING("stopped\n", capture.bytes);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_session_resets_to_v1);
@@ -340,5 +357,6 @@ int main(int, char **) {
   RUN_TEST(test_command_actions_and_immediate_output_wire_golden);
   RUN_TEST(test_invalid_commands_and_state_ordering_wire_golden);
   RUN_TEST(test_asynchronous_wire_literals_are_byte_exact);
+  RUN_TEST(test_v1_exact_raw_stop_response_is_unchanged);
   return UNITY_END();
 }
