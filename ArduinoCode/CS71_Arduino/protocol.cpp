@@ -661,6 +661,52 @@ bool emitV2Inspection(V2RequestLifecycle *lifecycle,
   return emitV2Terminal(lifecycle, writer, requestId, V2ResponseKind::Done, 0);
 }
 
+bool streamV2ConfigurationFields(const Configuration &configuration,
+                                bool includeCameraLevel,
+                                const V2OutputWriter &writer,
+                                uint16_t requestId) {
+#define CS71_STREAM_V2_CONFIGURATION_FIELD(name, value)                         \
+  do {                                                                           \
+    char detail[V2_MAX_LINE_LENGTH + 1];                                         \
+    if (!formatV2UnsignedField(detail, sizeof(detail), name,                    \
+                               static_cast<uint32_t>(value)) ||                 \
+        !emitV2Response(writer, requestId, V2ResponseKind::Data, detail))       \
+      return false;                                                              \
+  } while (false)
+  CS71_STREAM_V2_CONFIGURATION_FIELD("FeedMotorSpeed", configuration.feedSpeed);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("FeedCycleSteps", configuration.feedSteps);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("SortMotorSpeed", configuration.sortSpeed);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("SortSteps", configuration.sortSteps);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("SlotCount", configuration.slotCount);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("NotificationDelay",
+                                    configuration.notificationDelay);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("SlotDropDelay",
+                                    configuration.slotDropDelay);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("AirDropEnabled",
+                                    configuration.airDropEnabled ? 1 : 0);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("AirDropPostDelay",
+                                    configuration.airDropPostDelay);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("AirDropPreDelay",
+                                    configuration.airDropPreDelay);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("AirDropSignalTime",
+                                    configuration.airDropSignalTime);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("FeedHomingOffset",
+                                    configuration.feedHomingOffset);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("SortHomingOffset",
+                                    configuration.sortHomingOffset);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("AutoMotorStandbyTimeout",
+                                    configuration.autoMotorStandbyTimeout);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("DebounceTimeout",
+                                    configuration.debounceTimeout);
+  CS71_STREAM_V2_CONFIGURATION_FIELD("DebouncePauseTime",
+                                    configuration.debouncePauseTime);
+  if (includeCameraLevel)
+    CS71_STREAM_V2_CONFIGURATION_FIELD("CameraLEDLevel",
+                                      configuration.cameraLedLevel);
+#undef CS71_STREAM_V2_CONFIGURATION_FIELD
+  return true;
+}
+
 size_t formatV2Protocol1Response(char *buffer, size_t capacity,
                                 uint16_t requestId, bool busy) {
   return formatV2Response(buffer, capacity, requestId,
@@ -801,6 +847,116 @@ V1Response v1InvalidResponse(V1Command command) {
   }
 }
 
+bool v1CommandIsSetter(V1Command command) {
+  return command >= V1Command::DebounceTimeout &&
+         command <= V1Command::CameraLedLevel;
+}
+
+static const char *v1SetterArgument(const char *command, V1Command commandType) {
+  switch (commandType) {
+    case V1Command::DebounceTimeout:
+      return v1CommandValue(command, "debounceTimeout:");
+    case V1Command::DebounceTime:
+      return v1CommandValue(command, "debounceTime:");
+    case V1Command::FeedSpeed:
+      return v1CommandValue(command, "feedspeed:");
+    case V1Command::FeedHomingOffset:
+      return v1CommandValue(command, "feedhomingoffset:");
+    case V1Command::SortHomingOffset:
+      return v1CommandValue(command, "sorthomingoffset:");
+    case V1Command::SortSpeed:
+      return v1CommandValue(command, "sortspeed:");
+    case V1Command::SortSteps:
+      return v1CommandValue(command, "sortsteps:");
+    case V1Command::SlotCount:
+      return v1CommandValue(command, "slotcount:");
+    case V1Command::FeedSteps:
+      return v1CommandValue(command, "feedsteps:");
+    case V1Command::NotificationDelay:
+      return v1CommandValue(command, "notificationdelay:");
+    case V1Command::SlotDropDelay:
+      return v1CommandValue(command, "slotdropdelay:");
+    case V1Command::AirDropEnabled:
+      return v1CommandValue(command, "airdropenabled:");
+    case V1Command::AirDropPostDelay:
+      return v1CommandValue(command, "airdroppostdelay:");
+    case V1Command::AirDropPreDelay:
+      return v1CommandValue(command, "airdroppredelay:");
+    case V1Command::AirDropSignalDuration:
+      return v1CommandValue(command, "airdropdsignalduration:");
+    case V1Command::AutoMotorStandbyTimeout:
+      return v1CommandValue(command, "automotorstandbytimeout:");
+    case V1Command::CameraLedLevel:
+      return v1CommandValue(command, "cameraledlevel:");
+    default:
+      return 0;
+  }
+}
+
+static bool isCompleteDecimal(const char *text) {
+  if (text == 0 || *text == '\0') return false;
+  if (*text == '+' || *text == '-') ++text;
+  if (*text == '\0') return false;
+  while (*text != '\0') {
+    if (*text < '0' || *text > '9') return false;
+    ++text;
+  }
+  return true;
+}
+
+bool v1SetterArgumentIsSyntacticallyComplete(const char *command,
+                                             V1Command commandType) {
+  const char *argument = v1SetterArgument(command, commandType);
+  if (commandType == V1Command::AirDropEnabled) {
+    bool value;
+    return parseBool(argument, &value);
+  }
+  return isCompleteDecimal(argument);
+}
+
+bool v1SetterRange(V1Command command, const Configuration &configuration,
+                   const V1DispatchLimits &limits, V1SetterRange *range) {
+  if (range == 0) return false;
+  switch (command) {
+    case V1Command::FeedSpeed:
+    case V1Command::SortSpeed:
+    case V1Command::SortSteps:
+      range->minimum = 1;
+      range->maximum = 100;
+      return true;
+    case V1Command::FeedSteps:
+      range->minimum = 1;
+      range->maximum = 1000;
+      return true;
+    case V1Command::FeedHomingOffset:
+    case V1Command::SortHomingOffset:
+      range->minimum = 0;
+      range->maximum = limits.sortFullRevolutionSteps;
+      return true;
+    case V1Command::SlotCount:
+      range->minimum = 1;
+      range->maximum = maximumRepresentableSlotCount(
+          configuration.sortSteps, limits.sortMicrosteps, limits.maxAvrInt);
+      return true;
+    case V1Command::DebounceTimeout:
+    case V1Command::DebounceTime:
+    case V1Command::NotificationDelay:
+    case V1Command::SlotDropDelay:
+    case V1Command::AirDropPostDelay:
+    case V1Command::AirDropPreDelay:
+    case V1Command::AirDropSignalDuration:
+      range->minimum = 0;
+      range->maximum = limits.maxAvrInt;
+      return true;
+    case V1Command::AutoMotorStandbyTimeout:
+      range->minimum = 0;
+      range->maximum = limits.maxStandbyTimeoutSeconds;
+      return true;
+    default:
+      return false;
+  }
+}
+
 static V1DispatchResult result(V1Action action, V1Output output,
                                V1Response response = V1Response::Ok,
                                int32_t value = 0) {
@@ -852,6 +1008,7 @@ V1DispatchResult dispatchV1Command(const char *command, size_t length,
   }
 
   int32_t value;
+  V1SetterRange setterRange;
   const char *argument;
   switch (commandType) {
     case V1Command::NumericPosition:
@@ -884,37 +1041,57 @@ V1DispatchResult dispatchV1Command(const char *command, size_t length,
   switch (commandType) {
     case V1Command::DebounceTimeout:
       argument = v1CommandValue(command, "debounceTimeout:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->debounceTimeout = static_cast<uint32_t>(value);
       return result(V1Action::None, V1Output::Response);
     case V1Command::DebounceTime:
       argument = v1CommandValue(command, "debounceTime:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->debouncePauseTime = static_cast<uint32_t>(value);
       return result(V1Action::None, V1Output::Response);
     case V1Command::FeedSpeed:
       argument = v1CommandValue(command, "feedspeed:");
-      if (!parseBoundedInt(argument, 1, 100, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->feedSpeed = value;
       return result(V1Action::ApplyFeedSpeed, V1Output::Response, V1Response::Ok, value);
     case V1Command::FeedHomingOffset:
       argument = v1CommandValue(command, "feedhomingoffset:");
-      if (!parseBoundedInt(argument, 0, limits.sortFullRevolutionSteps, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->feedHomingOffset = value;
       return result(V1Action::ApplyFeedHomingOffset, V1Output::Response, V1Response::Ok, value);
     case V1Command::SortHomingOffset:
       argument = v1CommandValue(command, "sorthomingoffset:");
-      if (!parseBoundedInt(argument, 0, limits.sortFullRevolutionSteps, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->sortHomingOffset = value;
       return result(V1Action::ApplySortHomingOffset, V1Output::Response, V1Response::Ok, value);
     case V1Command::SortSpeed:
       argument = v1CommandValue(command, "sortspeed:");
-      if (!parseBoundedInt(argument, 1, 100, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->sortSpeed = value;
       return result(V1Action::ApplySortSpeed, V1Output::Response, V1Response::Ok, value);
     case V1Command::SortSteps: {
       argument = v1CommandValue(command, "sortsteps:");
-      if (!parseBoundedInt(argument, 1, 100, &value) ||
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value) ||
           context.queuedPositionOne >
               static_cast<int32_t>(maximumRepresentableSlotCount(
                   value, limits.sortMicrosteps, limits.maxAvrInt) - 1UL) ||
@@ -930,9 +1107,8 @@ V1DispatchResult dispatchV1Command(const char *command, size_t length,
     case V1Command::SlotCount: {
       argument = v1CommandValue(command, "slotcount:");
       uint32_t slots;
-      const uint32_t maximum = maximumRepresentableSlotCount(
-          configuration->sortSteps, limits.sortMicrosteps, limits.maxAvrInt);
-      if (!parseUint32(argument, maximum, &slots) ||
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseUint32(argument, setterRange.maximum, &slots) ||
           !isSlotCountRepresentable(slots, configuration->sortSteps,
                                     limits.sortMicrosteps, limits.maxAvrInt))
         return invalid(commandType);
@@ -941,17 +1117,26 @@ V1DispatchResult dispatchV1Command(const char *command, size_t length,
     }
     case V1Command::FeedSteps:
       argument = v1CommandValue(command, "feedsteps:");
-      if (!parseBoundedInt(argument, 1, 1000, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->feedSteps = value;
       return result(V1Action::ApplyFeedSteps, V1Output::Response, V1Response::Ok, value);
     case V1Command::NotificationDelay:
       argument = v1CommandValue(command, "notificationdelay:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->notificationDelay = value;
       return result(V1Action::None, V1Output::Response);
     case V1Command::SlotDropDelay:
       argument = v1CommandValue(command, "slotdropdelay:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->slotDropDelay = value;
       return result(V1Action::ApplyDropDelay, V1Output::Response);
     case V1Command::AirDropEnabled: {
@@ -963,23 +1148,33 @@ V1DispatchResult dispatchV1Command(const char *command, size_t length,
     }
     case V1Command::AirDropPostDelay:
       argument = v1CommandValue(command, "airdroppostdelay:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->airDropPostDelay = value;
       return result(V1Action::ApplyDropDelay, V1Output::Response);
     case V1Command::AirDropPreDelay:
       argument = v1CommandValue(command, "airdroppredelay:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->airDropPreDelay = value;
       return result(V1Action::None, V1Output::Response);
     case V1Command::AirDropSignalDuration:
       argument = v1CommandValue(command, "airdropdsignalduration:");
-      if (!parseBoundedInt(argument, 0, limits.maxAvrInt, &value)) return invalid(commandType);
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseBoundedInt(argument, setterRange.minimum, setterRange.maximum,
+                           &value))
+        return invalid(commandType);
       configuration->airDropSignalTime = value;
       return result(V1Action::None, V1Output::Response);
     case V1Command::AutoMotorStandbyTimeout: {
       uint32_t seconds;
       argument = v1CommandValue(command, "automotorstandbytimeout:");
-      if (!parseUint32(argument, limits.maxStandbyTimeoutSeconds, &seconds))
+      v1SetterRange(commandType, *configuration, limits, &setterRange);
+      if (!parseUint32(argument, setterRange.maximum, &seconds))
         return invalid(commandType);
       configuration->autoMotorStandbyTimeout = seconds;
       return result(V1Action::ApplyAutoMotorStandbyTimeout, V1Output::Response);

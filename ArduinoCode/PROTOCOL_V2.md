@@ -274,8 +274,11 @@ active, it returns `error:2001:busy` and remains in v2.
 When CRC is enabled, both `protocol:1` and its terminal response carry CRC.
 CRC and all other v2 session state are cleared only after the terminal LF.
 
-Reset is the authoritative recovery when the current parser or CRC state is
-unknown. Reset always returns to v1 and resets volatile configuration.
+An MCU reset is the authoritative recovery when the current parser or CRC state
+is unknown. It returns to v1 and resets volatile configuration and
+`config_generation` to `0`. `ProtocolSession::reset()` is only a protocol
+session boundary (including `protocol:1`): it clears parser, lifecycle, CRC,
+and event state, but does not change runtime configuration or its generation.
 
 ## 6. Request lifecycle and concurrency
 
