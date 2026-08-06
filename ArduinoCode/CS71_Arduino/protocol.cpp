@@ -15,30 +15,57 @@ ProtocolMode ProtocolSession::mode() const {
 void ProtocolSession::reset() {
   mode_ = ProtocolMode::V1;
 #if PROTOCOL_V2_ENABLED
-  activeRequestId_ = 0;
   eventSequence_ = 0;
   crcEnabled_ = false;
+  parser_.reset();
+  lifecycle_.reset();
 #endif
 }
 
 #if PROTOCOL_V2_ENABLED
 void ProtocolSession::enterV2() {
   mode_ = ProtocolMode::V2;
-  activeRequestId_ = 0;
   eventSequence_ = 1;
   crcEnabled_ = false;
+  parser_.reset();
+  lifecycle_.reset();
 }
 
 uint16_t ProtocolSession::activeRequestId() const {
-  return activeRequestId_;
+  return lifecycle_.activeRequestId();
 }
 
 uint16_t ProtocolSession::eventSequence() const {
   return eventSequence_;
 }
 
+uint16_t ProtocolSession::nextEventSequence() {
+  const uint16_t sequence = eventSequence_;
+  eventSequence_ = eventSequence_ == 65535U ? 1U : eventSequence_ + 1U;
+  return sequence;
+}
+
 bool ProtocolSession::crcEnabled() const {
   return crcEnabled_;
+}
+
+V2FrameParser &ProtocolSession::parser() {
+  return parser_;
+}
+
+V2RequestLifecycle &ProtocolSession::lifecycle() {
+  return lifecycle_;
+}
+
+bool ProtocolSession::emitEvent(const V2OutputWriter &writer,
+                                const char *detail) {
+  char line[V2_MAX_LINE_LENGTH + 2];
+  if (!formatV2Event(line, sizeof(line), eventSequence_, detail) ||
+      writer.writeLine == 0 ||
+      !writer.writeLine(writer.context, line, strlen(line)))
+    return false;
+  nextEventSequence();
+  return true;
 }
 
 static bool isExact(const char *command, size_t length, const char *expected) {
@@ -60,37 +87,60 @@ V2NegotiationAction dispatchV2Negotiation(const char *command, size_t length,
   return V2NegotiationAction::NotHandled;
 }
 
-static bool parseV2RequestId(const char *command, size_t length,
-                             uint16_t *requestId, size_t *payloadOffset) {
-  if (command == 0 || requestId == 0 || payloadOffset == 0) return false;
-  *requestId = 0;
-  *payloadOffset = 0;
-  if (length == 0 || command[0] != '@') return true;
+V2EnvelopeStatus parseV2RequestEnvelope(const char *frame, size_t length,
+                                        V2RequestEnvelope *envelope) {
+  if (frame == 0 || envelope == 0 || length == 0 ||
+      length > V2_MAX_LINE_LENGTH)
+    return V2EnvelopeStatus::BadFrame;
+
+  for (size_t index = 0; index < length; ++index) {
+    const unsigned char value = static_cast<unsigned char>(frame[index]);
+    if (value < 0x20U || value > 0x7eU) return V2EnvelopeStatus::BadFrame;
+  }
+
+  envelope->requestId = 0;
+  envelope->payload = frame;
+  envelope->payloadLength = length;
+  envelope->explicitId = false;
+  if (frame[0] != '@') {
+    return frame[0] == ' ' || frame[length - 1] == ' '
+               ? V2EnvelopeStatus::BadFrame
+               : V2EnvelopeStatus::Ready;
+  }
 
   uint32_t value = 0;
   size_t index = 1;
   const size_t firstDigit = index;
-  while (index < length && command[index] >= '0' && command[index] <= '9') {
-    value = value * 10U + static_cast<uint8_t>(command[index] - '0');
-    if (value > 65535U) return false;
+  while (index < length && frame[index] >= '0' && frame[index] <= '9') {
+    value = value * 10U + static_cast<uint8_t>(frame[index] - '0');
+    if (value > 65535U) return V2EnvelopeStatus::BadId;
     ++index;
   }
   if (index == firstDigit || value == 0 || index >= length ||
-      command[index] != ' ')
-    return false;
-  *requestId = static_cast<uint16_t>(value);
-  *payloadOffset = index + 1;
-  return true;
+      frame[index] != ' ')
+    return V2EnvelopeStatus::BadId;
+
+  ++index;
+  if (index == length || frame[index] == ' ' || frame[length - 1] == ' ')
+    return V2EnvelopeStatus::BadFrame;
+  envelope->requestId = static_cast<uint16_t>(value);
+  envelope->payload = frame + index;
+  envelope->payloadLength = length - index;
+  envelope->explicitId = true;
+  return V2EnvelopeStatus::Ready;
 }
 
 V2Protocol1Action dispatchV2Protocol1(const char *command, size_t length,
                                        bool executionBusy,
                                        bool pendingCommand,
                                        uint16_t *requestId) {
-  size_t payloadOffset;
-  if (!parseV2RequestId(command, length, requestId, &payloadOffset) ||
-      !isExact(command + payloadOffset, length - payloadOffset, "protocol:1"))
+  V2RequestEnvelope envelope;
+  if (requestId == 0 ||
+      parseV2RequestEnvelope(command, length, &envelope) !=
+          V2EnvelopeStatus::Ready ||
+      !isExact(envelope.payload, envelope.payloadLength, "protocol:1"))
     return V2Protocol1Action::NotHandled;
+  *requestId = envelope.requestId;
   return executionBusy || pendingCommand ? V2Protocol1Action::Busy
                                          : V2Protocol1Action::ReturnToV1;
 }
@@ -103,32 +153,208 @@ const char *v2ActivationResponse() {
   return "protocol:2 ready\n";
 }
 
-static size_t appendV2Text(char *buffer, size_t capacity, size_t length,
-                           const char *text) {
-  while (*text != '\0' && length + 1 < capacity) {
-    buffer[length++] = *text++;
+V2RequestLifecycle::V2RequestLifecycle() {
+  reset();
+}
+
+void V2RequestLifecycle::reset() {
+  active_ = false;
+  activeRequestId_ = 0;
+  readOnly_ = false;
+  readOnlyRequestId_ = 0;
+}
+
+V2BeginResult V2RequestLifecycle::beginActive(uint16_t requestId) {
+  if (requestId == 0 &&
+      ((active_ && activeRequestId_ == 0) ||
+       (readOnly_ && readOnlyRequestId_ == 0)))
+    return V2BeginResult::Busy;
+  if (active_ && activeRequestId_ == requestId)
+    return V2BeginResult::DuplicateId;
+  if (readOnly_ && readOnlyRequestId_ == requestId)
+    return V2BeginResult::DuplicateId;
+  if (active_) return V2BeginResult::Busy;
+  active_ = true;
+  activeRequestId_ = requestId;
+  return V2BeginResult::Started;
+}
+
+V2BeginResult V2RequestLifecycle::beginReadOnly(uint16_t requestId) {
+  if (requestId == 0 &&
+      ((active_ && activeRequestId_ == 0) ||
+       (readOnly_ && readOnlyRequestId_ == 0)))
+    return V2BeginResult::Busy;
+  if ((active_ && activeRequestId_ == requestId) ||
+      (readOnly_ && readOnlyRequestId_ == requestId))
+    return V2BeginResult::DuplicateId;
+  if (readOnly_) return V2BeginResult::Busy;
+  readOnly_ = true;
+  readOnlyRequestId_ = requestId;
+  return V2BeginResult::Started;
+}
+
+bool V2RequestLifecycle::isActive() const {
+  return active_;
+}
+
+uint16_t V2RequestLifecycle::activeRequestId() const {
+  return active_ ? activeRequestId_ : 0;
+}
+
+bool V2RequestLifecycle::isIdlessActive() const {
+  return active_ && activeRequestId_ == 0;
+}
+
+bool V2RequestLifecycle::owns(uint16_t requestId) const {
+  return (active_ && activeRequestId_ == requestId) ||
+         (readOnly_ && readOnlyRequestId_ == requestId);
+}
+
+bool V2RequestLifecycle::terminal(uint16_t requestId) {
+  if (active_ && activeRequestId_ == requestId) {
+    active_ = false;
+    activeRequestId_ = 0;
+    return true;
   }
-  return length;
+  if (readOnly_ && readOnlyRequestId_ == requestId) {
+    readOnly_ = false;
+    readOnlyRequestId_ = 0;
+    return true;
+  }
+  return false;
+}
+
+static bool appendV2Char(char *buffer, size_t capacity, size_t *length,
+                         char value) {
+  if (*length >= V2_MAX_LINE_LENGTH || *length + 1 >= capacity) return false;
+  buffer[(*length)++] = value;
+  return true;
+}
+
+static bool appendV2Text(char *buffer, size_t capacity, size_t *length,
+                         const char *text) {
+  if (text == 0) return false;
+  while (*text != '\0') {
+    const unsigned char value = static_cast<unsigned char>(*text);
+    if (value < 0x20U || value > 0x7eU ||
+        !appendV2Char(buffer, capacity, length, *text))
+      return false;
+    ++text;
+  }
+  return true;
+}
+
+static bool appendV2Unsigned(char *buffer, size_t capacity, size_t *length,
+                             uint16_t value) {
+  char digits[5];
+  size_t count = 0;
+  do {
+    digits[count++] = static_cast<char>('0' + value % 10U);
+    value /= 10U;
+  } while (value != 0);
+  while (count > 0) {
+    if (!appendV2Char(buffer, capacity, length, digits[--count])) return false;
+  }
+  return true;
+}
+
+static bool finishV2Line(char *buffer, size_t capacity, const char *line,
+                        size_t length) {
+  if (length > V2_MAX_LINE_LENGTH || length + 2 > capacity) return false;
+  memcpy(buffer, line, length);
+  buffer[length] = '\n';
+  buffer[length + 1] = '\0';
+  return true;
+}
+
+bool formatV2Response(char *buffer, size_t capacity, uint16_t requestId,
+                      V2ResponseKind kind, const char *detail) {
+  if (buffer == 0 || capacity == 0) return false;
+  buffer[0] = '\0';
+  char line[V2_MAX_LINE_LENGTH + 1];
+  size_t length = 0;
+  if (!appendV2Char(line, sizeof(line), &length, '@') ||
+      !appendV2Unsigned(line, sizeof(line), &length, requestId) ||
+      !appendV2Char(line, sizeof(line), &length, ' '))
+    return false;
+
+  const char *prefix = "";
+  bool needsDetail = false;
+  bool colonBeforeDetail = false;
+  switch (kind) {
+    case V2ResponseKind::Accepted:
+      prefix = "accepted";
+      colonBeforeDetail = detail != 0 && detail[0] != '\0';
+      break;
+    case V2ResponseKind::Progress:
+      prefix = "progress:";
+      needsDetail = true;
+      break;
+    case V2ResponseKind::Data:
+      prefix = "data:";
+      needsDetail = true;
+      break;
+    case V2ResponseKind::Done:
+      prefix = "done";
+      colonBeforeDetail = detail != 0 && detail[0] != '\0';
+      break;
+    case V2ResponseKind::Error:
+      prefix = "error:";
+      needsDetail = true;
+      break;
+  }
+  if ((needsDetail && (detail == 0 || detail[0] == '\0')) ||
+      !appendV2Text(line, sizeof(line), &length, prefix) ||
+      (colonBeforeDetail &&
+       !appendV2Char(line, sizeof(line), &length, ':')) ||
+      ((detail != 0 && detail[0] != '\0') &&
+       !appendV2Text(line, sizeof(line), &length, detail)))
+    return false;
+  return finishV2Line(buffer, capacity, line, length);
+}
+
+bool formatV2Event(char *buffer, size_t capacity, uint16_t sequence,
+                   const char *detail) {
+  if (buffer == 0 || capacity == 0 || sequence == 0 || detail == 0 ||
+      detail[0] == '\0')
+    return false;
+  buffer[0] = '\0';
+  char line[V2_MAX_LINE_LENGTH + 1];
+  size_t length = 0;
+  if (!appendV2Char(line, sizeof(line), &length, '!') ||
+      !appendV2Unsigned(line, sizeof(line), &length, sequence) ||
+      !appendV2Char(line, sizeof(line), &length, ' ') ||
+      !appendV2Text(line, sizeof(line), &length, detail))
+    return false;
+  return finishV2Line(buffer, capacity, line, length);
+}
+
+bool emitV2Response(const V2OutputWriter &writer, uint16_t requestId,
+                    V2ResponseKind kind, const char *detail) {
+  char line[V2_MAX_LINE_LENGTH + 2];
+  return writer.writeLine != 0 &&
+         formatV2Response(line, sizeof(line), requestId, kind, detail) &&
+         writer.writeLine(writer.context, line, strlen(line));
+}
+
+bool emitV2Terminal(V2RequestLifecycle *lifecycle,
+                    const V2OutputWriter &writer, uint16_t requestId,
+                    V2ResponseKind kind, const char *detail) {
+  if (lifecycle == 0 || !lifecycle->owns(requestId) ||
+      (kind != V2ResponseKind::Done && kind != V2ResponseKind::Error) ||
+      !emitV2Response(writer, requestId, kind, detail))
+    return false;
+  return lifecycle->terminal(requestId);
 }
 
 size_t formatV2Protocol1Response(char *buffer, size_t capacity,
-                                 uint16_t requestId, bool busy) {
-  if (buffer == 0 || capacity == 0) return 0;
-  char digits[5];
-  size_t digitCount = 0;
-  do {
-    digits[digitCount++] = static_cast<char>('0' + requestId % 10U);
-    requestId /= 10U;
-  } while (requestId != 0 && digitCount < sizeof(digits));
-
-  size_t length = appendV2Text(buffer, capacity, 0, "@");
-  while (digitCount > 0 && length + 1 < capacity) {
-    buffer[length++] = digits[--digitCount];
-  }
-  length = appendV2Text(buffer, capacity, length,
-                        busy ? " error:2001:busy\n" : " done:protocol=1\n");
-  buffer[length] = '\0';
-  return length;
+                                uint16_t requestId, bool busy) {
+  return formatV2Response(buffer, capacity, requestId,
+                         busy ? V2ResponseKind::Error
+                              : V2ResponseKind::Done,
+                         busy ? "2001:busy" : "protocol=1")
+             ? strlen(buffer)
+             : 0;
 }
 #endif
 

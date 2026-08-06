@@ -241,6 +241,22 @@ void emitV1Response(void *, V1Response response) {
 
 #if PROTOCOL_V2_ENABLED
 ResponseSink responseSink = {0, emitV1Response, 0};
+
+bool emitV2Line(void *, const char *line, size_t length) {
+  if (line == 0 || length == 0 || length > V2_MAX_LINE_LENGTH + 1 ||
+      line[length - 1] != '\n' ||
+      (length > 1 && line[length - 2] == '\n')) {
+    return false;
+  }
+  for (size_t index = 0; index + 1 < length; ++index) {
+    const unsigned char value = static_cast<unsigned char>(line[index]);
+    if (value < 0x20U || value > 0x7eU) return false;
+  }
+  Serial.write(reinterpret_cast<const uint8_t *>(line), length);
+  return true;
+}
+
+V2OutputWriter v2OutputWriter = {0, emitV2Line};
 #else
 ResponseSink responseSink = {0, emitV1Response};
 #endif
@@ -566,63 +582,208 @@ void dispatchCommand(const char *command) {
 }
 
 #if PROTOCOL_V2_ENABLED
-void handleV2Frame(V1FrameStatus status, const char *command, size_t length) {
-  if (status != V1FrameStatus::Ready) {
+bool isExactV2(const char *text, size_t length, const char *expected) {
+  return text != 0 && strlen(expected) == length &&
+         memcmp(text, expected, length) == 0;
+}
+
+void emitV2Busy(uint16_t requestId, uint16_t activeRequestId) {
+  char detail[26] = "2001:busy active_id=";
+  char digits[5];
+  size_t digitCount = 0;
+  do {
+    digits[digitCount++] = static_cast<char>('0' + activeRequestId % 10U);
+    activeRequestId /= 10U;
+  } while (activeRequestId != 0);
+  size_t length = strlen(detail);
+  while (digitCount > 0) {
+    detail[length++] = digits[--digitCount];
+  }
+  detail[length] = '\0';
+  emitV2Response(v2OutputWriter, requestId, V2ResponseKind::Error, detail);
+}
+
+void emitV2DuplicateId(uint16_t requestId) {
+  char detail[30] = "reject:1003:bad_id";
+  if (requestId != 0) {
+    const size_t length = strlen(detail);
+    detail[length] = ' ';
+    detail[length + 1] = 'i';
+    detail[length + 2] = 'd';
+    detail[length + 3] = '=';
+    char digits[5];
+    size_t digitCount = 0;
+    uint16_t value = requestId;
+    do {
+      digits[digitCount++] = static_cast<char>('0' + value % 10U);
+      value /= 10U;
+    } while (value != 0);
+    size_t output = length + 4;
+    while (digitCount > 0) {
+      detail[output++] = digits[--digitCount];
+    }
+    detail[output] = '\0';
+  }
+  protocolSession.emitEvent(v2OutputWriter, detail);
+}
+
+bool formatV2Uptime(char *detail, size_t capacity) {
+  const char prefix[] = "uptime_ms=";
+  if (detail == 0 || capacity <= sizeof(prefix)) return false;
+  size_t length = sizeof(prefix) - 1;
+  memcpy(detail, prefix, length);
+  char digits[10];
+  size_t digitCount = 0;
+  unsigned long value = millis();
+  do {
+    digits[digitCount++] = static_cast<char>('0' + value % 10UL);
+    value /= 10UL;
+  } while (value != 0);
+  if (length + digitCount >= capacity) return false;
+  while (digitCount > 0) {
+    detail[length++] = digits[--digitCount];
+  }
+  detail[length] = '\0';
+  return true;
+}
+
+bool formatV2Version(char *detail, size_t capacity) {
+  const char prefix[] = "version=";
+  const char *version = v1FirmwareVersion();
+  const size_t prefixLength = sizeof(prefix) - 1;
+  const size_t versionLength = strlen(version);
+  if (detail == 0 || prefixLength + versionLength >= capacity) return false;
+  memcpy(detail, prefix, prefixLength);
+  memcpy(detail + prefixLength, version, versionLength + 1);
+  return true;
+}
+
+bool beginV2Immediate(uint16_t requestId) {
+  V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (requestId == 0 && lifecycle.isIdlessActive()) {
+    emitV2Busy(0, 0);
+    return false;
+  }
+  const V2BeginResult result = lifecycle.beginReadOnly(requestId);
+  if (result == V2BeginResult::DuplicateId) {
+    emitV2DuplicateId(requestId);
+    return false;
+  }
+  if (result == V2BeginResult::Busy) {
+    emitV2Busy(requestId, lifecycle.activeRequestId());
+    return false;
+  }
+  return true;
+}
+
+void handleV2Frame(uint8_t status, const char *command,
+                   size_t length) {
+  if (status == static_cast<uint8_t>(V2FrameParser::FrameOverflow) ||
+      status == static_cast<uint8_t>(V2FrameParser::FrameInvalid)) {
+    protocolSession.emitEvent(v2OutputWriter, "reject:1001:bad_frame");
     return;
   }
 
-  uint16_t requestId;
-  const V2Protocol1Action action =
-      dispatchV2Protocol1(command, length, executionBusy(),
-                          pendingCommand.available(), &requestId);
-  if (action == V2Protocol1Action::NotHandled) {
+  if (status != static_cast<uint8_t>(V2FrameParser::FrameReady)) {
     return;
   }
 
-  char response[32];
-  formatV2Protocol1Response(response, sizeof(response), requestId,
-                            action == V2Protocol1Action::Busy);
-  Serial.print(response);
-  if (action == V2Protocol1Action::ReturnToV1) {
+  V2RequestEnvelope envelope;
+  const V2EnvelopeStatus envelopeStatus =
+      parseV2RequestEnvelope(command, length, &envelope);
+  if (envelopeStatus != V2EnvelopeStatus::Ready) {
+    protocolSession.emitEvent(
+        v2OutputWriter, envelopeStatus == V2EnvelopeStatus::BadId
+                            ? "reject:1003:bad_id"
+                            : "reject:1001:bad_frame");
+    return;
+  }
+
+  V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (isExactV2(envelope.payload, envelope.payloadLength, "protocol:1")) {
+    if (envelope.requestId == 0 && lifecycle.isIdlessActive()) {
+      emitV2Busy(0, 0);
+      return;
+    }
+    if (lifecycle.owns(envelope.requestId)) {
+      emitV2DuplicateId(envelope.requestId);
+      return;
+    }
+    if (executionBusy() || lifecycle.isActive()) {
+      emitV2Busy(envelope.requestId, lifecycle.activeRequestId());
+      return;
+    }
+    if (!beginV2Immediate(envelope.requestId) ||
+        !emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
+                        V2ResponseKind::Done, "protocol=1")) {
+      return;
+    }
     Serial.flush();
     commandParser.reset();
     clearPendingCommand();
     protocolSession.reset();
+    return;
   }
+
+  if (!beginV2Immediate(envelope.requestId)) {
+    return;
+  }
+
+  if (isExactV2(envelope.payload, envelope.payloadLength, "ping")) {
+    char detail[22];
+    emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
+                   V2ResponseKind::Done,
+                   formatV2Uptime(detail, sizeof(detail)) ? detail : 0);
+    return;
+  }
+  if (isExactV2(envelope.payload, envelope.payloadLength, "version")) {
+    char detail[32];
+    if (formatV2Version(detail, sizeof(detail)) &&
+        emitV2Response(v2OutputWriter, envelope.requestId,
+                       V2ResponseKind::Data, detail)) {
+      emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
+                     V2ResponseKind::Done, 0);
+    }
+    return;
+  }
+  emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
+                 V2ResponseKind::Error, "1004:unknown_command");
 }
 #endif
 
 void checkSerial(){
   while (Serial.available() > 0) {
+#if PROTOCOL_V2_ENABLED
+    if (protocolSession.mode() == ProtocolMode::V2) {
+      V2FrameParser &parser = protocolSession.parser();
+      const V2FrameParser::Result result =
+          parser.consume(static_cast<char>(Serial.read()));
+      if (result == V2FrameParser::FrameOverflow ||
+          result == V2FrameParser::FrameInvalid) {
+        handleV2Frame(static_cast<uint8_t>(result), 0, 0);
+      } else if (result == V2FrameParser::FrameReady) {
+        handleV2Frame(static_cast<uint8_t>(result), parser.frame(),
+                    parser.length());
+        parser.reset();
+      }
+      continue;
+    }
+#endif
     const CommandParser::Result result =
         commandParser.consume(static_cast<char>(Serial.read()));
     if (result == CommandParser::FrameOverflow) {
-#if PROTOCOL_V2_ENABLED
-      if (protocolSession.mode() == ProtocolMode::V2) {
-        handleV2Frame(V1FrameStatus::TooLong, 0, 0);
-      } else
-#endif
       handleV1Frame(V1FrameStatus::TooLong, 0, 0);
     } else if (result == CommandParser::FrameInvalid) {
-#if PROTOCOL_V2_ENABLED
-      if (protocolSession.mode() == ProtocolMode::V2) {
-        handleV2Frame(V1FrameStatus::Invalid, 0, 0);
-      } else
-#endif
       handleV1Frame(V1FrameStatus::Invalid, 0, 0);
     } else if (result == CommandParser::FrameReady) {
       const char *frame = commandParser.frame();
-#if PROTOCOL_V2_ENABLED
-      if (protocolSession.mode() == ProtocolMode::V2) {
-        handleV2Frame(V1FrameStatus::Ready, frame, commandParser.length());
-      } else
-#endif
       handleV1Frame(V1FrameStatus::Ready, frame, commandParser.length());
       commandParser.reset();
     }
   }
 
-  if (pendingCommand.available() && !executionBusy()) {
+  if (protocolSession.mode() == ProtocolMode::V1 && pendingCommand.available() &&
+      !executionBusy()) {
     handleV1Frame(V1FrameStatus::Ready, pendingCommand.frame(),
                   strlen(pendingCommand.frame()), true);
     pendingCommand.clear();
