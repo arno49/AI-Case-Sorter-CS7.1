@@ -4,6 +4,13 @@
 
 #include "logic.h"
 
+#if defined(ARDUINO)
+#include <avr/pgmspace.h>
+#define CS71_V2_TEXT(value) PSTR(value)
+#else
+#define CS71_V2_TEXT(value) value
+#endif
+
 ProtocolSession::ProtocolSession() {
   reset();
 }
@@ -57,6 +64,7 @@ V2RequestLifecycle &ProtocolSession::lifecycle() {
   return lifecycle_;
 }
 
+#if !defined(ARDUINO)
 bool ProtocolSession::emitEvent(const V2OutputWriter &writer,
                                 const char *detail) {
   char line[V2_MAX_LINE_LENGTH + 2];
@@ -67,20 +75,26 @@ bool ProtocolSession::emitEvent(const V2OutputWriter &writer,
   nextEventSequence();
   return true;
 }
+#endif
 
 static bool isExact(const char *command, size_t length, const char *expected) {
+#if defined(ARDUINO)
+  return command != 0 && strlen_P(expected) == length &&
+         memcmp_P(command, expected, length) == 0;
+#else
   return command != 0 && strlen(expected) == length &&
          memcmp(command, expected, length) == 0;
+#endif
 }
 
 V2NegotiationAction dispatchV2Negotiation(const char *command, size_t length,
                                           bool executionBusy,
                                           bool pendingCommand) {
-  if (isExact(command, length, "protocol:2?")) {
+  if (isExact(command, length, CS71_V2_TEXT("protocol:2?"))) {
     return executionBusy || pendingCommand ? V2NegotiationAction::Busy
                                            : V2NegotiationAction::Discovery;
   }
-  if (isExact(command, length, "protocol:2")) {
+  if (isExact(command, length, CS71_V2_TEXT("protocol:2"))) {
     return executionBusy || pendingCommand ? V2NegotiationAction::Busy
                                            : V2NegotiationAction::Activate;
   }
@@ -138,7 +152,8 @@ V2Protocol1Action dispatchV2Protocol1(const char *command, size_t length,
   if (requestId == 0 ||
       parseV2RequestEnvelope(command, length, &envelope) !=
           V2EnvelopeStatus::Ready ||
-      !isExact(envelope.payload, envelope.payloadLength, "protocol:1"))
+      !isExact(envelope.payload, envelope.payloadLength,
+               CS71_V2_TEXT("protocol:1")))
     return V2Protocol1Action::NotHandled;
   *requestId = envelope.requestId;
   return executionBusy || pendingCommand ? V2Protocol1Action::Busy
@@ -224,6 +239,7 @@ bool V2RequestLifecycle::terminal(uint16_t requestId) {
   return false;
 }
 
+#if !defined(ARDUINO)
 static bool appendV2Char(char *buffer, size_t capacity, size_t *length,
                          char value) {
   if (*length >= V2_MAX_LINE_LENGTH || *length + 1 >= capacity) return false;
@@ -247,6 +263,20 @@ static bool appendV2Text(char *buffer, size_t capacity, size_t *length,
 static bool appendV2Unsigned(char *buffer, size_t capacity, size_t *length,
                              uint16_t value) {
   char digits[5];
+  size_t count = 0;
+  do {
+    digits[count++] = static_cast<char>('0' + value % 10U);
+    value /= 10U;
+  } while (value != 0);
+  while (count > 0) {
+    if (!appendV2Char(buffer, capacity, length, digits[--count])) return false;
+  }
+  return true;
+}
+
+static bool appendV2Unsigned32(char *buffer, size_t capacity, size_t *length,
+                               uint32_t value) {
+  char digits[10];
   size_t count = 0;
   do {
     digits[count++] = static_cast<char>('0' + value % 10U);
@@ -346,6 +376,290 @@ bool emitV2Terminal(V2RequestLifecycle *lifecycle,
     return false;
   return lifecycle->terminal(requestId);
 }
+#endif
+
+V2InspectionCommand classifyV2InspectionCommand(const char *payload,
+                                                size_t length) {
+  if (isExact(payload, length, CS71_V2_TEXT("protocolversion")))
+    return V2InspectionCommand::ProtocolVersion;
+  if (isExact(payload, length, CS71_V2_TEXT("capabilities")))
+    return V2InspectionCommand::Capabilities;
+  if (isExact(payload, length, CS71_V2_TEXT("status")))
+    return V2InspectionCommand::Status;
+  if (isExact(payload, length, CS71_V2_TEXT("queue")))
+    return V2InspectionCommand::Queue;
+  return V2InspectionCommand::None;
+}
+
+MachinePhase deriveMachinePhase(const V2MachineActivity &activity) {
+  if (activity.diagnosticActive) return MachinePhase::Diagnostic;
+  if (activity.feedCompletionActive)
+    return activity.airDropActive ? MachinePhase::AirDrop
+                                  : MachinePhase::Settling;
+  if (activity.feedHoming || activity.feedHomingOffset)
+    return MachinePhase::FeedHome;
+  if (activity.sortHoming || activity.sortHomingOffset || activity.sorterJogActive)
+    return MachinePhase::SortHome;
+  if (activity.sortMoving) return MachinePhase::SortMove;
+  if (activity.slotDropGateActive) return MachinePhase::Settling;
+  if (activity.feeding) return MachinePhase::FeedMove;
+  if (activity.feedScheduled) return MachinePhase::FeedWait;
+  if (activity.feedCycleInProgress ||
+      (activity.feedCycleComplete && !activity.feedError))
+    return MachinePhase::Settling;
+  return MachinePhase::Idle;
+}
+
+#if !defined(ARDUINO)
+static bool formatV2LiteralField(char *buffer, size_t capacity,
+                                 const char *key, const char *value) {
+  if (buffer == 0 || capacity == 0 || key == 0 || value == 0) return false;
+  size_t length = 0;
+  buffer[0] = '\0';
+  return appendV2Text(buffer, capacity, &length, key) &&
+         appendV2Char(buffer, capacity, &length, '=') &&
+         appendV2Text(buffer, capacity, &length, value) &&
+         (length < capacity ? (buffer[length] = '\0', true) : false);
+}
+
+static bool formatV2UnsignedField(char *buffer, size_t capacity,
+                                  const char *key, uint32_t value) {
+  if (buffer == 0 || capacity == 0 || key == 0) return false;
+  size_t length = 0;
+  buffer[0] = '\0';
+  return appendV2Text(buffer, capacity, &length, key) &&
+         appendV2Char(buffer, capacity, &length, '=') &&
+         appendV2Unsigned32(buffer, capacity, &length, value) &&
+         (length < capacity ? (buffer[length] = '\0', true) : false);
+}
+
+static bool formatProtocolVersion(char *buffer, size_t capacity,
+                                  const V2ObservabilitySnapshot &) {
+  return formatV2LiteralField(buffer, capacity, "protocol", "2");
+}
+
+static bool formatCapabilitiesProtocol(char *buffer, size_t capacity,
+                                       const V2ObservabilitySnapshot &) {
+  return formatV2LiteralField(buffer, capacity, "protocol", "2");
+}
+
+static bool formatCapabilitiesMaxLine(char *buffer, size_t capacity,
+                                      const V2ObservabilitySnapshot &) {
+  return formatV2UnsignedField(buffer, capacity, "max_line", V2_MAX_LINE_LENGTH);
+}
+
+static bool formatCapabilitiesCrc(char *buffer, size_t capacity,
+                                  const V2ObservabilitySnapshot &) {
+  return formatV2LiteralField(buffer, capacity, "crc", "none");
+}
+
+static bool formatCapabilitiesQueueDepth(char *buffer, size_t capacity,
+                                         const V2ObservabilitySnapshot &) {
+  return formatV2UnsignedField(buffer, capacity, "queue_depth", 2);
+}
+
+static bool formatCapabilitiesSlotMax(char *buffer, size_t capacity,
+                                      const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "slot_max",
+                               snapshot.capabilities.slotMax);
+}
+
+static bool formatCapabilitiesSlotCount(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "slot_count",
+                               snapshot.capabilities.slotCount);
+}
+
+static bool formatCapabilitiesPwm(char *buffer, size_t capacity,
+                                  const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "pwm",
+                               snapshot.capabilities.pwm ? 1 : 0);
+}
+
+static bool formatCapabilitiesAirDrop(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "airdrop",
+                               snapshot.capabilities.airDrop ? 1 : 0);
+}
+
+static bool formatCapabilitiesFeedSensor(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "feed_sensor",
+                               snapshot.capabilities.feedSensor ? 1 : 0);
+}
+
+static bool formatCapabilitiesFeedHome(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "feed_home",
+                               snapshot.capabilities.feedHome ? 1 : 0);
+}
+
+static bool formatCapabilitiesSortHome(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "sort_home",
+                               snapshot.capabilities.sortHome ? 1 : 0);
+}
+
+static const char *machineModeName(MachineMode mode) {
+  switch (mode) {
+    case MachineMode::Running:
+      return "running";
+    case MachineMode::Recovering:
+      return "recovering";
+    case MachineMode::Stopped:
+      return "stopped";
+  }
+  return "recovering";
+}
+
+static const char *machinePhaseName(MachinePhase phase) {
+  switch (phase) {
+    case MachinePhase::Idle:
+      return "idle";
+    case MachinePhase::FeedWait:
+      return "feed_wait";
+    case MachinePhase::FeedMove:
+      return "feed_move";
+    case MachinePhase::FeedHome:
+      return "feed_home";
+    case MachinePhase::SortMove:
+      return "sort_move";
+    case MachinePhase::SortHome:
+      return "sort_home";
+    case MachinePhase::Settling:
+      return "settling";
+    case MachinePhase::AirDrop:
+      return "airdrop";
+    case MachinePhase::Diagnostic:
+      return "diagnostic";
+  }
+  return "idle";
+}
+
+static bool formatStatusMode(char *buffer, size_t capacity,
+                             const V2ObservabilitySnapshot &snapshot) {
+  return formatV2LiteralField(buffer, capacity, "mode",
+                              machineModeName(snapshot.status.mode));
+}
+
+static bool formatStatusPhase(char *buffer, size_t capacity,
+                              const V2ObservabilitySnapshot &snapshot) {
+  return formatV2LiteralField(buffer, capacity, "phase",
+                              machinePhaseName(snapshot.status.phase));
+}
+
+static bool formatStatusFeedHomed(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "feed_homed",
+                               snapshot.status.feedHomed ? 1 : 0);
+}
+
+static bool formatStatusSortHomed(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "sort_homed",
+                               snapshot.status.sortHomed ? 1 : 0);
+}
+
+static bool formatStatusMotorEnabled(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "motor_enabled",
+                               snapshot.status.motorEnabled ? 1 : 0);
+}
+
+static bool formatStatusActiveId(char *buffer, size_t capacity,
+                                 const V2ObservabilitySnapshot &snapshot) {
+  return snapshot.status.hasActiveRequest
+             ? formatV2UnsignedField(buffer, capacity, "active_id",
+                                     snapshot.status.activeRequestId)
+             : formatV2LiteralField(buffer, capacity, "active_id", "none");
+}
+
+static bool formatStatusFaultCode(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "fault_code",
+                               snapshot.status.faultCode);
+}
+
+static bool formatQueuePrevious(char *buffer, size_t capacity,
+                                const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "queue_previous",
+                               snapshot.status.queuePrevious);
+}
+
+static bool formatQueueNext(char *buffer, size_t capacity,
+                            const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "queue_next",
+                               snapshot.status.queueNext);
+}
+
+static bool formatStatusConfigGeneration(
+    char *buffer, size_t capacity, const V2ObservabilitySnapshot &snapshot) {
+  return formatV2UnsignedField(buffer, capacity, "config_generation",
+                               snapshot.status.configGeneration);
+}
+
+bool streamV2InspectionFields(V2InspectionCommand command,
+                              const V2ObservabilitySnapshot &snapshot,
+                              const V2OutputWriter &writer,
+                              uint16_t requestId) {
+#define CS71_STREAM_V2_FIELD(format)                                           \
+  do {                                                                         \
+    char detail[V2_MAX_LINE_LENGTH + 1];                                       \
+    if (!format(detail, sizeof(detail), snapshot) ||                           \
+        !emitV2Response(writer, requestId, V2ResponseKind::Data, detail))     \
+      return false;                                                            \
+  } while (false)
+  switch (command) {
+    case V2InspectionCommand::ProtocolVersion:
+      CS71_STREAM_V2_FIELD(formatProtocolVersion);
+      return true;
+    case V2InspectionCommand::Capabilities:
+      CS71_STREAM_V2_FIELD(formatCapabilitiesProtocol);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesMaxLine);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesCrc);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesQueueDepth);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesSlotMax);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesSlotCount);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesPwm);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesAirDrop);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesFeedSensor);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesFeedHome);
+      CS71_STREAM_V2_FIELD(formatCapabilitiesSortHome);
+      return true;
+    case V2InspectionCommand::Status:
+      CS71_STREAM_V2_FIELD(formatStatusMode);
+      CS71_STREAM_V2_FIELD(formatStatusPhase);
+      CS71_STREAM_V2_FIELD(formatStatusFeedHomed);
+      CS71_STREAM_V2_FIELD(formatStatusSortHomed);
+      CS71_STREAM_V2_FIELD(formatStatusMotorEnabled);
+      CS71_STREAM_V2_FIELD(formatStatusActiveId);
+      CS71_STREAM_V2_FIELD(formatStatusFaultCode);
+      CS71_STREAM_V2_FIELD(formatQueuePrevious);
+      CS71_STREAM_V2_FIELD(formatQueueNext);
+      CS71_STREAM_V2_FIELD(formatStatusConfigGeneration);
+      return true;
+    case V2InspectionCommand::Queue:
+      CS71_STREAM_V2_FIELD(formatCapabilitiesQueueDepth);
+      CS71_STREAM_V2_FIELD(formatQueuePrevious);
+      CS71_STREAM_V2_FIELD(formatQueueNext);
+      return true;
+    case V2InspectionCommand::None:
+#undef CS71_STREAM_V2_FIELD
+      return false;
+  }
+#undef CS71_STREAM_V2_FIELD
+  return true;
+}
+
+bool emitV2Inspection(V2RequestLifecycle *lifecycle,
+                      const V2OutputWriter &writer, uint16_t requestId,
+                      V2InspectionCommand command,
+                      const V2ObservabilitySnapshot &snapshot) {
+  if (!streamV2InspectionFields(command, snapshot, writer, requestId))
+    return emitV2Terminal(lifecycle, writer, requestId, V2ResponseKind::Error,
+                          "1005:internal");
+  return emitV2Terminal(lifecycle, writer, requestId, V2ResponseKind::Done, 0);
+}
 
 size_t formatV2Protocol1Response(char *buffer, size_t capacity,
                                 uint16_t requestId, bool busy) {
@@ -356,6 +670,7 @@ size_t formatV2Protocol1Response(char *buffer, size_t capacity,
              ? strlen(buffer)
              : 0;
 }
+#endif
 #endif
 
 const char *v1ResponseText(V1Response response) {
@@ -388,7 +703,7 @@ const char *v1FirmwareVersion() {
   return CS71_FIRMWARE_VERSION;
 }
 
-#if PROTOCOL_V2_ENABLED
+#if PROTOCOL_V2_ENABLED && !defined(ARDUINO)
 void ResponseSink::v2Line(const char *line) const {
   if (emitV2Line != 0) emitV2Line(context, line);
 }
