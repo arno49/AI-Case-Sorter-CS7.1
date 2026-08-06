@@ -2,6 +2,7 @@
 
 #include <unity.h>
 
+#include "fault_state_tracker.h"
 #include "protocol.h"
 #include "v2_parser.h"
 
@@ -207,10 +208,70 @@ void test_v2_terminal_is_emitted_once_and_events_wrap() {
   for (uint32_t index = 1; index < 65535U; ++index) {
     session.nextEventSequence();
   }
+
   TEST_ASSERT_EQUAL(65535, session.eventSequence());
   TEST_ASSERT_EQUAL(65535, session.nextEventSequence());
   TEST_ASSERT_EQUAL(1, session.nextEventSequence());
   TEST_ASSERT_EQUAL(2, session.eventSequence());
+}
+
+void test_v2_feed_fault_is_latched_correlated_and_emitted_once() {
+  FaultStateTracker tracker;
+  V2RequestLifecycle lifecycle;
+  V2Capture capture = {};
+  V2OutputWriter writer = {&capture, captureV2Line};
+  ProtocolSession session;
+  session.enterV2();
+
+  TEST_ASSERT_EQUAL(static_cast<int>(V2BeginResult::Started),
+                    static_cast<int>(lifecycle.beginActive(44)));
+  TEST_ASSERT_TRUE(tracker.latchFeedOvertravel());
+  TEST_ASSERT_EQUAL(3001, tracker.faultCode());
+  TEST_ASSERT_TRUE(emitV2Terminal(&lifecycle, writer, 44,
+                                  V2ResponseKind::Error,
+                                  "3001:feed_overtravel"));
+  TEST_ASSERT_TRUE(session.emitEvent(writer,
+                                     "fault:3001:feed_overtravel latched=1"));
+  TEST_ASSERT_FALSE(tracker.latchFeedOvertravel());
+  TEST_ASSERT_FALSE(emitV2Terminal(&lifecycle, writer, 44,
+                                   V2ResponseKind::Error,
+                                   "3001:feed_overtravel"));
+  TEST_ASSERT_EQUAL(2, capture.writes);
+  TEST_ASSERT_EQUAL_STRING("@44 error:3001:feed_overtravel\n", capture.lines[0]);
+  TEST_ASSERT_EQUAL_STRING("!1 fault:3001:feed_overtravel latched=1\n",
+                           capture.lines[1]);
+}
+
+void test_v2_fault_latch_survives_protocol_transition_and_clears_on_recovery() {
+  FaultStateTracker tracker;
+  TEST_ASSERT_TRUE(tracker.latchFeedOvertravel());
+  tracker.baseline(static_cast<uint8_t>(MachineMode::Recovering),
+                   static_cast<uint8_t>(MachinePhase::FeedHome));
+  tracker.baseline(static_cast<uint8_t>(MachineMode::Recovering),
+                   static_cast<uint8_t>(MachinePhase::FeedHome));
+  TEST_ASSERT_EQUAL(3001, tracker.faultCode());
+  TEST_ASSERT_TRUE(tracker.clearAfterFeedRecovery());
+  TEST_ASSERT_EQUAL(0, tracker.faultCode());
+  TEST_ASSERT_FALSE(tracker.clearAfterFeedRecovery());
+
+  TEST_ASSERT_TRUE(tracker.latchFeedOvertravel());
+  tracker.reset();
+  TEST_ASSERT_EQUAL(0, tracker.faultCode());
+}
+
+void test_v2_state_tracker_deduplicates_and_baselines_without_an_event() {
+  FaultStateTracker tracker;
+  tracker.baseline(static_cast<uint8_t>(MachineMode::Recovering),
+                   static_cast<uint8_t>(MachinePhase::FeedHome));
+  TEST_ASSERT_FALSE(tracker.observeState(
+      static_cast<uint8_t>(MachineMode::Recovering),
+      static_cast<uint8_t>(MachinePhase::FeedHome)));
+  TEST_ASSERT_TRUE(tracker.observeState(static_cast<uint8_t>(MachineMode::Running),
+                                        static_cast<uint8_t>(MachinePhase::Idle)));
+  TEST_ASSERT_FALSE(tracker.observeState(static_cast<uint8_t>(MachineMode::Running),
+                                         static_cast<uint8_t>(MachinePhase::Idle)));
+  TEST_ASSERT_TRUE(tracker.observeState(static_cast<uint8_t>(MachineMode::Running),
+                                        static_cast<uint8_t>(MachinePhase::FeedMove)));
 }
 
 void test_v2_stop_cancellation_clears_active_and_read_only_owners() {
@@ -621,6 +682,21 @@ void test_v2_status_reports_current_configuration_generation() {
   assertCapturedLine(capture, "@33 data:config_generation=17\n");
 }
 
+void test_v2_status_reports_latched_feed_overtravel() {
+  FaultStateTracker tracker;
+  V2ObservabilitySnapshot snapshot = observabilitySnapshot();
+  V2Capture capture = {};
+  TEST_ASSERT_TRUE(tracker.latchFeedOvertravel());
+  snapshot.status.faultCode = tracker.faultCode();
+  assertInspection(V2InspectionCommand::Status, 34, snapshot, &capture);
+  assertCapturedLine(capture, "@34 data:fault_code=3001\n");
+  TEST_ASSERT_TRUE(tracker.clearAfterFeedRecovery());
+  snapshot.status.faultCode = tracker.faultCode();
+  capture = {};
+  assertInspection(V2InspectionCommand::Status, 35, snapshot, &capture);
+  assertCapturedLine(capture, "@35 data:fault_code=0\n");
+}
+
 void test_v2_observability_streams_every_required_field() {
   const V2ObservabilitySnapshot snapshot = observabilitySnapshot();
   V2Capture capture = {};
@@ -796,6 +872,9 @@ int main(int, char **) {
   RUN_TEST(test_v2_lifecycle_allows_one_active_and_one_immediate_read_only);
   RUN_TEST(test_v2_formatters_are_bounded_and_emit_one_lf);
   RUN_TEST(test_v2_terminal_is_emitted_once_and_events_wrap);
+  RUN_TEST(test_v2_feed_fault_is_latched_correlated_and_emitted_once);
+  RUN_TEST(test_v2_fault_latch_survives_protocol_transition_and_clears_on_recovery);
+  RUN_TEST(test_v2_state_tracker_deduplicates_and_baselines_without_an_event);
   RUN_TEST(test_v2_stop_cancellation_clears_active_and_read_only_owners);
   RUN_TEST(test_v2_stop_cancellation_handles_idless_and_no_active_requests);
   RUN_TEST(test_v2_stop_rejects_a_duplicate_active_request_id);
@@ -809,6 +888,7 @@ int main(int, char **) {
   RUN_TEST(test_v2_setter_ordering_constraints_use_v1_geometry_validation);
   RUN_TEST(test_v2_getconfig_streams_v1_schema_slotcount_and_optional_pwm);
   RUN_TEST(test_v2_status_reports_current_configuration_generation);
+  RUN_TEST(test_v2_status_reports_latched_feed_overtravel);
   RUN_TEST(test_v2_observability_streams_every_required_field);
   RUN_TEST(test_v2_queue_preserves_two_position_mapping);
   RUN_TEST(test_v2_failed_data_write_does_not_emit_success_terminal);
