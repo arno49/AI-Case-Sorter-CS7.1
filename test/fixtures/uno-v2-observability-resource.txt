@@ -1,0 +1,26 @@
+CS7.1 firmware Protocol V2 observability resources
+baseline_fixture=test/fixtures/uno-resource-baseline.txt
+envelope_fixture=test/fixtures/uno-v2-envelope-resource.txt
+environment=uno
+build_flag=PROTOCOL_V2_ENABLED=0
+flash_used_bytes=16800
+flash_available_bytes=32256
+static_sram_used_bytes=882
+static_sram_available_bytes=2048
+baseline_flash_delta_bytes=2554
+baseline_static_sram_delta_bytes=62
+measurement_command=python3 -m platformio run -e uno
+v2_environment=uno_v2
+v2_build_flag=PROTOCOL_V2_ENABLED=1
+v2_flash_used_bytes=20848
+v2_flash_available_bytes=32256
+v2_static_sram_used_bytes=962
+v2_static_sram_available_bytes=2048
+baseline_v2_flash_delta_bytes=6602
+baseline_v2_static_sram_delta_bytes=142
+envelope_v2_flash_delta_bytes=252
+envelope_v2_static_sram_delta_bytes=-199
+v2_over_default_flash_delta_bytes=4048
+v2_over_default_static_sram_delta_bytes=80
+measurement_command_v2=python3 -m platformio run -e uno_v2
+scope=V2-05 streams protocolversion, capabilities, status, and queue directly from flash-backed literals; CRC is truthfully advertised as none.

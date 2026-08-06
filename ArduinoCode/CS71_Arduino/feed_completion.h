@@ -35,6 +35,7 @@ class FeedCompletion {
   void cancel();
 
   bool isActive() const;
+  bool airDropActive() const;
   FeedCompletionState state() const;
   const FeedCompletionConfig &snapshot() const;
 

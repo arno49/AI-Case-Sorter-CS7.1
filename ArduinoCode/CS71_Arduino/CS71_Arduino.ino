@@ -227,6 +227,13 @@ unsigned long timeSinceLastMotorMove;
 unsigned long msgResetTimer;
 
 bool proxActivated = false;
+bool motorDriversEnabled = false;
+uint32_t configGeneration = 0;
+
+void setMotorDriversEnabled(bool enabled) {
+  motorDriversEnabled = enabled;
+  digitalWrite(MOTOR_Enable, enabled ? LOW : HIGH);
+}
 
 void emitV1Response(void *, V1Response response) {
   switch (response) {
@@ -239,27 +246,7 @@ void emitV1Response(void *, V1Response response) {
   }
 }
 
-#if PROTOCOL_V2_ENABLED
-ResponseSink responseSink = {0, emitV1Response, 0};
-
-bool emitV2Line(void *, const char *line, size_t length) {
-  if (line == 0 || length == 0 || length > V2_MAX_LINE_LENGTH + 1 ||
-      line[length - 1] != '\n' ||
-      (length > 1 && line[length - 2] == '\n')) {
-    return false;
-  }
-  for (size_t index = 0; index + 1 < length; ++index) {
-    const unsigned char value = static_cast<unsigned char>(line[index]);
-    if (value < 0x20U || value > 0x7eU) return false;
-  }
-  Serial.write(reinterpret_cast<const uint8_t *>(line), length);
-  return true;
-}
-
-V2OutputWriter v2OutputWriter = {0, emitV2Line};
-#else
 ResponseSink responseSink = {0, emitV1Response};
-#endif
 
 void emitV1ConfigurationText(void *, V1ConfigurationText text) {
   switch (text) {
@@ -357,7 +344,7 @@ void cancelDiagnosticCycles() {
 
 void enterStoppedState() {
   machineState.enterStopped();
-  digitalWrite(MOTOR_Enable, HIGH);
+  setMotorDriversEnabled(false);
   cancelFeedCompletion();
   cancelSorterJog();
 
@@ -419,7 +406,7 @@ void setup() {
     adjustCameraLED(cameraLEDLevel);
   #endif
 
-  digitalWrite(MOTOR_Enable, LOW);
+  setMotorDriversEnabled(true);
   digitalWrite(FEED_DIRPIN, LOW);
   jogSorter(true);
   msgResetTimer = millis();
@@ -456,7 +443,7 @@ void applyV1Action(const V1DispatchResult &result) {
       enterStoppedState();
       return;
     case V1Action::HomeFeeder:
-      digitalWrite(MOTOR_Enable, LOW);
+      setMotorDriversEnabled(true);
       machineState.beginRecovery(MachineAxis::Feeder);
       feedDelayMS = 400;
       FeedSteps = feedMicroSteps;
@@ -469,7 +456,7 @@ void applyV1Action(const V1DispatchResult &result) {
       IsFeedHoming = true;
       return;
     case V1Action::HomeSorter:
-      digitalWrite(MOTOR_Enable, LOW);
+      setMotorDriversEnabled(true);
       machineState.beginRecovery(MachineAxis::Sorter);
       sortDelayMS = 400;
       SortComplete = false;
@@ -582,80 +569,75 @@ void dispatchCommand(const char *command) {
 }
 
 #if PROTOCOL_V2_ENABLED
-bool isExactV2(const char *text, size_t length, const char *expected) {
-  return text != 0 && strlen(expected) == length &&
-         memcmp(text, expected, length) == 0;
+bool isExactV2(const char *text, size_t length,
+               const __FlashStringHelper *expected) {
+  const char *flashText = reinterpret_cast<const char *>(expected);
+  return text != 0 && strlen_P(flashText) == length &&
+         memcmp_P(text, flashText, length) == 0;
+}
+
+void beginV2Line(uint16_t requestId, const __FlashStringHelper *prefix) {
+  Serial.write('@');
+  Serial.print(requestId);
+  Serial.write(' ');
+  Serial.print(prefix);
+}
+
+void finishV2Line() {
+  Serial.write('\n');
+}
+
+void emitV2DataUnsigned(uint16_t requestId, const __FlashStringHelper *key,
+                        uint32_t value) {
+  beginV2Line(requestId, F("data:"));
+  Serial.print(key);
+  Serial.print(value);
+  finishV2Line();
+}
+
+void emitV2DataText(uint16_t requestId, const __FlashStringHelper *key,
+                    const __FlashStringHelper *value) {
+  beginV2Line(requestId, F("data:"));
+  Serial.print(key);
+  Serial.print(value);
+  finishV2Line();
+}
+
+bool emitV2Terminal(V2RequestLifecycle *lifecycle, uint16_t requestId,
+                    bool error, const __FlashStringHelper *detail = 0) {
+  if (lifecycle == 0 || !lifecycle->owns(requestId)) return false;
+  beginV2Line(requestId, error ? F("error:") : F("done"));
+  if (detail != 0) {
+    if (!error) Serial.write(':');
+    Serial.print(detail);
+  }
+  finishV2Line();
+  return lifecycle->terminal(requestId);
+}
+
+void emitV2Event(const __FlashStringHelper *detail) {
+  Serial.write('!');
+  Serial.print(protocolSession.nextEventSequence());
+  Serial.write(' ');
+  Serial.print(detail);
+  finishV2Line();
 }
 
 void emitV2Busy(uint16_t requestId, uint16_t activeRequestId) {
-  char detail[26] = "2001:busy active_id=";
-  char digits[5];
-  size_t digitCount = 0;
-  do {
-    digits[digitCount++] = static_cast<char>('0' + activeRequestId % 10U);
-    activeRequestId /= 10U;
-  } while (activeRequestId != 0);
-  size_t length = strlen(detail);
-  while (digitCount > 0) {
-    detail[length++] = digits[--digitCount];
-  }
-  detail[length] = '\0';
-  emitV2Response(v2OutputWriter, requestId, V2ResponseKind::Error, detail);
+  beginV2Line(requestId, F("error:2001:busy active_id="));
+  Serial.print(activeRequestId);
+  finishV2Line();
 }
 
 void emitV2DuplicateId(uint16_t requestId) {
-  char detail[30] = "reject:1003:bad_id";
+  Serial.write('!');
+  Serial.print(protocolSession.nextEventSequence());
+  Serial.print(F(" reject:1003:bad_id"));
   if (requestId != 0) {
-    const size_t length = strlen(detail);
-    detail[length] = ' ';
-    detail[length + 1] = 'i';
-    detail[length + 2] = 'd';
-    detail[length + 3] = '=';
-    char digits[5];
-    size_t digitCount = 0;
-    uint16_t value = requestId;
-    do {
-      digits[digitCount++] = static_cast<char>('0' + value % 10U);
-      value /= 10U;
-    } while (value != 0);
-    size_t output = length + 4;
-    while (digitCount > 0) {
-      detail[output++] = digits[--digitCount];
-    }
-    detail[output] = '\0';
+    Serial.print(F(" id="));
+    Serial.print(requestId);
   }
-  protocolSession.emitEvent(v2OutputWriter, detail);
-}
-
-bool formatV2Uptime(char *detail, size_t capacity) {
-  const char prefix[] = "uptime_ms=";
-  if (detail == 0 || capacity <= sizeof(prefix)) return false;
-  size_t length = sizeof(prefix) - 1;
-  memcpy(detail, prefix, length);
-  char digits[10];
-  size_t digitCount = 0;
-  unsigned long value = millis();
-  do {
-    digits[digitCount++] = static_cast<char>('0' + value % 10UL);
-    value /= 10UL;
-  } while (value != 0);
-  if (length + digitCount >= capacity) return false;
-  while (digitCount > 0) {
-    detail[length++] = digits[--digitCount];
-  }
-  detail[length] = '\0';
-  return true;
-}
-
-bool formatV2Version(char *detail, size_t capacity) {
-  const char prefix[] = "version=";
-  const char *version = v1FirmwareVersion();
-  const size_t prefixLength = sizeof(prefix) - 1;
-  const size_t versionLength = strlen(version);
-  if (detail == 0 || prefixLength + versionLength >= capacity) return false;
-  memcpy(detail, prefix, prefixLength);
-  memcpy(detail + prefixLength, version, versionLength + 1);
-  return true;
+  finishV2Line();
 }
 
 bool beginV2Immediate(uint16_t requestId) {
@@ -676,31 +658,103 @@ bool beginV2Immediate(uint16_t requestId) {
   return true;
 }
 
-void handleV2Frame(uint8_t status, const char *command,
-                   size_t length) {
+void emitV2Phase(uint16_t requestId, MachinePhase phase) {
+  switch (phase) {
+    case MachinePhase::FeedWait: emitV2DataText(requestId, F("phase="), F("feed_wait")); return;
+    case MachinePhase::FeedMove: emitV2DataText(requestId, F("phase="), F("feed_move")); return;
+    case MachinePhase::FeedHome: emitV2DataText(requestId, F("phase="), F("feed_home")); return;
+    case MachinePhase::SortMove: emitV2DataText(requestId, F("phase="), F("sort_move")); return;
+    case MachinePhase::SortHome: emitV2DataText(requestId, F("phase="), F("sort_home")); return;
+    case MachinePhase::Settling: emitV2DataText(requestId, F("phase="), F("settling")); return;
+    case MachinePhase::AirDrop: emitV2DataText(requestId, F("phase="), F("airdrop")); return;
+    case MachinePhase::Diagnostic: emitV2DataText(requestId, F("phase="), F("diagnostic")); return;
+    case MachinePhase::Idle: emitV2DataText(requestId, F("phase="), F("idle")); return;
+  }
+}
+
+void emitV2Inspection(V2RequestLifecycle *lifecycle, uint16_t requestId,
+                      V2InspectionCommand inspection) {
+  if (inspection == V2InspectionCommand::ProtocolVersion) {
+    emitV2DataUnsigned(requestId, F("protocol="), 2);
+  } else if (inspection == V2InspectionCommand::Capabilities) {
+    const uint32_t maximumSlotCount =
+        maximumRepresentableSlotCount(static_cast<uint32_t>(sortSteps),
+                                      SORT_MICROSTEPS);
+    emitV2DataUnsigned(requestId, F("protocol="), 2);
+    emitV2DataUnsigned(requestId, F("max_line="), V2_MAX_LINE_LENGTH);
+    emitV2DataText(requestId, F("crc="), F("none"));
+    emitV2DataUnsigned(requestId, F("queue_depth="), 2);
+    emitV2DataUnsigned(requestId, F("slot_max="),
+                       maximumSlotCount == 0 ? 0 : maximumSlotCount - 1);
+    emitV2DataUnsigned(requestId, F("slot_count="), slotCount);
+    emitV2DataUnsigned(requestId, F("pwm="), UseArduinoPWMDimmer == true);
+    emitV2DataUnsigned(requestId, F("airdrop="), 1);
+    emitV2DataUnsigned(requestId, F("feed_sensor="), FEEDSENSOR_ENABLED == true);
+    emitV2DataUnsigned(requestId, F("feed_home="), FEED_HOMING_ENABLED == true);
+    emitV2DataUnsigned(requestId, F("sort_home="), SORT_HOMING_ENABLED == true);
+  } else if (inspection == V2InspectionCommand::Status) {
+    if (machineState.mode() == MachineMode::Running) {
+      emitV2DataText(requestId, F("mode="), F("running"));
+    } else if (machineState.mode() == MachineMode::Stopped) {
+      emitV2DataText(requestId, F("mode="), F("stopped"));
+    } else {
+      emitV2DataText(requestId, F("mode="), F("recovering"));
+    }
+    const V2MachineActivity activity = {
+        FeedScheduled, IsFeeding, IsFeedHoming, IsFeedHomingOffset,
+        feedCompletion.isActive(), feedCompletion.airDropActive(),
+        SortInProgress || IsSorting, IsSortHoming, IsSortHomingOffset,
+        sorterJog.isActive(), slotDropGate.isActive(), FeedCycleInProgress,
+        FeedCycleComplete, IsFeedError, IsTestCycle || IsSortTestCycle};
+    emitV2Phase(requestId, deriveMachinePhase(activity));
+    emitV2DataUnsigned(requestId, F("feed_homed="),
+                       machineState.axis(MachineAxis::Feeder).positionKnown);
+    emitV2DataUnsigned(requestId, F("sort_homed="),
+                       machineState.axis(MachineAxis::Sorter).positionKnown);
+    emitV2DataUnsigned(requestId, F("motor_enabled="), motorDriversEnabled);
+    if (protocolSession.lifecycle().isActive()) {
+      emitV2DataUnsigned(requestId, F("active_id="),
+                         protocolSession.activeRequestId());
+    } else {
+      emitV2DataText(requestId, F("active_id="), F("none"));
+    }
+    emitV2DataUnsigned(requestId, F("fault_code="),
+                       IsFeedError ? 3001U : 0U);
+    emitV2DataUnsigned(requestId, F("queue_previous="),
+                       static_cast<uint32_t>(qPos1));
+    emitV2DataUnsigned(requestId, F("queue_next="),
+                       static_cast<uint32_t>(qPos2));
+    emitV2DataUnsigned(requestId, F("config_generation="), configGeneration);
+  } else if (inspection == V2InspectionCommand::Queue) {
+    emitV2DataUnsigned(requestId, F("queue_depth="), 2);
+    emitV2DataUnsigned(requestId, F("queue_previous="),
+                       static_cast<uint32_t>(qPos1));
+    emitV2DataUnsigned(requestId, F("queue_next="),
+                       static_cast<uint32_t>(qPos2));
+  }
+  emitV2Terminal(lifecycle, requestId, false);
+}
+
+void handleV2Frame(uint8_t status, const char *command, size_t length) {
   if (status == static_cast<uint8_t>(V2FrameParser::FrameOverflow) ||
       status == static_cast<uint8_t>(V2FrameParser::FrameInvalid)) {
-    protocolSession.emitEvent(v2OutputWriter, "reject:1001:bad_frame");
+    emitV2Event(F("reject:1001:bad_frame"));
     return;
   }
-
-  if (status != static_cast<uint8_t>(V2FrameParser::FrameReady)) {
-    return;
-  }
+  if (status != static_cast<uint8_t>(V2FrameParser::FrameReady)) return;
 
   V2RequestEnvelope envelope;
   const V2EnvelopeStatus envelopeStatus =
       parseV2RequestEnvelope(command, length, &envelope);
   if (envelopeStatus != V2EnvelopeStatus::Ready) {
-    protocolSession.emitEvent(
-        v2OutputWriter, envelopeStatus == V2EnvelopeStatus::BadId
-                            ? "reject:1003:bad_id"
-                            : "reject:1001:bad_frame");
+    emitV2Event(envelopeStatus == V2EnvelopeStatus::BadId
+                    ? F("reject:1003:bad_id")
+                    : F("reject:1001:bad_frame"));
     return;
   }
 
   V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
-  if (isExactV2(envelope.payload, envelope.payloadLength, "protocol:1")) {
+  if (isExactV2(envelope.payload, envelope.payloadLength, F("protocol:1"))) {
     if (envelope.requestId == 0 && lifecycle.isIdlessActive()) {
       emitV2Busy(0, 0);
       return;
@@ -714,10 +768,9 @@ void handleV2Frame(uint8_t status, const char *command,
       return;
     }
     if (!beginV2Immediate(envelope.requestId) ||
-        !emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
-                        V2ResponseKind::Done, "protocol=1")) {
+        !emitV2Terminal(&lifecycle, envelope.requestId, false,
+                        F("protocol=1")))
       return;
-    }
     Serial.flush();
     commandParser.reset();
     clearPendingCommand();
@@ -725,29 +778,29 @@ void handleV2Frame(uint8_t status, const char *command,
     return;
   }
 
-  if (!beginV2Immediate(envelope.requestId)) {
+  if (!beginV2Immediate(envelope.requestId)) return;
+  if (isExactV2(envelope.payload, envelope.payloadLength, F("ping"))) {
+    beginV2Line(envelope.requestId, F("done:uptime_ms="));
+    Serial.print(millis());
+    finishV2Line();
+    lifecycle.terminal(envelope.requestId);
     return;
   }
-
-  if (isExactV2(envelope.payload, envelope.payloadLength, "ping")) {
-    char detail[22];
-    emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
-                   V2ResponseKind::Done,
-                   formatV2Uptime(detail, sizeof(detail)) ? detail : 0);
+  if (isExactV2(envelope.payload, envelope.payloadLength, F("version"))) {
+    beginV2Line(envelope.requestId, F("data:version="));
+    Serial.print(F(FIRMWARE_VERSION));
+    finishV2Line();
+    emitV2Terminal(&lifecycle, envelope.requestId, false);
     return;
   }
-  if (isExactV2(envelope.payload, envelope.payloadLength, "version")) {
-    char detail[32];
-    if (formatV2Version(detail, sizeof(detail)) &&
-        emitV2Response(v2OutputWriter, envelope.requestId,
-                       V2ResponseKind::Data, detail)) {
-      emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
-                     V2ResponseKind::Done, 0);
-    }
+  const V2InspectionCommand inspection =
+      classifyV2InspectionCommand(envelope.payload, envelope.payloadLength);
+  if (inspection != V2InspectionCommand::None) {
+    emitV2Inspection(&lifecycle, envelope.requestId, inspection);
     return;
   }
-  emitV2Terminal(&lifecycle, v2OutputWriter, envelope.requestId,
-                 V2ResponseKind::Error, "1004:unknown_command");
+  emitV2Terminal(&lifecycle, envelope.requestId, true,
+                 F("1004:unknown_command"));
 }
 #endif
 
@@ -964,7 +1017,7 @@ void setAccSortDelay(){
     
 }
 void stepSortMotor(bool forward){
-     digitalWrite(MOTOR_Enable, LOW);
+     setMotorDriversEnabled(true);
      if(forward==true){
        digitalWrite(SORT_DIRPIN, HIGH);
      }else{
@@ -1013,7 +1066,7 @@ void checkFeedErrors(){
       if (sorterWasMoving) {
         machineState.invalidateAxis(MachineAxis::Sorter);
       }
-      digitalWrite(MOTOR_Enable, HIGH);
+      setMotorDriversEnabled(false);
       cancelFeedCompletion();
       proximitySettler.reset();
       cancelDiagnosticCycles();
@@ -1228,7 +1281,7 @@ void homeSortMotor(){
 }
 
 void stepFeedMotor(){
-    digitalWrite(MOTOR_Enable, LOW);
+    setMotorDriversEnabled(true);
     digitalWrite(FEED_STEPPIN, HIGH);
     delayMicroseconds(1);  //pulse width
     digitalWrite(FEED_STEPPIN, LOW);
@@ -1285,7 +1338,7 @@ void MotorStandByCheck(){
   theTime = millis();
 
   if(hasElapsed(theTime, timeSinceLastMotorMove, autoMotorStandbyTimeoutMs))
-     digitalWrite(MOTOR_Enable, HIGH);
+     setMotorDriversEnabled(false);
 }
 void jogSorter(bool startFeedHoming){
   sorterJogStartsFeedHoming = startFeedHoming;

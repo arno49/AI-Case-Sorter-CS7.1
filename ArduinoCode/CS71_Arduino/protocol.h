@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "machine_state.h"
+
 #ifndef PROTOCOL_V2_ENABLED
 #define PROTOCOL_V2_ENABLED 0
 #endif
@@ -17,7 +19,6 @@ enum class ProtocolMode : uint8_t {
 #endif
 };
 
-#if PROTOCOL_V2_ENABLED
 #include "v2_parser.h"
 
 enum class V2EnvelopeStatus : uint8_t {
@@ -70,6 +71,74 @@ enum class V2ResponseKind : uint8_t {
   Error
 };
 
+enum class V2InspectionCommand : uint8_t {
+  None,
+  ProtocolVersion,
+  Capabilities,
+  Status,
+  Queue
+};
+
+enum class MachinePhase : uint8_t {
+  Idle,
+  FeedWait,
+  FeedMove,
+  FeedHome,
+  SortMove,
+  SortHome,
+  Settling,
+  AirDrop,
+  Diagnostic
+};
+
+struct V2MachineActivity {
+  bool feedScheduled;
+  bool feeding;
+  bool feedHoming;
+  bool feedHomingOffset;
+  bool feedCompletionActive;
+  bool airDropActive;
+  bool sortMoving;
+  bool sortHoming;
+  bool sortHomingOffset;
+  bool sorterJogActive;
+  bool slotDropGateActive;
+  bool feedCycleInProgress;
+  bool feedCycleComplete;
+  bool feedError;
+  bool diagnosticActive;
+};
+
+struct V2CapabilitiesSnapshot {
+  uint32_t slotMax;
+  uint32_t slotCount;
+  bool pwm;
+  bool airDrop;
+  bool feedSensor;
+  bool feedHome;
+  bool sortHome;
+};
+
+struct V2StatusSnapshot {
+  MachineMode mode;
+  MachinePhase phase;
+  bool feedHomed;
+  bool sortHomed;
+  bool motorEnabled;
+  bool hasActiveRequest;
+  uint16_t activeRequestId;
+  uint32_t faultCode;
+  uint32_t queuePrevious;
+  uint32_t queueNext;
+  uint32_t configGeneration;
+};
+
+struct V2ObservabilitySnapshot {
+  V2CapabilitiesSnapshot capabilities;
+  V2StatusSnapshot status;
+};
+
+#if !defined(ARDUINO)
 struct V2OutputWriter {
   typedef bool (*LineWriter)(void *context, const char *line, size_t length);
 
@@ -86,6 +155,20 @@ bool emitV2Response(const V2OutputWriter &writer, uint16_t requestId,
 bool emitV2Terminal(V2RequestLifecycle *lifecycle,
                     const V2OutputWriter &writer, uint16_t requestId,
                     V2ResponseKind kind, const char *detail);
+#endif
+V2InspectionCommand classifyV2InspectionCommand(const char *payload,
+                                                size_t length);
+MachinePhase deriveMachinePhase(const V2MachineActivity &activity);
+#if !defined(ARDUINO)
+bool streamV2InspectionFields(V2InspectionCommand command,
+                              const V2ObservabilitySnapshot &snapshot,
+                              const V2OutputWriter &writer,
+                              uint16_t requestId);
+bool emitV2Inspection(V2RequestLifecycle *lifecycle,
+                      const V2OutputWriter &writer, uint16_t requestId,
+                      V2InspectionCommand command,
+                      const V2ObservabilitySnapshot &snapshot);
+#endif
 
 enum class V2NegotiationAction : uint8_t {
   NotHandled,
@@ -109,6 +192,7 @@ V2Protocol1Action dispatchV2Protocol1(const char *command, size_t length,
                                        uint16_t *requestId);
 const char *v2DiscoveryResponse();
 const char *v2ActivationResponse();
+#if !defined(ARDUINO)
 size_t formatV2Protocol1Response(char *buffer, size_t capacity,
                                  uint16_t requestId, bool busy);
 #endif
@@ -128,7 +212,9 @@ class ProtocolSession {
   bool crcEnabled() const;
   V2FrameParser &parser();
   V2RequestLifecycle &lifecycle();
+#if !defined(ARDUINO)
   bool emitEvent(const V2OutputWriter &writer, const char *detail);
+#endif
 #endif
 
  private:
@@ -193,7 +279,7 @@ struct ResponseSink {
 
   void v1(V1Response response) const;
 
-#if PROTOCOL_V2_ENABLED
+#if PROTOCOL_V2_ENABLED && !defined(ARDUINO)
   typedef void (*V2LineEmitter)(void *context, const char *line);
   V2LineEmitter emitV2Line;
   void v2Line(const char *line) const;

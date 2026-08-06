@@ -379,7 +379,7 @@ This ID-less example assumes no other ID-less request is active.
 
 ```text
 @2 capabilities
-@2 data:protocol=2 max_line=64 crc=optional
+@2 data:protocol=2 max_line=64 crc=none
 @2 data:queue_depth=2 slot_max=102 slot_count=8
 @2 data:pwm=0 airdrop=1 feed_sensor=1
 @2 data:feed_home=1 sort_home=1
@@ -397,12 +397,15 @@ Required keys:
 | `slot_max` | Current representable maximum slot index |
 | `slot_count` | Diagnostic destination count |
 | `pwm` | Camera LED PWM availability |
-| `airdrop` | AirDrop support |
+| `airdrop` | AirDrop feature support (always `1` because its runtime setter is available; this is not the current enabled setting) |
 | `feed_sensor` | Feed proximity sensor support |
 | `feed_home` | Feeder homing support |
 | `sort_home` | Sorter homing support |
 
 Unknown future keys must be ignored by hosts.
+
+V2-05 reports `crc=none`: CRC framing is not implemented or usable until
+V2-10, so this capability does not advertise the planned optional feature.
 
 ### 7.4 Status
 

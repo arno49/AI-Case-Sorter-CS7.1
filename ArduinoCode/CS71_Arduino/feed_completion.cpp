@@ -57,6 +57,10 @@ bool FeedCompletion::isActive() const {
   return state_ != FeedCompletionState::Idle;
 }
 
+bool FeedCompletion::airDropActive() const {
+  return isActive() && config_.airDropEnabled;
+}
+
 FeedCompletionState FeedCompletion::state() const {
   return state_;
 }
