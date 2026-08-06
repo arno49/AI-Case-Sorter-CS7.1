@@ -313,6 +313,11 @@ struct V1DispatchLimits {
   uint32_t sortMicrosteps;
 };
 
+struct V1SetterRange {
+  uint32_t minimum;
+  uint32_t maximum;
+};
+
 struct V1DispatchContext {
   bool running;
   bool busy;
@@ -440,6 +445,11 @@ V1Command classifyV1Command(const char *command);
 bool v1CommandRequiresHomedPosition(V1Command command);
 V1Response v1InvalidResponse(V1Command command);
 const char *v1CommandValue(const char *command, const char *prefix);
+bool v1CommandIsSetter(V1Command command);
+bool v1SetterArgumentIsSyntacticallyComplete(const char *command,
+                                             V1Command commandType);
+bool v1SetterRange(V1Command command, const Configuration &configuration,
+                   const V1DispatchLimits &limits, V1SetterRange *range);
 
 V1DispatchResult dispatchV1Command(const char *command, size_t length,
                                    const V1DispatchContext &context,
@@ -453,5 +463,12 @@ V1DispatchResult dispatchV1Frame(V1FrameStatus status, const char *command,
 void writeV1Output(const V1DispatchResult &result,
                    const Configuration &configuration, bool includeCameraLevel,
                    const V1OutputWriter &writer);
+
+#if PROTOCOL_V2_ENABLED && !defined(ARDUINO)
+bool streamV2ConfigurationFields(const Configuration &configuration,
+                                 bool includeCameraLevel,
+                                 const V2OutputWriter &writer,
+                                 uint16_t requestId);
+#endif
 
 #endif

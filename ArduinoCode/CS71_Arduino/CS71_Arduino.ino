@@ -229,6 +229,13 @@ unsigned long msgResetTimer;
 bool proxActivated = false;
 bool motorDriversEnabled = false;
 uint32_t configGeneration = 0;
+const uint32_t V2_CONFIG_GENERATION_MAX = 999999999UL;
+
+void advanceConfigGeneration() {
+  configGeneration = configGeneration == V2_CONFIG_GENERATION_MAX
+                         ? 0
+                         : configGeneration + 1UL;
+}
 
 void setMotorDriversEnabled(bool enabled) {
   motorDriversEnabled = enabled;
@@ -559,6 +566,12 @@ void handleV1Frame(V1FrameStatus status, const char *command, size_t length,
     }
     return;
   }
+  if (status == V1FrameStatus::Ready &&
+      v1CommandIsSetter(classifyV1Command(command)) &&
+      result.output == V1Output::Response &&
+      result.response == V1Response::Ok) {
+    advanceConfigGeneration();
+  }
   applyV1Action(result);
   writeV1Output(result, configuration, UseArduinoPWMDimmer == true,
                 v1OutputWriter);
@@ -735,6 +748,170 @@ void emitV2Inspection(V2RequestLifecycle *lifecycle, uint16_t requestId,
   emitV2Terminal(lifecycle, requestId, false);
 }
 
+void emitV2SetterKey(V1Command command) {
+  switch (command) {
+    case V1Command::DebounceTimeout: Serial.print(F("debounceTimeout")); return;
+    case V1Command::DebounceTime: Serial.print(F("debounceTime")); return;
+    case V1Command::FeedSpeed: Serial.print(F("feedspeed")); return;
+    case V1Command::FeedHomingOffset: Serial.print(F("feedhomingoffset")); return;
+    case V1Command::SortHomingOffset: Serial.print(F("sorthomingoffset")); return;
+    case V1Command::SortSpeed: Serial.print(F("sortspeed")); return;
+    case V1Command::SortSteps: Serial.print(F("sortsteps")); return;
+    case V1Command::SlotCount: Serial.print(F("slotcount")); return;
+    case V1Command::FeedSteps: Serial.print(F("feedsteps")); return;
+    case V1Command::NotificationDelay: Serial.print(F("notificationdelay")); return;
+    case V1Command::SlotDropDelay: Serial.print(F("slotdropdelay")); return;
+    case V1Command::AirDropEnabled: Serial.print(F("airdropenabled")); return;
+    case V1Command::AirDropPostDelay: Serial.print(F("airdroppostdelay")); return;
+    case V1Command::AirDropPreDelay: Serial.print(F("airdroppredelay")); return;
+    case V1Command::AirDropSignalDuration:
+      Serial.print(F("airdropdsignalduration"));
+      return;
+    case V1Command::AutoMotorStandbyTimeout:
+      Serial.print(F("automotorstandbytimeout"));
+      return;
+    case V1Command::CameraLedLevel: Serial.print(F("cameraledlevel")); return;
+    default: return;
+  }
+}
+
+void emitV2SetterValue(V1Command command) {
+  switch (command) {
+    case V1Command::DebounceTimeout: Serial.print(configuration.debounceTimeout); return;
+    case V1Command::DebounceTime: Serial.print(configuration.debouncePauseTime); return;
+    case V1Command::FeedSpeed: Serial.print(feedSpeed); return;
+    case V1Command::FeedHomingOffset: Serial.print(configuration.feedHomingOffset); return;
+    case V1Command::SortHomingOffset: Serial.print(configuration.sortHomingOffset); return;
+    case V1Command::SortSpeed: Serial.print(sortSpeed); return;
+    case V1Command::SortSteps: Serial.print(sortSteps); return;
+    case V1Command::SlotCount: Serial.print(slotCount); return;
+    case V1Command::FeedSteps: Serial.print(feedSteps); return;
+    case V1Command::NotificationDelay: Serial.print(notificationDelay); return;
+    case V1Command::SlotDropDelay: Serial.print(slotDropDelay); return;
+    case V1Command::AirDropEnabled: Serial.print(airDropEnabled ? 1 : 0); return;
+    case V1Command::AirDropPostDelay: Serial.print(configuration.airDropPostDelay); return;
+    case V1Command::AirDropPreDelay: Serial.print(configuration.airDropPreDelay); return;
+    case V1Command::AirDropSignalDuration: Serial.print(configuration.airDropSignalTime); return;
+    case V1Command::AutoMotorStandbyTimeout:
+      Serial.print(autoMotorStandbyTimeout);
+      return;
+    case V1Command::CameraLedLevel: Serial.print(configuration.cameraLedLevel); return;
+    default: return;
+  }
+}
+
+bool v2SetterRangeFitsLine(V1Command command) {
+  switch (command) {
+    case V1Command::FeedSpeed:
+    case V1Command::SortSpeed:
+    case V1Command::SortSteps:
+    case V1Command::SlotCount:
+    case V1Command::FeedSteps:
+    case V1Command::SlotDropDelay:
+    case V1Command::DebounceTime:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void emitV2SetterRange(V1Command command) {
+  V1SetterRange range;
+  if (!v1SetterRange(command, configuration, v1DispatchLimits, &range)) return;
+  Serial.print(F(" min="));
+  Serial.print(range.minimum);
+  Serial.print(F(" max="));
+  Serial.print(range.maximum);
+}
+
+void emitV2SetterError(V2RequestLifecycle *lifecycle, uint16_t requestId,
+                       V1Command command, bool malformed) {
+  if (lifecycle == 0 || !lifecycle->owns(requestId)) return;
+  beginV2Line(requestId, malformed ? F("error:1005:invalid_argument key=")
+                                   : F("error:1006:out_of_range key="));
+  emitV2SetterKey(command);
+  if (!malformed && v2SetterRangeFitsLine(command)) emitV2SetterRange(command);
+  finishV2Line();
+  lifecycle->terminal(requestId);
+}
+
+void emitV2SetterDone(V2RequestLifecycle *lifecycle, uint16_t requestId,
+                      V1Command command) {
+  if (lifecycle == 0 || !lifecycle->owns(requestId)) return;
+  beginV2Line(requestId, F("done:"));
+  emitV2SetterKey(command);
+  Serial.write('=');
+  emitV2SetterValue(command);
+  Serial.print(F(" generation="));
+  Serial.print(configGeneration);
+  finishV2Line();
+  lifecycle->terminal(requestId);
+}
+
+void emitV2Configuration(V2RequestLifecycle *lifecycle, uint16_t requestId) {
+#define CS71_EMIT_V2_CONFIGURATION_FIELD(key, value) \
+  emitV2DataUnsigned(requestId, F(key "="), value)
+  CS71_EMIT_V2_CONFIGURATION_FIELD("FeedMotorSpeed", feedSpeed);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("FeedCycleSteps", feedSteps);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("SortMotorSpeed", sortSpeed);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("SortSteps", sortSteps);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("SlotCount", slotCount);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("NotificationDelay", notificationDelay);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("SlotDropDelay", slotDropDelay);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("AirDropEnabled", airDropEnabled ? 1 : 0);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("AirDropPostDelay", configuration.airDropPostDelay);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("AirDropPreDelay", configuration.airDropPreDelay);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("AirDropSignalTime", configuration.airDropSignalTime);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("FeedHomingOffset", configuration.feedHomingOffset);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("SortHomingOffset", configuration.sortHomingOffset);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("AutoMotorStandbyTimeout", autoMotorStandbyTimeout);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("DebounceTimeout", configuration.debounceTimeout);
+  CS71_EMIT_V2_CONFIGURATION_FIELD("DebouncePauseTime", configuration.debouncePauseTime);
+  if (UseArduinoPWMDimmer == true)
+    CS71_EMIT_V2_CONFIGURATION_FIELD("CameraLEDLevel", configuration.cameraLedLevel);
+#undef CS71_EMIT_V2_CONFIGURATION_FIELD
+  emitV2Terminal(lifecycle, requestId, false);
+}
+
+bool beginV2Setter(uint16_t requestId) {
+  V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (lifecycle.owns(requestId)) {
+    emitV2DuplicateId(requestId);
+    return false;
+  }
+  if (executionBusy() || lifecycle.isActive()) {
+    emitV2Busy(requestId, lifecycle.activeRequestId());
+    return false;
+  }
+  const V2BeginResult result = lifecycle.beginActive(requestId);
+  if (result == V2BeginResult::DuplicateId) {
+    emitV2DuplicateId(requestId);
+    return false;
+  }
+  if (result == V2BeginResult::Busy) {
+    emitV2Busy(requestId, lifecycle.activeRequestId());
+    return false;
+  }
+  return true;
+}
+
+void handleV2Setter(uint16_t requestId, const char *payload, size_t length,
+                    V1Command command) {
+  if (!beginV2Setter(requestId)) return;
+  const V1DispatchContext context = {
+      machineState.isRunning(), false, false, qPos1, qPos2};
+  const V1DispatchResult result =
+      dispatchV1Command(payload, length, context, &configuration, v1DispatchLimits);
+  if (result.output != V1Output::Response || result.response != V1Response::Ok) {
+    emitV2SetterError(&protocolSession.lifecycle(), requestId, command,
+                      !v1SetterArgumentIsSyntacticallyComplete(payload, command));
+    return;
+  }
+  applyV1Action(result);
+  advanceConfigGeneration();
+  emitV2SetterDone(&protocolSession.lifecycle(), requestId, command);
+}
+
 void handleV2Frame(uint8_t status, const char *command, size_t length) {
   if (status == static_cast<uint8_t>(V2FrameParser::FrameOverflow) ||
       status == static_cast<uint8_t>(V2FrameParser::FrameInvalid)) {
@@ -775,6 +952,18 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
     commandParser.reset();
     clearPendingCommand();
     protocolSession.reset();
+    return;
+  }
+
+  const V1Command v1Command = classifyV1Command(envelope.payload);
+  if (v1Command == V1Command::GetConfig) {
+    if (beginV2Immediate(envelope.requestId))
+      emitV2Configuration(&lifecycle, envelope.requestId);
+    return;
+  }
+  if (v1CommandIsSetter(v1Command)) {
+    handleV2Setter(envelope.requestId, envelope.payload, envelope.payloadLength,
+                   v1Command);
     return;
   }
 
