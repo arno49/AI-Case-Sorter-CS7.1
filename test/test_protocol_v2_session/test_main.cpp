@@ -149,6 +149,30 @@ void test_protocol_one_rejects_invalid_envelopes_without_mode_change() {
   }
 }
 
+void test_protocol_transitions_preserve_runtime_configuration_generation() {
+  Configuration configuration = {90, 70, 90, 20, 8, 90, 400, false, 0, 30,
+                                 50, 3,  0,  60, 300, 500, 78};
+  const V1DispatchLimits limits = {32767, UINT32_MAX / 1000UL, 200, 16};
+  const V1DispatchContext context = {true, false, false, 0, 0};
+  const V1DispatchResult setter =
+      dispatchV1Command("feedspeed:80", 12, context, &configuration, limits);
+  TEST_ASSERT_EQUAL(static_cast<int>(V1Response::Ok),
+                    static_cast<int>(setter.response));
+  uint32_t generation = 1;
+
+  ProtocolSession session;
+  session.enterV2();
+  session.reset();
+  TEST_ASSERT_EQUAL(static_cast<int>(ProtocolMode::V1),
+                    static_cast<int>(session.mode()));
+  TEST_ASSERT_EQUAL(80, configuration.feedSpeed);
+  TEST_ASSERT_EQUAL(1, generation);
+
+  session.enterV2();
+  TEST_ASSERT_EQUAL(80, configuration.feedSpeed);
+  TEST_ASSERT_EQUAL(1, generation);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_discovery_and_activation_are_exact_and_idle_only);
@@ -158,6 +182,7 @@ int main(int, char **) {
   RUN_TEST(test_protocol_one_accepts_idless_and_explicit_ids);
   RUN_TEST(test_protocol_one_busy_remains_v2_and_is_correlated);
   RUN_TEST(test_protocol_one_rejects_invalid_envelopes_without_mode_change);
+  RUN_TEST(test_protocol_transitions_preserve_runtime_configuration_generation);
   return UNITY_END();
 }
 
