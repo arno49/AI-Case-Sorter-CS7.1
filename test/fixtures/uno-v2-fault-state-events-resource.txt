@@ -1,0 +1,32 @@
+CS7.1 firmware Protocol V2 fault/state-event resources
+baseline_fixture=test/fixtures/uno-resource-baseline.txt
+priority_stop_fixture=test/fixtures/uno-v2-priority-stop-resource.txt
+environment=uno
+build_flag=PROTOCOL_V2_ENABLED=0
+flash_used_bytes=17562
+flash_available_bytes=32256
+flash_headroom_bytes=14694
+static_sram_used_bytes=891
+static_sram_available_bytes=2048
+static_sram_headroom_bytes=1157
+baseline_flash_delta_bytes=3316
+baseline_static_sram_delta_bytes=71
+priority_stop_flash_delta_bytes=56
+priority_stop_static_sram_delta_bytes=4
+measurement_command=python3 -m platformio run -e uno
+v2_environment=uno_v2
+v2_build_flag=PROTOCOL_V2_ENABLED=1
+v2_flash_used_bytes=24834
+v2_flash_available_bytes=32256
+v2_flash_headroom_bytes=7422
+v2_static_sram_used_bytes=971
+v2_static_sram_available_bytes=2048
+v2_static_sram_headroom_bytes=1077
+baseline_v2_flash_delta_bytes=10588
+baseline_v2_static_sram_delta_bytes=151
+priority_stop_v2_flash_delta_bytes=760
+priority_stop_v2_static_sram_delta_bytes=4
+v2_over_default_flash_delta_bytes=7272
+v2_over_default_static_sram_delta_bytes=80
+measurement_command_v2=python3 -m platformio run -e uno_v2
+scope=V2-07B latched feed-overtravel fault 3001 plus deduplicated state events.

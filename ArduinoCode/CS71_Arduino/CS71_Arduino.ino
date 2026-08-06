@@ -6,6 +6,7 @@
 #include <string.h>
 #include "command_parser.h"
 #include "feed_completion.h"
+#include "fault_state_tracker.h"
 #include "logic.h"
 #include "machine_state.h"
 #include "protocol.h"
@@ -196,6 +197,7 @@ CommandParser commandParser;
 FeedCompletion feedCompletion;
 MachineState machineState;
 ProtocolSession protocolSession;
+FaultStateTracker faultStateTracker;
 RawStopLineDetector rawStopLineDetector;
 PendingCommand pendingCommand;
 ProximitySettler proximitySettler;
@@ -231,6 +233,11 @@ bool proxActivated = false;
 bool motorDriversEnabled = false;
 uint32_t configGeneration = 0;
 const uint32_t V2_CONFIG_GENERATION_MAX = 999999999UL;
+
+#if PROTOCOL_V2_ENABLED
+void baselineV2State();
+void emitV2StateIfChanged();
+#endif
 
 void advanceConfigGeneration() {
   configGeneration = configGeneration == V2_CONFIG_GENERATION_MAX
@@ -308,11 +315,17 @@ void updateRecoveryCompletion(MachineAxis axis) {
 }
 
 void completeFeedHoming() {
+  const bool recoveringFeeder =
+      machineState.axis(MachineAxis::Feeder).recoveryInProgress;
   IsFeedHoming = false;
   IsFeedHomingOffset = false;
   FeedHomingOffsetSteps = 0;
   timeSinceLastMotorMove = millis();
   updateRecoveryCompletion(MachineAxis::Feeder);
+  if (recoveringFeeder) {
+    IsFeedError = false;
+    faultStateTracker.clearAfterFeedRecovery();
+  }
 
   if (FeedCycleInProgress) {
     FeedCycleComplete = true;
@@ -362,7 +375,6 @@ void enterStoppedState() {
   IsFeedHomingOffset = false;
   FeedCycleInProgress = false;
   FeedCycleComplete = false;
-  IsFeedError = false;
   FeedSteps = 0;
   FeedHomingOffsetSteps = 0;
 
@@ -401,7 +413,7 @@ void handleRawStop() {
   enterStoppedState();
 #if PROTOCOL_V2_ENABLED
   if (v2) {
-    emitV2Event(F("state:mode=stopped phase=idle"));
+    emitV2StateIfChanged();
   }
 #endif
   responseSink.v1(V1Response::Stopped);
@@ -411,6 +423,7 @@ void handleRawStop() {
 void setup() {
   Serial.begin(9600);
   protocolSession.reset();
+  faultStateTracker.reset();
   commandParser.reset();
   clearPendingCommand();
   responseSink.v1(V1Response::Ready);
@@ -458,6 +471,9 @@ void loop() {
    onFeedComplete(now);
    runAux();
    MotorStandByCheck();
+#if PROTOCOL_V2_ENABLED
+   emitV2StateIfChanged();
+#endif
 }
 
 int FreeMem(){
@@ -479,7 +495,6 @@ void applyV1Action(const V1DispatchResult &result) {
       FeedHomingOffsetSteps = 0;
       FeedCycleInProgress = false;
       FeedCycleComplete = false;
-      IsFeedError = false;
       IsFeeding = false;
       IsFeedHomingOffset = false;
       IsFeedHoming = true;
@@ -573,6 +588,7 @@ void handleV1Frame(V1FrameStatus status, const char *command, size_t length,
       commandParser.reset();
       clearPendingCommand();
       protocolSession.enterV2();
+      baselineV2State();
       return;
     }
   }
@@ -658,6 +674,59 @@ void emitV2Event(const __FlashStringHelper *detail) {
   finishV2Line();
 }
 
+V2MachineActivity currentV2MachineActivity() {
+  const V2MachineActivity activity = {
+      FeedScheduled, IsFeeding, IsFeedHoming, IsFeedHomingOffset,
+      feedCompletion.isActive(), feedCompletion.airDropActive(),
+      SortInProgress || IsSorting, IsSortHoming, IsSortHomingOffset,
+      sorterJog.isActive(), slotDropGate.isActive(), FeedCycleInProgress,
+      FeedCycleComplete, IsFeedError, IsTestCycle || IsSortTestCycle};
+  return activity;
+}
+
+void emitV2Mode(MachineMode mode) {
+  switch (mode) {
+    case MachineMode::Running: Serial.print(F("running")); return;
+    case MachineMode::Recovering: Serial.print(F("recovering")); return;
+    case MachineMode::Stopped: Serial.print(F("stopped")); return;
+  }
+}
+
+void emitV2PhaseName(MachinePhase phase) {
+  switch (phase) {
+    case MachinePhase::FeedWait: Serial.print(F("feed_wait")); return;
+    case MachinePhase::FeedMove: Serial.print(F("feed_move")); return;
+    case MachinePhase::FeedHome: Serial.print(F("feed_home")); return;
+    case MachinePhase::SortMove: Serial.print(F("sort_move")); return;
+    case MachinePhase::SortHome: Serial.print(F("sort_home")); return;
+    case MachinePhase::Settling: Serial.print(F("settling")); return;
+    case MachinePhase::AirDrop: Serial.print(F("airdrop")); return;
+    case MachinePhase::Diagnostic: Serial.print(F("diagnostic")); return;
+    case MachinePhase::Idle: Serial.print(F("idle")); return;
+  }
+}
+
+void baselineV2State() {
+  const MachinePhase phase = deriveMachinePhase(currentV2MachineActivity());
+  faultStateTracker.baseline(static_cast<uint8_t>(machineState.mode()),
+                             static_cast<uint8_t>(phase));
+}
+
+void emitV2StateIfChanged() {
+  if (protocolSession.mode() != ProtocolMode::V2) return;
+  const MachinePhase phase = deriveMachinePhase(currentV2MachineActivity());
+  if (!faultStateTracker.observeState(static_cast<uint8_t>(machineState.mode()),
+                                      static_cast<uint8_t>(phase)))
+    return;
+  Serial.write('!');
+  Serial.print(protocolSession.nextEventSequence());
+  Serial.print(F(" state:mode="));
+  emitV2Mode(machineState.mode());
+  Serial.print(F(" phase="));
+  emitV2PhaseName(phase);
+  finishV2Line();
+}
+
 void emitV2Busy(uint16_t requestId, uint16_t activeRequestId) {
   beginV2Line(requestId, F("error:2001:busy active_id="));
   Serial.print(activeRequestId);
@@ -735,13 +804,7 @@ void emitV2Inspection(V2RequestLifecycle *lifecycle, uint16_t requestId,
     } else {
       emitV2DataText(requestId, F("mode="), F("recovering"));
     }
-    const V2MachineActivity activity = {
-        FeedScheduled, IsFeeding, IsFeedHoming, IsFeedHomingOffset,
-        feedCompletion.isActive(), feedCompletion.airDropActive(),
-        SortInProgress || IsSorting, IsSortHoming, IsSortHomingOffset,
-        sorterJog.isActive(), slotDropGate.isActive(), FeedCycleInProgress,
-        FeedCycleComplete, IsFeedError, IsTestCycle || IsSortTestCycle};
-    emitV2Phase(requestId, deriveMachinePhase(activity));
+    emitV2Phase(requestId, deriveMachinePhase(currentV2MachineActivity()));
     emitV2DataUnsigned(requestId, F("feed_homed="),
                        machineState.axis(MachineAxis::Feeder).positionKnown);
     emitV2DataUnsigned(requestId, F("sort_homed="),
@@ -754,7 +817,7 @@ void emitV2Inspection(V2RequestLifecycle *lifecycle, uint16_t requestId,
       emitV2DataText(requestId, F("active_id="), F("none"));
     }
     emitV2DataUnsigned(requestId, F("fault_code="),
-                       IsFeedError ? 3001U : 0U);
+                       faultStateTracker.faultCode());
     emitV2DataUnsigned(requestId, F("queue_previous="),
                        static_cast<uint32_t>(qPos1));
     emitV2DataUnsigned(requestId, F("queue_next="),
@@ -967,7 +1030,7 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
       Serial.print(envelope.requestId);
       finishV2Line();
     }
-    emitV2Event(F("state:mode=stopped phase=idle"));
+    emitV2StateIfChanged();
     beginV2Line(envelope.requestId, F("done:mode=stopped"));
     finishV2Line();
     return;
@@ -1305,7 +1368,22 @@ void checkFeedErrors(){
       cancelFeedCompletion();
       proximitySettler.reset();
       cancelDiagnosticCycles();
+#if PROTOCOL_V2_ENABLED
+      faultStateTracker.latchFeedOvertravel();
+      if (protocolSession.mode() == ProtocolMode::V2) {
+        V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+        if (lifecycle.isActive())
+          emitV2Terminal(&lifecycle, lifecycle.activeRequestId(), true,
+                         F("3001:feed_overtravel"));
+        emitV2Event(F("fault:3001:feed_overtravel latched=1"));
+        emitV2StateIfChanged();
+      } else {
+        responseSink.v1(V1Response::FeedOvertravel);
+      }
+#else
+      faultStateTracker.latchFeedOvertravel();
       responseSink.v1(V1Response::FeedOvertravel);
+#endif
   }
 }
 void onFeedComplete(uint32_t now){
@@ -1355,7 +1433,6 @@ void scheduleRun(){
   if(FeedScheduled==true && IsFeeding==false){
     if(readyToFeed()){
       //set run variables
-      IsFeedError=false;
       FeedSteps = feedMicroSteps;
       FeedScheduled=false;
       FeedCycleInProgress = true;
