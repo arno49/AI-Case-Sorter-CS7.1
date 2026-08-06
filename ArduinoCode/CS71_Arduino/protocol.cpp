@@ -29,6 +29,41 @@ void ProtocolSession::reset() {
 #endif
 }
 
+RawStopLineDetector::RawStopLineDetector() {
+  reset();
+}
+
+bool RawStopLineDetector::consume(char byte) {
+  if (state_ == 5) {
+    const bool exact = byte == '\n';
+    reset();
+    return exact;
+  }
+
+  if (byte == '\n') {
+    const bool exact = state_ == 4;
+    reset();
+    return exact;
+  }
+
+  if (state_ == 4 && byte == '\r') {
+    state_ = 5;
+    return false;
+  }
+
+  if ((state_ == 0 && byte == 's') || (state_ == 1 && byte == 't') ||
+      (state_ == 2 && byte == 'o') || (state_ == 3 && byte == 'p')) {
+    ++state_;
+  } else {
+    state_ = 6;
+  }
+  return false;
+}
+
+void RawStopLineDetector::reset() {
+  state_ = 0;
+}
+
 #if PROTOCOL_V2_ENABLED
 void ProtocolSession::enterV2() {
   mode_ = ProtocolMode::V2;
@@ -237,6 +272,22 @@ bool V2RequestLifecycle::terminal(uint16_t requestId) {
     return true;
   }
   return false;
+}
+
+V2StopCancellation V2RequestLifecycle::cancel() {
+  V2StopCancellation cancellation = {V2StopResult::Stopped, active_,
+                                     activeRequestId_};
+  reset();
+  return cancellation;
+}
+
+V2StopCancellation V2RequestLifecycle::cancelForStop(uint16_t stopRequestId) {
+  V2StopCancellation cancellation = {V2StopResult::Stopped, false, 0};
+  if (owns(stopRequestId)) {
+    cancellation.result = V2StopResult::DuplicateId;
+    return cancellation;
+  }
+  return cancel();
 }
 
 #if !defined(ARDUINO)

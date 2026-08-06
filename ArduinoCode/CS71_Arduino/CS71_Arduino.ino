@@ -196,6 +196,7 @@ CommandParser commandParser;
 FeedCompletion feedCompletion;
 MachineState machineState;
 ProtocolSession protocolSession;
+RawStopLineDetector rawStopLineDetector;
 PendingCommand pendingCommand;
 ProximitySettler proximitySettler;
 int qPos1 = 0;
@@ -383,6 +384,27 @@ void enterStoppedState() {
   proxActivated = false;
   proximitySettler.reset();
   clearPendingCommand();
+}
+
+void handleRawStop() {
+#if PROTOCOL_V2_ENABLED
+  const bool v2 = protocolSession.mode() == ProtocolMode::V2;
+  if (v2) {
+    protocolSession.lifecycle().cancel();
+    protocolSession.parser().reset();
+  } else {
+    commandParser.reset();
+  }
+#else
+  commandParser.reset();
+#endif
+  enterStoppedState();
+#if PROTOCOL_V2_ENABLED
+  if (v2) {
+    emitV2Event(F("state:mode=stopped phase=idle"));
+  }
+#endif
+  responseSink.v1(V1Response::Stopped);
 }
 
 
@@ -931,6 +953,25 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
   }
 
   V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (isExactV2(envelope.payload, envelope.payloadLength, F("stop"))) {
+    if (lifecycle.owns(envelope.requestId)) {
+      emitV2DuplicateId(envelope.requestId);
+      return;
+    }
+    const bool cancelledActiveRequest = lifecycle.isActive();
+    const uint16_t cancelledRequestId = lifecycle.activeRequestId();
+    lifecycle.cancel();
+    enterStoppedState();
+    if (cancelledActiveRequest) {
+      beginV2Line(cancelledRequestId, F("error:2004:cancelled by="));
+      Serial.print(envelope.requestId);
+      finishV2Line();
+    }
+    emitV2Event(F("state:mode=stopped phase=idle"));
+    beginV2Line(envelope.requestId, F("done:mode=stopped"));
+    finishV2Line();
+    return;
+  }
   if (isExactV2(envelope.payload, envelope.payloadLength, F("protocol:1"))) {
     if (envelope.requestId == 0 && lifecycle.isIdlessActive()) {
       emitV2Busy(0, 0);
@@ -995,11 +1036,16 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
 
 void checkSerial(){
   while (Serial.available() > 0) {
+    const char byte = static_cast<char>(Serial.read());
+    if (rawStopLineDetector.consume(byte)) {
+      handleRawStop();
+      continue;
+    }
 #if PROTOCOL_V2_ENABLED
     if (protocolSession.mode() == ProtocolMode::V2) {
       V2FrameParser &parser = protocolSession.parser();
       const V2FrameParser::Result result =
-          parser.consume(static_cast<char>(Serial.read()));
+          parser.consume(byte);
       if (result == V2FrameParser::FrameOverflow ||
           result == V2FrameParser::FrameInvalid) {
         handleV2Frame(static_cast<uint8_t>(result), 0, 0);
@@ -1012,7 +1058,7 @@ void checkSerial(){
     }
 #endif
     const CommandParser::Result result =
-        commandParser.consume(static_cast<char>(Serial.read()));
+        commandParser.consume(byte);
     if (result == CommandParser::FrameOverflow) {
       handleV1Frame(V1FrameStatus::TooLong, 0, 0);
     } else if (result == CommandParser::FrameInvalid) {
