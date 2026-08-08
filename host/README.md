@@ -39,6 +39,17 @@ It does **not** establish motor safety, physical completion timing, serial DTR
 behavior on every platform, hardware qualification, or parity with real
 firmware. Those remain explicit V2-11/HIL/Windows release gates.
 
+## Development checks
+
+From this directory, install the development extra, run the complete no-hardware
+suite, and build the distributable wheel and source archive:
+
+```sh
+python -m pip install ".[dev]" "build==1.2.2.post1"
+python -m pytest
+python -m build --wheel --sdist
+```
+
 ## Compatibility switcher CLI
 
 Install with `pip install .[serial]`, then use the packaged `cs71-protocol`

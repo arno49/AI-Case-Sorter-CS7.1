@@ -748,6 +748,34 @@ Acceptance:
 - [ ] Every v2 request path has one terminal response.
 - [ ] Candidate artifacts and checksums are retained.
 
+#### Software-only preintegration status (2026-08-08)
+
+This subsection records automated software evidence only; it does **not**
+complete V2-11 or any of its acceptance items.
+
+Completed automated evidence:
+
+- `python3 -m platformio run -e uno` passed at 17,594 flash bytes and 899
+  static SRAM bytes, leaving 14,662 flash bytes and 1,149 static SRAM bytes.
+- `python3 -m platformio run -e uno_v2` passed at 26,290 flash bytes and 997
+  static SRAM bytes, leaving 5,966 flash bytes and 1,051 static SRAM bytes.
+- `python3 -m platformio test -e native` passed 89 test cases, and
+  `python3 -m platformio test -e native_v2` passed 49 test cases.
+- The host package suite passed 100 no-hardware pytest tests, including bounded
+  request-ID/event wrap, malformed-frame recovery, reconnect-reset, and CRC
+  parity stress coverage. `python3 -m build --wheel --sdist` also passed.
+- V1 golden status is unchanged in automated evidence: the byte-exact native
+  golden/replay coverage and the host v1 golden fixture pass. This is not a
+  real-firmware serial-parity claim.
+- V2-10A's dormant CRC core remains excluded from both production Uno builds,
+  so its present production resource delta is 0 bytes; this is not a final CRC
+  integration measurement.
+
+**NOT_EXECUTED:** real-firmware serial-harness parity; V2-09 feed/queue/
+diagnostic paths; final CRC integration; candidate firmware version; candidate
+artifacts or checksums; HIL; and Windows qualification. V2-10 remains blocked
+by V2-09, which remains blocked by V2-08H; therefore V2-11 remains blocked.
+
 ### V2-12 — Hardware-in-the-loop qualification
 
 | Field | Value |

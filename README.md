@@ -7,6 +7,20 @@ The current canonical firmware is `7.1.260714.6`. Its automated Uno build and
 required before deployment. See [ArduinoCode/README.md](ArduinoCode/README.md)
 for commands, protocol details, and the validation boundary.
 
+## Software checks
+
+From the repository root, run the firmware environments and the no-hardware host
+package checks:
+
+```sh
+pio run -e uno && pio run -e uno_v2
+pio test -e native && pio test -e native_v2
+(cd host && python -m pip install ".[dev]" "build==1.2.2.post1" && python -m pytest && python -m build --wheel --sdist)
+```
+
+These checks do not replace firmware serial parity, HIL, or Windows
+qualification.
+
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
 sensor continuously active for the configured settle time. A sensor drop
