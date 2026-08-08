@@ -561,11 +561,11 @@ Tasks:
 
 Acceptance:
 
-- [ ] V1 still acknowledges immediately and emits no new completion line.
-- [ ] V2 emits `accepted` before motion and exactly one terminal response.
-- [ ] `done` cannot precede final step/homing offset completion.
-- [ ] Stop/fault cancels each phase correctly.
-- [ ] Native state tests cover success, cancellation, and failure.
+- [x] V1 still acknowledges immediately and emits no new completion line.
+- [x] V2 emits `accepted` before motion and exactly one terminal response.
+- [x] `done` cannot precede final step/homing offset completion.
+- [x] Stop/fault cancels each phase correctly.
+- [x] Native state tests cover success, cancellation, and failure.
 
 ### V2-08H — Bench-smoke physical completion
 
