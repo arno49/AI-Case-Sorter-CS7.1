@@ -87,9 +87,13 @@ class ProtocolClient:
 
     def activate(self) -> bool:
         """Discover and enter v2, recovering to verified v1 on any uncertainty."""
+        if not self.discover():
+            return False
+        return self.activate_known_available()
+
+    def activate_known_available(self) -> bool:
+        """Enter v2 after an already-completed exact availability discovery."""
         try:
-            if not self.discover():
-                return False
             self._write_v1("protocol:2")
             if self._read_v1() != "protocol:2 ready":
                 raise ParseError("activation requires exact 'protocol:2 ready'")
@@ -107,8 +111,10 @@ class ProtocolClient:
             try:
                 self.recover_to_v1()
             except RecoveryError as recovery_error:
-                raise RecoveryError("activation was uncertain; v1 recovery failed") from recovery_error
-            raise RecoveryError("activation was uncertain; recovered to v1") from exc
+                raise RecoveryError(
+                    "activation was uncertain; v1 recovery failed", recovered=False
+                ) from recovery_error
+            raise RecoveryError("activation was uncertain; recovered to v1", recovered=True) from exc
 
     def recover_to_v1(self) -> None:
         """Use universal stop/reset and verify v1 before allowing further work."""
@@ -188,8 +194,8 @@ class ProtocolClient:
         try:
             self.recover_to_v1()
         except RecoveryError as exc:
-            raise RecoveryError(f"{message}; v1 recovery failed") from exc
-        raise RecoveryError(f"{message}; recovered to v1") from cause
+            raise RecoveryError(f"{message}; v1 recovery failed", recovered=False) from exc
+        raise RecoveryError(f"{message}; recovered to v1", recovered=True) from cause
 
     def request(self, command: str, *, request_id: int | None = None,
                 timeout: float | None = None, response_crc: bool | None = None) -> Completion:
@@ -257,8 +263,13 @@ class ProtocolClient:
         except RecoveryError:
             raise
         except ProtocolError as exc:
-            self.recover_to_v1()
-            raise RecoveryError("v2 leave was uncertain; recovered to v1") from exc
+            try:
+                self.recover_to_v1()
+            except RecoveryError as recovery_error:
+                raise RecoveryError(
+                    "v2 leave was uncertain; v1 recovery failed", recovered=False
+                ) from recovery_error
+            raise RecoveryError("v2 leave was uncertain; recovered to v1", recovered=True) from exc
         self.mode = SessionMode.V1
         self.crc_enabled = False
         self.requests.clear()

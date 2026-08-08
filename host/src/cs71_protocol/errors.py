@@ -22,7 +22,15 @@ class TimeoutError(ProtocolError):
 
 
 class RecoveryError(ProtocolError):
-    """The session became uncertain and could not be verified as v1."""
+    """A recovery operation failed, optionally after verified v1 recovery."""
+
+    def __init__(self, message: str, *, recovered: bool = False) -> None:
+        super().__init__(message)
+        self.recovered = recovered
+
+
+class DtrSuppressionError(ProtocolError):
+    """The serial driver cannot confirm DTR was suppressed during open."""
 
 
 class RequestStateError(ProtocolError):
