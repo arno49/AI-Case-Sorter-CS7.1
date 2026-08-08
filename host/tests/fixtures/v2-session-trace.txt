@@ -1,0 +1,8 @@
+# Spec-fixture excerpt: CRLF and LF are both accepted.
+protocol:2 available\r\n
+protocol:2 ready\n
+@1 data:mode=running phase=idle feed_homed=1\n
+@1 data:sort_homed=1 motor_enabled=0 active_id=none\n
+@1 data:fault_code=0 queue_previous=0 queue_next=3\n
+@1 data:config_generation=4 future=x\n
+@1 done\n
