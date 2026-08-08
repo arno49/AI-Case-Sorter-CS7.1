@@ -637,6 +637,19 @@ Tasks:
 5. Keep exact ID-less `stop` CRC-exempt.
 6. Clear CRC on v1 transition and reset.
 
+#### V2-10A — Core preparation status
+
+The AVR-safe CRC-16/CCITT-FALSE core and native known-answer vectors are
+software-complete. The vectors independently confirm every normative CRC
+example in `PROTOCOL_V2.md`: `CF68`, `D690`, `48C9`, and `452B`; no
+documentation mismatch was found.
+
+This preparation does not advance or complete V2-10. All CRC integration
+acceptance remains unchecked and is blocked by V2-09, which remains blocked by
+the unchecked V2-08H hardware gate. The dormant core is excluded from both Uno
+production builds, so its present production resource impact is 0 bytes; this
+is not an estimate or claim for final CRC integration.
+
 Acceptance:
 
 - [ ] Published known-answer vectors pass.
