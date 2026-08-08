@@ -698,11 +698,15 @@ Tasks:
 
 Acceptance:
 
-- [ ] Detection distinguishes old firmware `ok` from v2 availability.
-- [ ] `prepare-legacy` leaves the controller in verified v1 before handoff.
-- [ ] Port locks are released before launching the Windows app.
-- [ ] Platform limitations around automatic DTR are surfaced, not hidden.
-- [ ] Old/new firmware, crash, timeout, and port-contention fixtures pass.
+- [x] Detection distinguishes old firmware `ok` from v2 availability.
+- [x] `prepare-legacy` leaves the controller in verified v1 before handoff.
+- [x] Port locks are released before launching the Windows app.
+- [x] Platform limitations around automatic DTR are surfaced, not hidden.
+- [x] Old/new firmware, crash, timeout, and port-contention fixtures pass.
+
+Status: **HOST-02 implemented and tested with injected serial/lock/runner
+fixtures.** Real OS DTR behavior and physical firmware parity are explicitly
+**NOT_EXECUTED**; they remain V2-11/HIL qualification gates.
 
 ### V2-11 — Software integration and resource gate
 
