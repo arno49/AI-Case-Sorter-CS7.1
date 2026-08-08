@@ -35,6 +35,14 @@ pio run -e uno
 pio test -e native
 ```
 
+Run the complete firmware and host software checks from the repository root:
+
+```sh
+pio run -e uno && pio run -e uno_v2
+pio test -e native && pio test -e native_v2
+(cd host && python -m pip install ".[dev]" "build==1.2.2.post1" && python -m pytest && python -m build --wheel --sdist)
+```
+
 Run one native test suite with:
 
 ```sh
