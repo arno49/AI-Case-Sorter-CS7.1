@@ -3,12 +3,24 @@ This repo was created to isolate all the code and resources for the CS7.1 Versio
 
 ## Release validation status
 
-Firmware `7.1.260714.6` compiles for Arduino Uno with PlatformIO and has 65
+Firmware `7.1.260714.6` compiles for Arduino Uno with PlatformIO and has 85
 passing native tests. CI verifies both on every firmware pull request. Physical
 bench validation is still required before treating this firmware as a hardware
 release: motor direction, homing and offsets, stop latency, AirDrop pulse
 timing, PWM output, sensor behavior, and Windows application compatibility have
 not been exercised from the development environment.
+
+### V2-08 software evidence
+
+| Build | Flash | Static SRAM | Gate |
+| --- | ---: | ---: | --- |
+| `uno` | 17,594 bytes | 899 bytes | 29,000 / 1,250 bytes |
+| `uno_v2` | 26,290 bytes | 997 bytes | 29,000 / 1,250 bytes |
+
+The matching native resource fixture is
+`test/support/v2_08_resource_fixture.h`. V2-08H hardware status is
+**NOT_EXECUTED**: no hardware stand was used, so physical completion timing,
+motor behavior, and cancellation timing remain unverified.
 
 ## Build and test
 

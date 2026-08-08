@@ -9,6 +9,7 @@
 #include "fault_state_tracker.h"
 #include "logic.h"
 #include "machine_state.h"
+#include "physical_request_tracker.h"
 #include "protocol.h"
 #include "proximity_settler.h"
 #include "runtime_timer.h"
@@ -198,6 +199,7 @@ FeedCompletion feedCompletion;
 MachineState machineState;
 ProtocolSession protocolSession;
 FaultStateTracker faultStateTracker;
+PhysicalRequestTracker physicalRequestTracker;
 RawStopLineDetector rawStopLineDetector;
 PendingCommand pendingCommand;
 ProximitySettler proximitySettler;
@@ -237,7 +239,11 @@ const uint32_t V2_CONFIG_GENERATION_MAX = 999999999UL;
 #if PROTOCOL_V2_ENABLED
 void baselineV2State();
 void emitV2StateIfChanged();
+void serviceV2PhysicalRequest();
+void finishV2PhysicalRequest(uint16_t requestId,
+                             PhysicalRequestOperation operation, int slot);
 #endif
+void applyV1Action(const V1DispatchResult &result);
 
 void advanceConfigGeneration() {
   configGeneration = configGeneration == V2_CONFIG_GENERATION_MAX
@@ -331,6 +337,20 @@ void completeFeedHoming() {
     FeedCycleComplete = true;
     FeedCycleInProgress = false;
   }
+#if PROTOCOL_V2_ENABLED
+  if (protocolSession.mode() == ProtocolMode::V2) {
+    const uint16_t requestId = physicalRequestTracker.requestId();
+    const PhysicalRequestOperation operation = physicalRequestTracker.operation();
+    const PhysicalRequestTransition transition = physicalRequestTracker.feedHomed();
+    if (transition == PhysicalRequestTransition::StartSorterHome) {
+      const V1DispatchResult result = {V1Action::HomeSorter, V1Output::None,
+                                       V1Response::Ok, 0};
+      applyV1Action(result);
+    } else if (transition == PhysicalRequestTransition::Done) {
+      finishV2PhysicalRequest(requestId, operation, 0);
+    }
+  }
+#endif
 }
 
 void completeSorterRecoveryHoming() {
@@ -343,6 +363,14 @@ void completeSorterRecoveryHoming() {
   qPos1 = 0;
   qPos2 = 0;
   updateRecoveryCompletion(MachineAxis::Sorter);
+#if PROTOCOL_V2_ENABLED
+  if (protocolSession.mode() == ProtocolMode::V2) {
+    const uint16_t requestId = physicalRequestTracker.requestId();
+    const PhysicalRequestOperation operation = physicalRequestTracker.operation();
+    if (physicalRequestTracker.sorterHomed() == PhysicalRequestTransition::Done)
+      finishV2PhysicalRequest(requestId, operation, 0);
+  }
+#endif
 }
 
 void cancelFeedCompletion() {
@@ -402,6 +430,7 @@ void handleRawStop() {
 #if PROTOCOL_V2_ENABLED
   const bool v2 = protocolSession.mode() == ProtocolMode::V2;
   if (v2) {
+    physicalRequestTracker.cancel();
     protocolSession.lifecycle().cancel();
     protocolSession.parser().reset();
   } else {
@@ -472,6 +501,7 @@ void loop() {
    runAux();
    MotorStandByCheck();
 #if PROTOCOL_V2_ENABLED
+   serviceV2PhysicalRequest();
    emitV2StateIfChanged();
 #endif
 }
@@ -776,6 +806,42 @@ void emitV2Phase(uint16_t requestId, MachinePhase phase) {
   }
 }
 
+void emitV2PhysicalProgress(uint16_t requestId, MachinePhase phase) {
+  beginV2Line(requestId, F("progress:phase="));
+  emitV2PhaseName(phase);
+  finishV2Line();
+}
+
+void finishV2PhysicalRequest(uint16_t requestId,
+                             PhysicalRequestOperation operation, int slot) {
+  V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (!lifecycle.owns(requestId)) return;
+  emitV2StateIfChanged();
+  if (operation == PhysicalRequestOperation::HomeAll) {
+    emitV2Terminal(&lifecycle, requestId, false,
+                   F("feed_homed=1 sort_homed=1"));
+  } else if (operation == PhysicalRequestOperation::HomeFeeder) {
+    emitV2Terminal(&lifecycle, requestId, false, F("feed_homed=1"));
+  } else if (operation == PhysicalRequestOperation::HomeSorter) {
+    emitV2Terminal(&lifecycle, requestId, false, F("sort_homed=1"));
+  } else if (operation == PhysicalRequestOperation::SortTo) {
+    beginV2Line(requestId, F("done:slot="));
+    Serial.print(slot);
+    finishV2Line();
+    lifecycle.terminal(requestId);
+  }
+}
+
+void serviceV2PhysicalRequest() {
+  if (protocolSession.mode() != ProtocolMode::V2 ||
+      !physicalRequestTracker.isActive())
+    return;
+  MachinePhase changedPhase;
+  const MachinePhase phase = deriveMachinePhase(currentV2MachineActivity());
+  if (physicalRequestTracker.observePhase(phase, &changedPhase))
+    emitV2PhysicalProgress(physicalRequestTracker.requestId(), changedPhase);
+}
+
 void emitV2Inspection(V2RequestLifecycle *lifecycle, uint16_t requestId,
                       V2InspectionCommand inspection) {
   if (inspection == V2InspectionCommand::ProtocolVersion) {
@@ -980,6 +1046,70 @@ bool beginV2Setter(uint16_t requestId) {
   return true;
 }
 
+bool beginV2PhysicalRequest(uint16_t requestId, const char *payload,
+                            size_t length, PhysicalRequestOperation operation,
+                            V1Command command) {
+  V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+  if (lifecycle.owns(requestId)) {
+    emitV2DuplicateId(requestId);
+    return false;
+  }
+  if (executionBusy() || lifecycle.isActive()) {
+    emitV2Busy(requestId, lifecycle.activeRequestId());
+    return false;
+  }
+
+  const bool sorterKnown =
+      machineState.axis(MachineAxis::Sorter).positionKnown;
+  const V1DispatchContext context = {
+      command == V1Command::SortTo ? sorterKnown : machineState.isRunning(),
+      false, false, qPos1, qPos2};
+  const V1DispatchResult result = dispatchV1Command(
+      payload, length, context, &configuration, v1DispatchLimits);
+  if (result.action == V1Action::None) {
+    const V2BeginResult begin = lifecycle.beginActive(requestId);
+    if (begin == V2BeginResult::DuplicateId) {
+      emitV2DuplicateId(requestId);
+    } else if (begin == V2BeginResult::Busy) {
+      emitV2Busy(requestId, lifecycle.activeRequestId());
+    } else if (result.response == V1Response::NotHomed) {
+      emitV2Terminal(&lifecycle, requestId, true, F("2002:not_homed"));
+    } else {
+      emitV2Terminal(&lifecycle, requestId, true, F("1005:invalid_argument"));
+    }
+    return false;
+  }
+
+  const V2BeginResult begin = lifecycle.beginActive(requestId);
+  if (begin == V2BeginResult::DuplicateId) {
+    emitV2DuplicateId(requestId);
+    return false;
+  }
+  if (begin == V2BeginResult::Busy) {
+    emitV2Busy(requestId, lifecycle.activeRequestId());
+    return false;
+  }
+
+  beginV2Line(requestId, operation == PhysicalRequestOperation::SortTo
+                             ? F("accepted:operation=sort")
+                             : F("accepted:operation=home"));
+  finishV2Line();
+  Serial.flush();
+  if (!physicalRequestTracker.begin(requestId, operation, result.value)) {
+    emitV2Terminal(&lifecycle, requestId, true, F("2001:busy"));
+    return false;
+  }
+  applyV1Action(result);
+  return true;
+}
+
+bool beginV2HomeAll(uint16_t requestId) {
+  static const char homeFeeder[] = "homefeeder";
+  return beginV2PhysicalRequest(requestId, homeFeeder, sizeof(homeFeeder) - 1,
+                                PhysicalRequestOperation::HomeAll,
+                                V1Command::HomeFeeder);
+}
+
 void handleV2Setter(uint16_t requestId, const char *payload, size_t length,
                     V1Command command) {
   if (!beginV2Setter(requestId)) return;
@@ -1023,6 +1153,7 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
     }
     const bool cancelledActiveRequest = lifecycle.isActive();
     const uint16_t cancelledRequestId = lifecycle.activeRequestId();
+    physicalRequestTracker.cancel();
     lifecycle.cancel();
     enterStoppedState();
     if (cancelledActiveRequest) {
@@ -1068,6 +1199,28 @@ void handleV2Frame(uint8_t status, const char *command, size_t length) {
   if (v1CommandIsSetter(v1Command)) {
     handleV2Setter(envelope.requestId, envelope.payload, envelope.payloadLength,
                    v1Command);
+    return;
+  }
+  if (isExactV2(envelope.payload, envelope.payloadLength, F("homeall"))) {
+    beginV2HomeAll(envelope.requestId);
+    return;
+  }
+  if (v1Command == V1Command::HomeFeeder) {
+    beginV2PhysicalRequest(envelope.requestId, envelope.payload,
+                           envelope.payloadLength,
+                           PhysicalRequestOperation::HomeFeeder, v1Command);
+    return;
+  }
+  if (v1Command == V1Command::HomeSorter) {
+    beginV2PhysicalRequest(envelope.requestId, envelope.payload,
+                           envelope.payloadLength,
+                           PhysicalRequestOperation::HomeSorter, v1Command);
+    return;
+  }
+  if (v1Command == V1Command::SortTo) {
+    beginV2PhysicalRequest(envelope.requestId, envelope.payload,
+                           envelope.payloadLength,
+                           PhysicalRequestOperation::SortTo, v1Command);
     return;
   }
 
@@ -1331,6 +1484,17 @@ void onSortComplete(){
         SortInProgress=false;
         timeSinceLastSortMove = millis();
         timeSinceLastMotorMove = timeSinceLastSortMove;
+#if PROTOCOL_V2_ENABLED
+        if (protocolSession.mode() == ProtocolMode::V2) {
+          const uint16_t requestId = physicalRequestTracker.requestId();
+          const PhysicalRequestOperation operation =
+              physicalRequestTracker.operation();
+          const int slot = physicalRequestTracker.slot();
+          if (physicalRequestTracker.sortCompleted() ==
+              PhysicalRequestTransition::Done)
+            finishV2PhysicalRequest(requestId, operation, slot);
+        }
+#endif
        // Serial.println("runscheduled");
   }
 }
@@ -1372,6 +1536,7 @@ void checkFeedErrors(){
       faultStateTracker.latchFeedOvertravel();
       if (protocolSession.mode() == ProtocolMode::V2) {
         V2RequestLifecycle &lifecycle = protocolSession.lifecycle();
+        physicalRequestTracker.fault();
         if (lifecycle.isActive())
           emitV2Terminal(&lifecycle, lifecycle.activeRequestId(), true,
                          F("3001:feed_overtravel"));
