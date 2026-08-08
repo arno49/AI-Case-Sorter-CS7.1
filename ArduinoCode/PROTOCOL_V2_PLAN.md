@@ -666,13 +666,17 @@ Tasks:
 
 Acceptance:
 
-- [ ] The library talks to both old and proposed firmware fixtures.
-- [ ] Unknown fields are tolerated; unknown terminal forms fail closed.
-- [ ] Activation/CRC uncertainty causes stop/reset rather than guessing.
-- [ ] The application API exposes typed status, fault, queue, and completion.
-- [ ] Tests run without physical hardware.
-- [ ] Parallel work is validated against specification fixtures; parity with
+- [x] The library talks to both old and proposed firmware fixtures.
+- [x] Unknown fields are tolerated; unknown terminal forms fail closed.
+- [x] Activation/CRC uncertainty causes stop/reset rather than guessing.
+- [x] The application API exposes typed status, fault, queue, and completion.
+- [x] Tests run without physical hardware.
+- [x] Parallel work is validated against specification fixtures; parity with
       real firmware remains an explicit V2-11 gate.
+
+Status: **HOST-01 implemented and tested against scripted/golden fixtures only.**
+Real firmware parity is explicitly **NOT_EXECUTED** and remains a V2-11
+integration-gate responsibility.
 
 ### HOST-02 — Implement `cs71-protocol`
 
