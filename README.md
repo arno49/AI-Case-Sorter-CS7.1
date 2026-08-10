@@ -21,10 +21,14 @@ pio test -e native && pio test -e native_v2
 These checks do not replace firmware serial parity, HIL, or Windows
 qualification.
 
-The proposed Raspberry Pi 5 control appliance, SvelteKit SSR application,
-Python hardware daemon, safety boundaries, deployment model, and
-dependency-ordered implementation backlog are documented in
-[RASPBERRY_PI_WEB_ARCHITECTURE.md](RASPBERRY_PI_WEB_ARCHITECTURE.md).
+## Raspberry Pi 5 appliance documentation
+
+The Raspberry Pi 5 control appliance executive summary is
+[RASPBERRY_PI_WEB_ARCHITECTURE.md](RASPBERRY_PI_WEB_ARCHITECTURE.md). Its canonical
+architecture, ADRs, delivery backlog, roadmap, and traceability are under
+[docs/architecture/](docs/architecture/README.md). Firmware protocol behavior remains
+in [ArduinoCode/PROTOCOL_V2.md](ArduinoCode/PROTOCOL_V2.md); the Python host-library
+boundary is documented in [host/README.md](host/README.md).
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
