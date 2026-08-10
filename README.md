@@ -21,6 +21,11 @@ pio test -e native && pio test -e native_v2
 These checks do not replace firmware serial parity, HIL, or Windows
 qualification.
 
+The proposed Raspberry Pi 5 control appliance, SvelteKit SSR application,
+Python hardware daemon, safety boundaries, deployment model, and
+dependency-ordered implementation backlog are documented in
+[RASPBERRY_PI_WEB_ARCHITECTURE.md](RASPBERRY_PI_WEB_ARCHITECTURE.md).
+
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
 sensor continuously active for the configured settle time. A sensor drop
