@@ -39,9 +39,13 @@ graph LR
 - PI-DAEMON-001 is complete: `cs71d.SerialWorker` is the sole serial owner,
   with bounded normal admission, an independently admitted priority-stop lane,
   and fail-closed preemption and uncertainty results.
-- PI-DAEMON-002 session state and conservative reconnect is the active
-  critical-path implementation step. PI-WEB-001 remains independently
-  available in parallel.
+- PI-DAEMON-002 is complete: connection state is published with a monotonic
+  snapshot generation, recovery is delegated to `cs71_protocol` and escalates
+  to reconnect without replaying an incomplete command, and opening a real
+  POSIX serial port is refused while the DTR gate is `NOT_EXECUTED`.
+- M2 is therefore complete. PI-DOMAIN-001 operations, idempotency and snapshot
+  generation is the active critical-path implementation step, opening M3.
+  PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

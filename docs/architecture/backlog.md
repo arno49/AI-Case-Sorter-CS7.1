@@ -117,6 +117,16 @@ successful.
 
 **Goal:** publish connection states and recover without command replay. **Implementation notes:** delegate v1/v2/CRC recovery to `cs71_protocol`; enforce unqualified DTR policy. **Dependencies:** PI-DAEMON-001. **Hardware required:** No. **Size:** L.
 
+**Status:** Implemented as `cs71d.SessionState` plus reconnect handling in
+`SerialWorker`. Connection state is published separately from the worker
+thread's lifecycle, because a healthy thread can own an untrustworthy session.
+In-session recovery is delegated entirely to `cs71_protocol`, which already
+runs stop/reset/verify for an unsafe exchange and reports the outcome through
+`RecoveryError.recovered`; the worker only decides whether to re-activate v2 or
+escalate to a full reconnect on a fresh transport. Real-port opening is gated
+in `cs71d.device`, which refuses POSIX opens while the DTR gate is
+`NOT_EXECUTED`.
+
 - Connection transitions include `DISCONNECTED`, `VERIFYING_V1`, `READY`, `RECOVERING` and `UNCERTAIN` with generation changes.
 - Timeout, malformed frame, CRC fault or device loss marks affected operation non-successful.
 - Recovery never automatically replays an incomplete state-changing command.

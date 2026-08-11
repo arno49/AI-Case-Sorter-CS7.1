@@ -25,9 +25,10 @@ hardware-evidence boundaries below.
 | `CommunityContributions/` | Independent variants; not canonical by default |
 
 The Raspberry Pi application currently has approved architecture, an executable
-API contract, initial daemon/web workspace scaffolds, and a single-owner serial
-worker. Session state, the machine-control domain, and operator features are not
-implemented; do not describe it as deployed or qualified.
+API contract, initial daemon/web workspace scaffolds, a single-owner serial
+worker, and published session state with conservative reconnect. The
+machine-control domain and operator features are not implemented; do not
+describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -141,8 +142,17 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - Native Raspberry Pi OS deployment uses systemd, udev, and Caddy; containers
   are excluded from the MVP.
 - Only `appliance/daemon/src/cs71d/serial_worker.py` may import or construct
-  `ProtocolClient` or a configured serial transport. Other daemon code submits
-  typed intents to `SerialWorker` and never performs serial I/O itself.
+  `ProtocolClient`. Only `appliance/daemon/src/cs71d/device.py` may reference
+  `SerialTransport`, and it must stay a lazy import so `import cs71d` never
+  requires pyserial. Other daemon code submits typed intents to `SerialWorker`
+  and never performs serial I/O itself.
+- Do not reimplement v1/v2/CRC recovery in the daemon. `cs71_protocol` already
+  runs stop/reset/verify for an unsafe exchange and reports the outcome as
+  `RecoveryError.recovered`; the daemon only chooses re-activation, reconnect,
+  or `UNCERTAIN`.
+- Keep daemon connection state separate from worker-thread lifecycle state. A
+  running thread may hold a `RECOVERING` or `UNCERTAIN` session, and only a
+  `READY` session admits work.
 - Simulator code uses explicit clock advancement, carries a conspicuous
   `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
   evidence.

@@ -6,22 +6,31 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from cs71_protocol import Completion, Status
+from cs71_protocol import Completion, RecoveryError, Status
 
 from cs71d import (
+    ConnectionState,
     HomeAxis,
     HomeIntent,
+    PreemptedByRecoveryError,
     PreemptedByStopError,
     QueryIntent,
     QueryKind,
     QueueFullError,
     SerialWorker,
+    SessionNotReadyError,
+    SessionSnapshot,
     SortIntent,
     WorkerStartupError,
     WorkerState,
 )
 from cs71d.serial_worker import WorkerResult
-from cs71d.simulator import SimulatorConfig, SimulatorTransport, TranscriptDirection
+from cs71d.simulator import (
+    AdverseScenario,
+    SimulatorConfig,
+    SimulatorTransport,
+    TranscriptDirection,
+)
 
 
 def _completion(future: Future[WorkerResult], *, timeout: float = 0.5) -> Completion:
@@ -221,17 +230,232 @@ def test_v1_only_controller_fails_startup_and_closes_transport() -> None:
     assert simulator.closed
 
 
-def test_protocol_client_import_is_confined_to_serial_worker() -> None:
+class SessionWatcher:
+    """Observe published snapshots so tests can await a transition, not a clock.
+
+    The worker fails an operation's future before it finishes recovering, so a
+    test that only awaits the future would race the recovery it is asserting on.
+    """
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self.snapshots: list[SessionSnapshot] = []
+
+    def observe(self, snapshot: SessionSnapshot) -> None:
+        with self._condition:
+            self.snapshots.append(snapshot)
+            self._condition.notify_all()
+
+    def wait_for(self, state: ConnectionState, *, count: int = 1, timeout: float = 2.0) -> None:
+        with self._condition:
+            reached = self._condition.wait_for(
+                lambda: sum(1 for item in self.snapshots if item.state is state) >= count,
+                timeout,
+            )
+        assert reached, f"session never reached {state} {count}x: {self.snapshots}"
+
+
+class UnresettableTransport:
+    """A transport with no reset hook, so `cs71_protocol` cannot verify v1."""
+
+    dtr_suppression_guaranteed = False
+
+    def __init__(self, delegate: SimulatorTransport) -> None:
+        self.delegate = delegate
+
+    def read(self, size: int = 1, *, timeout: float | None = None) -> bytes:
+        return self.delegate.read(size, timeout=timeout)
+
+    def write(self, data: bytes) -> int:
+        return self.delegate.write(data)
+
+    def close(self) -> None:
+        self.delegate.close()
+
+
+def _sort_command_count(simulator: SimulatorTransport) -> int:
+    return sum(
+        entry.direction is TranscriptDirection.HOST_TO_SIMULATOR and b" sortto:3\n" in entry.data
+        for entry in simulator.transcript
+    )
+
+
+CONNECTION_WALK = [
+    ConnectionState.DISCONNECTED,
+    ConnectionState.CONNECTING,
+    ConnectionState.VERIFYING_V1,
+    ConnectionState.ACTIVATING_V2,
+    ConnectionState.READY,
+]
+
+
+def test_bootstrap_publishes_the_connection_walk_with_monotonic_generations() -> None:
+    worker, _simulator, _transport, _factory_threads = _started_worker()
+
+    history = worker.session_history
+    assert [snapshot.state for snapshot in history] == CONNECTION_WALK
+    assert [snapshot.generation for snapshot in history] == [1, 2, 3, 4, 5]
+    assert worker.session.admits_work
+    worker.close(timeout=0.5)
+
+
+def test_unsafe_exchange_recovers_to_ready_and_never_replays_the_command() -> None:
+    watcher = SessionWatcher()
+    simulator = SimulatorTransport(SimulatorConfig(scenario=AdverseScenario.MALFORMED_FRAME.value))
+    worker = SerialWorker(
+        lambda: simulator,
+        protocol_timeout=0.1,
+        interrupt_poll_interval=0.005,
+        session_observer=watcher.observe,
+    )
+    worker.start(timeout=0.5)
+    active = worker.submit(SortIntent(3))
+    queued = worker.submit(QueryIntent(QueryKind.STATUS))
+
+    with pytest.raises(RecoveryError) as unsafe:
+        active.result(timeout=1.0)
+    with pytest.raises(PreemptedByRecoveryError):
+        queued.result(timeout=1.0)
+    watcher.wait_for(ConnectionState.READY, count=2)
+
+    # The library recovered to a verified v1 session, so the worker re-activates.
+    assert unsafe.value.recovered
+    assert [snapshot.state for snapshot in worker.session_history] == [
+        *CONNECTION_WALK,
+        ConnectionState.RECOVERING,
+        ConnectionState.VERIFYING_V1,
+        ConnectionState.ACTIVATING_V2,
+        ConnectionState.READY,
+    ]
+    assert worker.session.generation == 9
+    assert _sort_command_count(simulator) == 1
+    worker.close(timeout=0.5)
+
+
+def test_submission_is_refused_while_the_session_is_recovering() -> None:
+    watcher = SessionWatcher()
+    refusals: list[Exception] = []
+
+    def observer(snapshot: SessionSnapshot) -> None:
+        watcher.observe(snapshot)
+        if snapshot.state is not ConnectionState.RECOVERING:
+            return
+        try:
+            worker.submit(QueryIntent(QueryKind.STATUS))
+        except Exception as exc:  # noqa: BLE001 - the test records whatever is raised
+            refusals.append(exc)
+
+    simulator = SimulatorTransport(SimulatorConfig(scenario=AdverseScenario.TIMEOUT.value))
+    worker = SerialWorker(
+        lambda: simulator,
+        protocol_timeout=0.1,
+        interrupt_poll_interval=0.005,
+        session_observer=observer,
+    )
+    worker.start(timeout=0.5)
+
+    with pytest.raises(RecoveryError):
+        worker.submit(SortIntent(3)).result(timeout=1.0)
+    watcher.wait_for(ConnectionState.READY, count=2)
+
+    # The worker thread stays healthy; only session confidence gates admission.
+    assert [type(error) for error in refusals] == [SessionNotReadyError]
+    assert worker.state is WorkerState.RUNNING
+    worker.close(timeout=0.5)
+
+
+def test_unverified_recovery_reconnects_from_disconnected_without_replay() -> None:
+    simulators: list[SimulatorTransport] = []
+
+    def factory() -> UnresettableTransport | SimulatorTransport:
+        # The first controller cannot be reset, so in-session recovery fails and
+        # the worker must escalate to a full reconnect on a fresh transport.
+        first = not simulators
+        simulator = SimulatorTransport(
+            SimulatorConfig(scenario=AdverseScenario.TIMEOUT.value if first else "happy-v2")
+        )
+        simulators.append(simulator)
+        return UnresettableTransport(simulator) if first else simulator
+
+    watcher = SessionWatcher()
+    worker = SerialWorker(
+        factory,
+        protocol_timeout=0.1,
+        interrupt_poll_interval=0.005,
+        session_observer=watcher.observe,
+    )
+    worker.start(timeout=0.5)
+
+    with pytest.raises(RecoveryError) as unsafe:
+        worker.submit(SortIntent(3)).result(timeout=1.0)
+    watcher.wait_for(ConnectionState.READY, count=2)
+
+    assert not unsafe.value.recovered
+    assert [snapshot.state for snapshot in worker.session_history] == [
+        *CONNECTION_WALK,
+        ConnectionState.RECOVERING,
+        ConnectionState.DISCONNECTED,
+        ConnectionState.CONNECTING,
+        ConnectionState.VERIFYING_V1,
+        ConnectionState.ACTIVATING_V2,
+        ConnectionState.READY,
+    ]
+    assert len(simulators) == 2
+    assert simulators[0].closed
+    assert _sort_command_count(simulators[1]) == 0
+    worker.close(timeout=0.5)
+
+
+def test_unrecoverable_session_becomes_uncertain_rather_than_ready() -> None:
+    watcher = SessionWatcher()
+    simulator = SimulatorTransport(SimulatorConfig(scenario=AdverseScenario.TIMEOUT.value))
+    worker = SerialWorker(
+        lambda: UnresettableTransport(simulator),
+        protocol_timeout=0.1,
+        interrupt_poll_interval=0.005,
+        max_reconnect_attempts=0,
+        session_observer=watcher.observe,
+    )
+    worker.start(timeout=0.5)
+
+    with pytest.raises(RecoveryError):
+        worker.submit(SortIntent(3)).result(timeout=1.0)
+    watcher.wait_for(ConnectionState.UNCERTAIN)
+
+    assert worker.session.state is ConnectionState.UNCERTAIN
+    assert not worker.session.admits_work
+    assert worker.state is WorkerState.FAILED
+    assert simulator.closed
+    worker.close(timeout=0.5)
+
+
+def _modules_importing(symbol: str) -> set[str]:
     package_root = Path(__file__).parents[1] / "src/cs71d"
-    offenders: list[str] = []
+    importers: set[str] = set()
     for path in package_root.rglob("*.py"):
-        if path.name == "serial_worker.py":
-            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and any(
-                alias.name == "ProtocolClient" for alias in node.names
+                alias.name == symbol for alias in node.names
             ):
-                offenders.append(str(path.relative_to(package_root)))
+                importers.add(str(path.relative_to(package_root)))
+    return importers
 
-    assert offenders == []
+
+def test_protocol_client_import_is_confined_to_serial_worker() -> None:
+    assert _modules_importing("ProtocolClient") == {"serial_worker.py"}
+
+
+def test_real_serial_transport_import_is_confined_to_device_policy() -> None:
+    assert _modules_importing("SerialTransport") == {"device.py"}
+
+
+def test_importing_the_package_never_pulls_in_a_real_serial_backend() -> None:
+    """`SerialTransport` is imported lazily so `import cs71d` needs no pyserial."""
+    device_source = Path(__file__).parents[1] / "src/cs71d/device.py"
+    tree = ast.parse(device_source.read_text(encoding="utf-8"), filename=str(device_source))
+    module_scope_imports = {
+        alias.name for node in tree.body if isinstance(node, ast.ImportFrom) for alias in node.names
+    }
+
+    assert "SerialTransport" not in module_scope_imports
