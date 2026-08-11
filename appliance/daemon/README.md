@@ -131,10 +131,19 @@ error code, and no response body carries protocol internals or raw serial
 content.
 
 Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
-`/v1/operations` and `/v1/operations/{operation_id}`. `/v1/snapshot` returns
-`ETag: "generation:<n>"`, and an unobserved controller advertises no v2 and no
-capability rather than a hopeful default. State-changing endpoints, the session
-and configuration resources, and the SSE stream arrive in later roadmap tasks.
+`/v1/operations`, `/v1/operations/{operation_id}`, and the commands
+`/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`.
+`/v1/snapshot` returns `ETag: "generation:<n>"`, and an unobserved controller
+advertises no v2 and no capability rather than a hopeful default. The session
+and configuration resources and the SSE stream arrive in later roadmap tasks.
+
+Every command carries `Idempotency-Key`, `If-Match-Generation` and
+`X-Deadline-Ms`. Only a priority stop accepts `*` for the generation, because
+a recovering or uncertain view is exactly when an operator needs it. Attribution
+is checked against the contract's role vocabulary and a `viewer` is refused
+before anything is admitted; that is defence in depth, not authority — SvelteKit
+authorizes the browser identity, and the daemon never treats a supplied role as
+a credential.
 
 Responses are checked against the frozen contract schemas in tests by a
 conformance checker that fails closed on any keyword it does not implement,
