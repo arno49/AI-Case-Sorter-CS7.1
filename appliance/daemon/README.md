@@ -115,6 +115,32 @@ Locks are taken as `MachineState` → `Journal` → `SerialWorker` and never the
 reverse. An admitting thread releases the machine lock before it enqueues,
 because the worker thread enters that lock holding nothing.
 
+## The private API
+
+`cs71d.ApiServer` serves the daemon's HTTP/JSON API on a Unix domain socket and
+nothing else. There is no TCP code path to misconfigure: no daemon module names
+an internet address family, and a static test keeps it that way. The socket is
+created with owner/group-only permissions, and every request must carry the
+installation-local bearer service credential the contract defines. A browser
+never reaches this surface; the SvelteKit BFF does.
+
+`appliance/contracts/cs71d-v1.openapi.json` is the source of truth. Daemon
+vocabulary is translated at this boundary rather than leaking outward, error
+codes map to the documented HTTP statuses through one table keyed by the domain
+error code, and no response body carries protocol internals or raw serial
+content.
+
+Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
+`/v1/operations` and `/v1/operations/{operation_id}`. `/v1/snapshot` returns
+`ETag: "generation:<n>"`, and an unobserved controller advertises no v2 and no
+capability rather than a hopeful default. State-changing endpoints, the session
+and configuration resources, and the SSE stream arrive in later roadmap tasks.
+
+Responses are checked against the frozen contract schemas in tests by a
+conformance checker that fails closed on any keyword it does not implement,
+including the contract's conditional safety rules: a terminal operation must
+carry an outcome, and only a trusted terminal may be `SUCCEEDED`.
+
 ## Operation adapters and firmware gates
 
 The worker gathers the required snapshots — advertised capabilities and

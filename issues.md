@@ -8,7 +8,7 @@ the Arduino IDE workflow, or the serial contract used by AI Sorter software
 
 **Implementation status:** the software work is implemented through firmware
 `7.1.260714.6`. Current software evidence includes 89 native tests, 49 native-v2
-tests, 116 host tests, and 190 daemon/simulator tests. Unchecked criteria below
+tests, 116 host tests, and 221 daemon/simulator tests. Unchecked criteria below
 require an Arduino IDE run, physical hardware, long-duration testing, a logic
 analyzer, or the Windows application; they are not being represented as
 complete.
@@ -40,7 +40,10 @@ is maintained in [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md).
       capability, slot range and sorter position before any serial I/O. Feed
       returns `UNSUPPORTED`; its lifecycle stays blocked on V2-09 and hardware
       evidence.
-- [ ] PI-API-001: internal HTTP/JSON API over the Unix domain socket.
+- [ ] PI-API-001: internal HTTP/JSON API over the Unix domain socket. The
+      socket-only read side (health, snapshot, operations) is served and
+      contract-checked; state-changing endpoints, session/configuration
+      resources and entry-point wiring remain.
 
 ## Constraints that apply to every phase
 

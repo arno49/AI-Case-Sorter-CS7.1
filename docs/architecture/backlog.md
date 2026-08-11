@@ -221,6 +221,25 @@ that gate. Home and sort are covered for all six.
 
 **Goal:** expose daemon resources over internal HTTP/JSON. **Implementation notes:** bind only Unix domain socket with service authentication; generate TypeScript client from source contract. **Dependencies:** PI-DOMAIN-003. **Hardware required:** No. **Size:** L.
 
+**Status:** In progress. `cs71d.api.ApiServer` serves the read side —
+`/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`, `/v1/operations` and
+`/v1/operations/{operation_id}` — on a Unix domain socket with owner/group-only
+permissions and the contract's bearer service credential on every request. The
+daemon has no TCP code path at all, which a static test enforces rather than
+asserting at runtime. Error codes map to the documented HTTP statuses through
+one table keyed by the domain error code, so a new domain error cannot acquire
+a status by default, and internal vocabulary is translated at the boundary
+instead of leaking outward. Responses are checked against the frozen contract
+schemas by a conformance checker that fails closed on any keyword it does not
+implement, and that checker has its own negative tests.
+
+Outstanding: the state-changing endpoints and their idempotency, generation and
+deadline headers; `/v1/session/connect`, `/v1/session/recover` and
+`/v1/configuration`, which need domain capabilities that do not exist yet; and
+wiring the server into the daemon entry point with a credential source. The
+generated TypeScript client and its CI divergence check already exist as
+`npm run check:api` in the web workspace.
+
 - Daemon starts with no TCP listener and socket mode/group excludes browser users.
 - Snapshot, connect, recover, stop, home, sort, feed, operation and health resources conform to generated OpenAPI tests.
 - State-changing endpoints require idempotency, generation and finite-deadline headers.

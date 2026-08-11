@@ -41,7 +41,7 @@ deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 190 passing pytest tests.
+- `cs71d` daemon package: 221 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -184,6 +184,13 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   motion with `JOURNAL_UNAVAILABLE`. It does not self-clear; durability loss
   needs operator or service intervention. Never substitute an in-memory claim
   of success for a durable record.
+- The daemon has no TCP code path. `cs71d.api` binds `AF_UNIX` only, with
+  owner/group-only socket permissions, and every request carries the
+  installation-local bearer service credential. Do not add an internet address
+  family, a port, or an unauthenticated route.
+- `appliance/contracts/cs71d-v1.openapi.json` is the source of truth for the
+  API surface. Translate daemon vocabulary at that boundary; never let protocol
+  internals, raw serial content or secrets appear in a response body.
 - Validate a command against what the controller advertised, not against what
   the daemon assumes. The worker gathers capabilities and status before
   publishing `READY` and re-observes them after each completed movement;

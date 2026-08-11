@@ -18,7 +18,7 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 190 pytest tests pass |
+| Python daemon/simulator | 221 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.

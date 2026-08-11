@@ -63,9 +63,13 @@ graph LR
   its firmware lifecycle gate is `NOT_EXECUTED`; its operation coverage stays
   blocked on V2-09 and hardware evidence, so the PI-DOMAIN epic exit criteria
   are met only for the operations the firmware actually implements.
-- PI-API-001 internal HTTP/JSON over the Unix socket is the active
-  critical-path implementation step. PI-WEB-001 remains independently
-  available in parallel.
+- PI-API-001 is partially delivered and remains the active critical-path step.
+  The daemon serves health, snapshot and operation resources over a Unix
+  domain socket only, with owner/group-only permissions and a bearer service
+  credential on every request; responses are checked against the frozen
+  contract. The state-changing endpoints, the session and configuration
+  resources, and the daemon entry-point wiring are outstanding.
+  PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

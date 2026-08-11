@@ -1,6 +1,7 @@
 """CS7.1 appliance daemon package."""
 
 from .adapters import FEED_LIFECYCLE_GATE, intent_for, require_supported
+from .api import ApiError, ApiServer
 from .config import Backend, ConfigError, DaemonConfig, Profile, load_config
 from .device import (
     DTR_GATE_STATUS,
@@ -83,6 +84,8 @@ from .simulator import (
 __all__ = [
     "Actor",
     "AdverseScenario",
+    "ApiError",
+    "ApiServer",
     "Backend",
     "ConfigError",
     "ConnectionState",

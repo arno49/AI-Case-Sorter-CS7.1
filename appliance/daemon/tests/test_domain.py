@@ -20,7 +20,7 @@ from cs71d.domain import (
     WorkerObservers,
 )
 from cs71d.journal import IN_MEMORY, Journal, JournalError
-from cs71d.machine import FaultState
+from cs71d.machine import FaultState, MachineSnapshot
 from cs71d.operations import (
     Actor,
     IdempotencyRecord,
@@ -100,12 +100,41 @@ class OperationWatcher:
             return tuple(self._records)
 
 
+class MachineWatcher:
+    """Await published machine views; the domain latches faults on the worker thread."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._snapshots: list[MachineSnapshot] = []
+
+    def observe(self, snapshot: MachineSnapshot) -> None:
+        with self._condition:
+            self._snapshots.append(snapshot)
+            self._condition.notify_all()
+
+    def wait_until(
+        self,
+        predicate: Callable[[MachineSnapshot], bool],
+        *,
+        timeout: float = 2.0,
+    ) -> MachineSnapshot:
+        def matched() -> MachineSnapshot | None:
+            return next((view for view in reversed(self._snapshots) if predicate(view)), None)
+
+        with self._condition:
+            found = self._condition.wait_for(matched, timeout)
+        if found is None:
+            raise AssertionError("the machine view never reached the expected state")
+        return found
+
+
 @dataclass(slots=True)
 class Harness:
     domain: OperationDomain
     simulator: SimulatorTransport
     journal: Journal
     watcher: OperationWatcher
+    machine: MachineWatcher
     clock: FakeClock
 
     def submit(
@@ -266,6 +295,7 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
     ) -> Harness:
         clock = FakeClock(START)
         watcher = OperationWatcher()
+        machine = MachineWatcher()
         config = (
             SimulatorConfig(slot_max=slot_max)
             if scenario is None
@@ -291,8 +321,9 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
             worker_factory,
             now=clock,
             operation_observer=watcher.observe,
+            machine_observer=machine.observe,
         )
-        harness = Harness(domain, simulator, journal, watcher, clock)
+        harness = Harness(domain, simulator, journal, watcher, machine, clock)
         built.append(harness)
         if start:
             domain.start(timeout=1.0)
@@ -698,6 +729,9 @@ def test_a_journal_failure_cannot_yield_an_unrecorded_success(
 
     harness.simulator.advance(10_000)
     journal.wait_for_refusals(1)
+    # The refusal and the latch are two steps on the worker thread; wait for
+    # the published view rather than assuming the second already happened.
+    harness.machine.wait_until(lambda view: not view.journal_available)
 
     recorded = harness.domain.operation(admitted.operation_id)
     assert recorded is not None
@@ -721,6 +755,7 @@ def test_a_lifecycle_write_that_fails_stops_the_command_before_transmission(
     # The blocker's terminal is refused first, then the queued command's
     # dispatch gate; after that the command can no longer be transmitted.
     journal.wait_for_refusals(2)
+    harness.machine.wait_until(lambda view: not view.journal_available)
 
     assert harness.sort_commands() == 0
     recorded = harness.domain.operation(queued.operation_id)
