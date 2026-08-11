@@ -7,10 +7,28 @@ the Arduino IDE workflow, or the serial contract used by AI Sorter software
 1.1.46 and newer.
 
 **Implementation status:** the software work is implemented through firmware
-`7.1.260714.6`. PlatformIO Uno compilation, CI, and 65 native tests pass.
-Unchecked criteria below require an Arduino IDE run, physical hardware,
-long-duration testing, a logic analyzer, or the Windows application; they are
-not being represented as complete.
+`7.1.260714.6`. Current software evidence includes 89 native tests, 49 native-v2
+tests, 116 host tests, and 31 daemon/simulator tests. Unchecked criteria below
+require an Arduino IDE run, physical hardware, long-duration testing, a logic
+analyzer, or the Windows application; they are not being represented as
+complete.
+
+## Active Raspberry Pi appliance issues
+
+Canonical dependencies and acceptance criteria are maintained in
+[`docs/architecture/backlog.md`](docs/architecture/backlog.md); milestone order
+is maintained in [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md).
+
+- [x] PI-SIM-001/002: deterministic simulator, adverse scenarios, and strict
+      v1/v2 fixture replay.
+- [x] PI-DAEMON-001 prerequisite: `ProtocolClient` supports deadline-preserving
+      interrupt polling and trusted same-owner out-of-band stop.
+- [ ] PI-DAEMON-001: implement the sole serial worker, bounded normal admission,
+      coalesced priority-stop lane, and single-open/concurrency evidence.
+- [ ] PI-DAEMON-002: publish session states and conservative reconnect without
+      command replay.
+- [ ] PI-DOMAIN-001: implement durable operations; close the deferred
+      terminal-mismatch daemon-result assertion.
 
 ## Constraints that apply to every phase
 

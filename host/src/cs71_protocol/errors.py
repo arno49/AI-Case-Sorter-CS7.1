@@ -35,3 +35,7 @@ class DtrSuppressionError(ProtocolError):
 
 class RequestStateError(ProtocolError):
     """A response violates request lifecycle or correlation rules."""
+
+
+class RequestInterruptedError(ProtocolError):
+    """A request was cancelled by a trusted out-of-band stop terminal."""

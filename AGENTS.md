@@ -37,7 +37,7 @@ qualified.
   negotiation.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
-- Host package: 100 passing pytest tests.
+- Host package: 116 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
