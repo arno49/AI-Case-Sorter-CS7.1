@@ -1,12 +1,32 @@
 # cs71d
 
 `cs71d` is the private machine-control daemon for the Raspberry Pi appliance.
-This workspace currently provides the package boundary and strict configuration
-validation. Serial ownership, scheduling, persistence, and the Unix-socket API
-arrive in later roadmap tasks.
+This workspace currently provides the package boundary, strict configuration
+validation, and sole serial ownership. Session state, scheduling, persistence,
+and the Unix-socket API arrive in later roadmap tasks.
 
 The package depends on the repository's `cs71_protocol` implementation and does
 not duplicate framing or recovery logic.
+
+## Serial worker
+
+`cs71d.SerialWorker` owns one transport and one `ProtocolClient` on a single
+dedicated thread; no other module may import `ProtocolClient`, and a static
+test enforces that boundary. Callers never touch the serial device. They submit
+closed typed intents — `QueryIntent`, `HomeIntent`, `SortIntent` — and receive a
+future.
+
+Admission has two lanes. The normal lane is bounded and rejects with
+`QueueFullError` instead of allocating without limit; exactly one
+state-changing operation is dispatched at a time. Priority stop is admitted
+independently of normal-lane saturation, clears queued work, and preempts an
+active request through the protocol library's interrupt polling and trusted
+out-of-band stop.
+
+Preemption results are fail-closed. Work invalidated by a stop fails with
+`PreemptedByStopError`. If the stop itself does not complete trustworthily, the
+affected result fails with `WorkerUncertainError` — never as stopped or
+successful. Software stop is not a physical emergency stop.
 
 ## Deterministic simulator
 

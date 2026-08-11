@@ -1,6 +1,22 @@
 """CS7.1 appliance daemon package."""
 
 from .config import Backend, ConfigError, DaemonConfig, Profile, load_config
+from .serial_worker import (
+    HomeAxis,
+    HomeIntent,
+    PreemptedByStopError,
+    QueryIntent,
+    QueryKind,
+    QueueFullError,
+    SerialWorker,
+    SortIntent,
+    StopInProgressError,
+    WorkerNotRunningError,
+    WorkerShutdownTimeout,
+    WorkerStartupError,
+    WorkerState,
+    WorkerUncertainError,
+)
 from .simulator import (
     SIMULATOR_EVIDENCE_CLASS,
     AdverseScenario,
@@ -16,10 +32,24 @@ __all__ = [
     "ConfigError",
     "DaemonConfig",
     "FixtureReplayTransport",
+    "HomeAxis",
+    "HomeIntent",
     "ManualClock",
+    "PreemptedByStopError",
     "Profile",
+    "QueryIntent",
+    "QueryKind",
+    "QueueFullError",
     "SIMULATOR_EVIDENCE_CLASS",
     "SimulatorConfig",
     "SimulatorTransport",
+    "SerialWorker",
+    "SortIntent",
+    "StopInProgressError",
+    "WorkerNotRunningError",
+    "WorkerShutdownTimeout",
+    "WorkerStartupError",
+    "WorkerState",
+    "WorkerUncertainError",
     "load_config",
 ]

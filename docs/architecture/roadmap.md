@@ -34,10 +34,12 @@ graph LR
 
 - M0 and M1 are complete.
 - M2 simulator and adverse-fixture work is complete.
-- The protocol boundary now supports deadline-preserving interrupt polling and
-  trusted same-owner out-of-band stop, removing the active-motion preemption
-  blocker for PI-DAEMON-001.
-- PI-DAEMON-001 sole serial worker and bounded admission queues are the active
+- The protocol boundary supports deadline-preserving interrupt polling and
+  trusted same-owner out-of-band stop.
+- PI-DAEMON-001 is complete: `cs71d.SerialWorker` is the sole serial owner,
+  with bounded normal admission, an independently admitted priority-stop lane,
+  and fail-closed preemption and uncertainty results.
+- PI-DAEMON-002 session state and conservative reconnect is the active
   critical-path implementation step. PI-WEB-001 remains independently
   available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence

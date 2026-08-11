@@ -18,7 +18,7 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 31 pytest tests pass |
+| Python daemon/simulator | 38 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
@@ -57,9 +57,10 @@ The appliance architecture and executable private
 [`cs71d` OpenAPI v1 contract](appliance/contracts/cs71d-v1.openapi.json) are
 approved, and initial Python daemon/SvelteKit SSR workspaces now exist under
 `appliance/`. The daemon workspace includes a deterministic, explicit-clock
-protocol simulator for software-only development. Serial ownership,
-machine-control runtime, authentication, and the operator UI have not been
-implemented yet.
+protocol simulator for software-only development, and a single-owner serial
+worker that confines all controller I/O to one dedicated thread. Session state
+and reconnect, the machine-control runtime, authentication, and the operator UI
+have not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
