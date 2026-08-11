@@ -240,9 +240,17 @@ accept `*` for the generation only on a priority stop. Attribution is
 validated against the contract's role vocabulary and a `viewer` is refused;
 that is defence in depth, not authority, which stays with SvelteKit.
 
+`cs71d --serve` assembles the running daemon in dependency order — journal,
+then domain and serial worker, then the socket — and unwinds it in reverse, so
+no new request is admitted while the worker is still finishing the one it
+holds. The service credential is read from a protected file named by
+`service_token_path`, never from configuration values or command-line
+arguments, and is refused if other users can read it. Taking the socket path
+refuses to displace a daemon that is already serving it, so a second instance
+cannot silently steal the path while the first still owns the serial port.
+
 Outstanding: `/v1/session/connect`, `/v1/session/recover` and
-`/v1/configuration`, which need domain capabilities that do not exist yet, and
-wiring the server into the daemon entry point with a credential source. The
+`/v1/configuration`, which need domain capabilities that do not exist yet. The
 generated TypeScript client and its CI divergence check already exist as
 `npm run check:api` in the web workspace.
 

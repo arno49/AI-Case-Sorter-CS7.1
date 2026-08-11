@@ -28,6 +28,7 @@ class Backend(StrEnum):
 PRODUCTION_DEVICE_PATH = "/dev/cs71"
 PRODUCTION_SOCKET_PATH = "/run/cs71/cs71d.sock"
 PRODUCTION_DATABASE_PATH = "/var/lib/cs71d/machine.db"
+PRODUCTION_SERVICE_TOKEN_PATH = "/etc/cs71d/service-token"
 
 _ALLOWED_FIELDS = {
     "profile",
@@ -35,6 +36,7 @@ _ALLOWED_FIELDS = {
     "device_path",
     "socket_path",
     "database_path",
+    "service_token_path",
 }
 
 
@@ -45,6 +47,7 @@ class DaemonConfig:
     device_path: str | None
     socket_path: str
     database_path: str
+    service_token_path: str | None = None
 
     @classmethod
     def development(cls) -> DaemonConfig:
@@ -54,6 +57,7 @@ class DaemonConfig:
             device_path=None,
             socket_path="/tmp/cs71/cs71d.sock",
             database_path="/tmp/cs71/machine.db",
+            service_token_path=None,
         )
 
     @classmethod
@@ -72,6 +76,7 @@ class DaemonConfig:
         device_path = _optional_string(raw, "device_path")
         socket_path = _required_string(raw, "socket_path")
         database_path = _required_string(raw, "database_path")
+        service_token_path = _optional_string(raw, "service_token_path")
 
         if backend is Backend.SIMULATOR and device_path is not None:
             raise ConfigError("simulator backend cannot specify device_path")
@@ -85,6 +90,10 @@ class DaemonConfig:
                 raise ConfigError(f"production socket_path must be {PRODUCTION_SOCKET_PATH}")
             if database_path != PRODUCTION_DATABASE_PATH:
                 raise ConfigError(f"production database_path must be {PRODUCTION_DATABASE_PATH}")
+            if service_token_path != PRODUCTION_SERVICE_TOKEN_PATH:
+                raise ConfigError(
+                    f"production service_token_path must be {PRODUCTION_SERVICE_TOKEN_PATH}"
+                )
         elif backend is Backend.SERIAL:
             raise ConfigError("serial backend is reserved for the production profile")
 
@@ -94,6 +103,7 @@ class DaemonConfig:
             device_path=device_path,
             socket_path=socket_path,
             database_path=database_path,
+            service_token_path=service_token_path,
         )
 
 

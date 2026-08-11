@@ -137,7 +137,7 @@ class ApiServer:
         """Bind the socket and serve requests on a background thread."""
         if self._server is not None:
             return
-        self._unlink_stale_socket()
+        self._claim_socket_path()
         server = _UnixHttpServer(self._socket_path, _Handler)
         server.api = self
         os.chmod(self._socket_path, self._socket_mode)
@@ -347,6 +347,26 @@ class ApiServer:
 
     def _timestamp(self) -> str:
         return _rfc3339(self._now())
+
+    def _claim_socket_path(self) -> None:
+        """Take the socket path only when no daemon is already serving it.
+
+        Unlinking unconditionally would let a second instance silently steal
+        the path from a running daemon that still owns the serial port. A
+        refused connection means the file is stale and safe to replace.
+        """
+        if not Path(self._socket_path).exists():
+            return
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect(self._socket_path)
+        except OSError:
+            os.unlink(self._socket_path)
+            return
+        finally:
+            probe.close()
+        raise OSError(f"another daemon is already serving {self._socket_path}")
 
     def _unlink_stale_socket(self) -> None:
         try:
