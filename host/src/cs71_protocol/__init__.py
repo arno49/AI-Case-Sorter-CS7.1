@@ -3,7 +3,7 @@
 from .client import ProtocolClient
 from .crc import append_crc, crc16_ccitt_false, format_crc, remove_and_verify_crc
 from .errors import (CrcError, DtrSuppressionError, FramingError, ParseError, ProtocolError, RecoveryError,
-                     RequestStateError, TimeoutError)
+                     RequestInterruptedError, RequestStateError, TimeoutError)
 from .framing import ByteStream, LineReader
 from .models import (Capabilities, Completion, Event, EventKind, Fault, QueueSnapshot, Response,
                      ResponseKind, SessionMode, Status)
@@ -15,7 +15,7 @@ from .transport import ScriptedTransport, SerialTransport, supports_preopen_dtr_
 __all__ = [
     "ByteStream", "Capabilities", "Completion", "CrcError", "DiscoveryReply", "Event", "EventKind",
     "DtrSuppressionError", "EventTracker", "Fault", "FramingError", "LineReader", "ParseError", "ProtocolClient",
-    "ProtocolError", "QueueSnapshot", "RecoveryError", "RequestStateError", "RequestTracker",
+    "ProtocolError", "QueueSnapshot", "RecoveryError", "RequestInterruptedError", "RequestStateError", "RequestTracker",
     "Response", "ResponseKind", "ScriptedTransport", "SerialTransport", "SessionMode", "Status",
     "TimeoutError", "V1ResponseKind", "append_crc", "classify_discovery", "classify_v1_response",
     "crc16_ccitt_false", "format_crc", "format_request", "parse_v2_line", "remove_and_verify_crc",

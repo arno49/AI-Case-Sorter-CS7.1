@@ -1,7 +1,7 @@
 import pytest
 
-from cs71_protocol import (ProtocolClient, ProtocolError, RecoveryError, ScriptedTransport,
-                           SessionMode, append_crc)
+from cs71_protocol import (ProtocolClient, ProtocolError, RecoveryError, RequestInterruptedError,
+                           ScriptedTransport, SessionMode, append_crc)
 from cs71_protocol import client as client_module
 
 
@@ -140,6 +140,119 @@ class StopRespondingTransport(ScriptedTransport):
         return result
 
 
+class CancellingTransport(ScriptedTransport):
+    """Emit normative cancellation evidence after the universal stop write."""
+
+    def write(self, data: bytes) -> int:
+        result = super().write(data)
+        if data == b"stop\n":
+            self.incoming.extend(
+                [
+                    b"@1 error:2004:cancelled by=0\n",
+                    b"!1 state:mode=stopped phase=idle\n",
+                    b"stopped\n",
+                ]
+            )
+        return result
+
+
+def test_request_interrupt_uses_trusted_stop_and_clears_correlation():
+    transport = CancellingTransport()
+    client = ProtocolClient(transport, timeout=.02)
+    client.mode = SessionMode.V2
+
+    with pytest.raises(RequestInterruptedError, match="trusted out-of-band stop"):
+        client.request("sortto:3", interrupt_requested=lambda: True)
+
+    assert transport.writes == [b"@1 sortto:3\n", b"stop\n"]
+    assert not client.requests.active
+    assert client.mode is SessionMode.V2
+
+
+def test_false_request_interrupt_does_not_change_normal_completion():
+    transport = ScriptedTransport(["@1 done:slot=3\n"])
+    client = ProtocolClient(transport, timeout=.02)
+    client.mode = SessionMode.V2
+
+    completion = client.request("sortto:3", interrupt_requested=lambda: False)
+
+    assert completion.succeeded
+    assert completion.terminal_fields == {"slot": "3"}
+    assert transport.writes == [b"@1 sortto:3\n"]
+
+
+@pytest.mark.parametrize("poll_interval", [float("inf"), float("nan"), 0.0, -0.1])
+def test_request_interrupt_poll_interval_must_be_finite_and_positive(poll_interval):
+    transport = ScriptedTransport()
+    client = ProtocolClient(transport, timeout=.02)
+    client.mode = SessionMode.V2
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        client.request(
+            "sortto:3",
+            interrupt_requested=lambda: False,
+            interrupt_poll_interval=poll_interval,
+        )
+
+    assert transport.writes == []
+    assert not client.requests.active
+
+
+@pytest.mark.parametrize("timeout", [float("inf"), float("nan"), 0.0, -0.1])
+def test_client_default_timeout_must_be_finite_and_positive(timeout):
+    with pytest.raises(ValueError, match="timeout must be finite and positive"):
+        ProtocolClient(ScriptedTransport(), timeout=timeout)
+
+
+@pytest.mark.parametrize("timeout", [float("inf"), float("nan"), 0.0, -0.1])
+def test_request_timeout_must_be_finite_and_positive_before_transmission(timeout):
+    transport = ScriptedTransport()
+    client = ProtocolClient(transport, timeout=.02)
+    client.mode = SessionMode.V2
+
+    with pytest.raises(ValueError, match="timeout must be finite and positive"):
+        client.request("sortto:3", timeout=timeout)
+
+    assert transport.writes == []
+    assert not client.requests.active
+
+
+def test_expired_request_wins_over_new_interrupt(monkeypatch):
+    ticks = iter([0.0, 0.0, 0.0, 0.02])
+    monkeypatch.setattr(client_module, "monotonic", lambda: next(ticks, 0.02))
+    transport = StopRespondingTransport(
+        ["!1 state:mode=running phase=sort_move\n"],
+        reset_incoming=["Ready\n", " ok\n"],
+    )
+    client = ProtocolClient(transport, timeout=.01)
+    client.mode = SessionMode.V2
+    interrupt_checks = 0
+
+    def interrupt_requested() -> bool:
+        nonlocal interrupt_checks
+        interrupt_checks += 1
+        return interrupt_checks > 1
+
+    with pytest.raises(RecoveryError, match="timed out"):
+        client.request("sortto:3", interrupt_requested=interrupt_requested)
+
+    assert interrupt_checks == 1
+    assert client.mode is SessionMode.V1
+    assert transport.writes == [b"@1 sortto:3\n", b"stop\n", b"ping\n"]
+
+
+def test_out_of_band_stop_clears_all_active_request_ids():
+    transport = StopRespondingTransport()
+    client = ProtocolClient(transport, timeout=.02)
+    client.mode = SessionMode.V2
+    client.requests.reserve(42)
+
+    client.out_of_band_stop()
+
+    assert not client.requests.active
+    assert transport.writes == [b"stop\n"]
+
+
 def test_request_timeout_clears_active_id_and_recovers_to_verified_v1():
     transport = StopRespondingTransport(reset_incoming=["Ready\n", " ok\n"])
     client = ProtocolClient(transport, timeout=.02)
@@ -206,7 +319,7 @@ class BurstTransport(ScriptedTransport):
 
 
 def test_continuous_events_do_not_extend_request_deadline(monkeypatch):
-    ticks = iter([0.0, 0.0, 0.0, 0.02])
+    ticks = iter([0.0, 0.0, 0.02])
     monkeypatch.setattr(client_module, "monotonic", lambda: next(ticks, 0.0))
     observed: list[int] = []
     transport = BurstTransport(

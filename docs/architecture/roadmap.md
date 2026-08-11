@@ -30,6 +30,19 @@ graph LR
 | M8 Hardware qualification | DTR, parity, stop, fault, USB/reboot HIL evidence | M7 and approved rig/procedure | DTR decision closed; hardware gates passed or appliance restricted accordingly | Required controller/rig; XL, serialize safety-critical rig work |
 | M9 Controlled pilot/release | operator pilot, runbook/rollback drill, release record | M8 | Pilot exit criteria and approvals met | Required qualified hardware; L |
 
+## Current implementation status
+
+- M0 and M1 are complete.
+- M2 simulator and adverse-fixture work is complete.
+- The protocol boundary now supports deadline-preserving interrupt polling and
+  trusted same-owner out-of-band stop, removing the active-motion preemption
+  blocker for PI-DAEMON-001.
+- PI-DAEMON-001 sole serial worker and bounded admission queues are the active
+  critical-path implementation step. PI-WEB-001 remains independently
+  available in parallel.
+- Hardware-dependent firmware integration remains blocked; simulator evidence
+  does not advance M8 qualification.
+
 ## Risks and mitigations
 
 | Risk | Mitigation/decision point |

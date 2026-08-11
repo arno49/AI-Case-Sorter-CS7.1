@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import isfinite
 from time import monotonic
 
 from .crc import append_crc
-from .errors import ParseError, ProtocolError, RecoveryError, TimeoutError
+from .errors import ParseError, ProtocolError, RecoveryError, RequestInterruptedError, TimeoutError
 from .framing import ByteStream, LineReader
 from .models import (Capabilities, Completion, Event, Fault, QueueSnapshot, Response, ResponseKind,
                      SessionMode, Status, uint)
@@ -26,6 +27,8 @@ class ProtocolClient:
                  reset: Callable[[], None] | None = None,
                  on_event: Callable[[Event, bool], None] | None = None,
                  on_recovery: Callable[[], None] | None = None) -> None:
+        if not isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
         self.transport = transport
         self.timeout = timeout
         self.reset_hook = reset if reset is not None else getattr(transport, "reset", None)
@@ -197,20 +200,57 @@ class ProtocolClient:
             raise RecoveryError(f"{message}; v1 recovery failed", recovered=False) from exc
         raise RecoveryError(f"{message}; recovered to v1", recovered=True) from cause
 
-    def request(self, command: str, *, request_id: int | None = None,
-                timeout: float | None = None, response_crc: bool | None = None) -> Completion:
+    def request(
+        self,
+        command: str,
+        *,
+        request_id: int | None = None,
+        timeout: float | None = None,
+        response_crc: bool | None = None,
+        interrupt_requested: Callable[[], bool] | None = None,
+        interrupt_poll_interval: float = 0.01,
+    ) -> Completion:
         """Send one v2 request and return its correlated terminal completion."""
+        if not isfinite(interrupt_poll_interval) or interrupt_poll_interval <= 0:
+            raise ValueError("interrupt_poll_interval must be finite and positive")
+        effective_timeout = self.timeout if timeout is None else timeout
+        if not isfinite(effective_timeout) or effective_timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
         request_id = self._start(command, request_id)
         responses: list[Response] = []
-        deadline = monotonic() + (self.timeout if timeout is None else timeout)
+        deadline = monotonic() + effective_timeout
         while True:
-            if deadline - monotonic() <= 0:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
                 self._fail_request("request timed out", TimeoutError("request deadline expired"))
+            if interrupt_requested is not None:
+                try:
+                    should_interrupt = interrupt_requested()
+                except Exception as exc:
+                    self._fail_request("request interruption check failed", exc)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    self._fail_request(
+                        "request timed out", TimeoutError("request deadline expired")
+                    )
+                if should_interrupt:
+                    self.out_of_band_stop()
+                    raise RequestInterruptedError(
+                        f"request {request_id} cancelled by trusted out-of-band stop"
+                    )
             try:
-                item = self._read_v2(crc_required=response_crc, timeout=deadline - monotonic())
+                read_timeout = (
+                    min(remaining, interrupt_poll_interval)
+                    if interrupt_requested is not None
+                    else remaining
+                )
+                item = self._read_v2(crc_required=response_crc, timeout=read_timeout)
+            except TimeoutError as exc:
+                if interrupt_requested is not None and deadline - monotonic() > 0:
+                    continue
+                self._fail_request("request timed out", exc)
             except Exception as exc:
-                self._fail_request("request timed out" if isinstance(exc, TimeoutError)
-                                   else "request response was unsafe", exc)
+                self._fail_request("request response was unsafe", exc)
             if isinstance(item, Event):
                 self._observe_event(item)
                 continue
@@ -319,6 +359,7 @@ class ProtocolClient:
                 if remaining <= 0:
                     raise TimeoutError("timed out waiting for exact stop terminal")
                 if self._read_v1(remaining) == "stopped":
+                    self.requests.clear()
                     return
         except Exception as exc:
             self._fail_request("out-of-band stop was unsafe", exc)

@@ -8,7 +8,9 @@ protocol. It has no runtime dependency for injected byte streams. Install
 
 - `ProtocolClient`: exact v1 discovery/activation, correlated v2 requests,
   CRC transitions, event-gap tracking, typed `get_status`,
-  `get_capabilities`, and `get_queue`, plus fail-closed recovery.
+  `get_capabilities`, and `get_queue`, plus fail-closed recovery. Long-running
+  requests accept a bounded interrupt predicate; interruption succeeds only
+  after the same owner receives the exact out-of-band `stopped` terminal.
 - `LineReader` and `ByteStream`: bounded LF/CRLF framing that never trims a
   protocol line; v2 enforces printable ASCII and 64-byte frames. Injected
   streams must honor `read(size, timeout=...)` so read deadlines remain bounded.
