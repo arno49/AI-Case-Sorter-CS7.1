@@ -1,14 +1,23 @@
 """CS7.1 appliance daemon package."""
 
 from .config import Backend, ConfigError, DaemonConfig, Profile, load_config
+from .device import (
+    DTR_GATE_STATUS,
+    DevicePolicyError,
+    DtrGateError,
+    OwnedByteStream,
+    create_transport_factory,
+)
 from .serial_worker import (
     HomeAxis,
     HomeIntent,
+    PreemptedByRecoveryError,
     PreemptedByStopError,
     QueryIntent,
     QueryKind,
     QueueFullError,
     SerialWorker,
+    SessionNotReadyError,
     SortIntent,
     StopInProgressError,
     WorkerNotRunningError,
@@ -17,6 +26,7 @@ from .serial_worker import (
     WorkerState,
     WorkerUncertainError,
 )
+from .session import ConnectionState, SessionSnapshot, SessionState
 from .simulator import (
     SIMULATOR_EVIDENCE_CLASS,
     AdverseScenario,
@@ -30,17 +40,26 @@ __all__ = [
     "Backend",
     "AdverseScenario",
     "ConfigError",
+    "ConnectionState",
+    "DTR_GATE_STATUS",
     "DaemonConfig",
+    "DevicePolicyError",
+    "DtrGateError",
     "FixtureReplayTransport",
     "HomeAxis",
     "HomeIntent",
     "ManualClock",
+    "OwnedByteStream",
+    "PreemptedByRecoveryError",
     "PreemptedByStopError",
     "Profile",
     "QueryIntent",
     "QueryKind",
     "QueueFullError",
     "SIMULATOR_EVIDENCE_CLASS",
+    "SessionNotReadyError",
+    "SessionSnapshot",
+    "SessionState",
     "SimulatorConfig",
     "SimulatorTransport",
     "SerialWorker",
@@ -51,5 +70,6 @@ __all__ = [
     "WorkerStartupError",
     "WorkerState",
     "WorkerUncertainError",
+    "create_transport_factory",
     "load_config",
 ]

@@ -18,7 +18,7 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 38 pytest tests pass |
+| Python daemon/simulator | 57 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
@@ -58,9 +58,10 @@ The appliance architecture and executable private
 approved, and initial Python daemon/SvelteKit SSR workspaces now exist under
 `appliance/`. The daemon workspace includes a deterministic, explicit-clock
 protocol simulator for software-only development, and a single-owner serial
-worker that confines all controller I/O to one dedicated thread. Session state
-and reconnect, the machine-control runtime, authentication, and the operator UI
-have not been implemented yet.
+worker that confines all controller I/O to one dedicated thread and publishes
+its session state. Opening a real serial port on Linux stays blocked by the
+unqualified DTR gate. The machine-control runtime, authentication, and the
+operator UI have not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
