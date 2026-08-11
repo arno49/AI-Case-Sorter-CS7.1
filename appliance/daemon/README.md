@@ -20,6 +20,11 @@ Every instance logs and exposes an identity beginning with `SIMULATOR_ONLY`.
 Its transcripts and CI evidence cannot satisfy hardware, DTR, motion, or HIL
 gates.
 
+Named adverse scenarios cover feed-overtravel fault, disconnect, malformed
+frame, timeout, event gap, and terminal mismatch behavior. Strict fixture
+replay loads the repository's normative v1 and v2 wire transcripts and rejects
+host-byte drift instead of silently adapting it.
+
 From the repository root:
 
 ```sh

@@ -77,6 +77,13 @@ conspicuous `SIMULATOR_ONLY` identity.
 
 **Goal:** model adverse behavior and replay normative fixtures. **Implementation notes:** use existing golden/protocol fixtures as source evidence; keep simulator deltas reviewable. **Dependencies:** PI-SIM-001. **Hardware required:** No. **Size:** M.
 
+**Status:** Simulator-side fixtures are implemented with named deterministic
+fault/disconnect/malformed/timeout/event-gap/terminal-mismatch scenarios and
+strict replay of the existing v1/v2 golden files through `ProtocolClient`.
+The terminal-mismatch fixture proves fail-closed recovery at the protocol
+boundary; its daemon operation-result assertion remains pending until the
+operation domain exists under PI-DOMAIN-001.
+
 - Fixtures cover stop, fault, disconnect, malformed frame, timeout and event-gap behavior.
 - Existing v1 and v2 golden transcripts replay through the intended `cs71_protocol` boundary.
 - A scenario can inject a terminal mismatch and prove daemon result becomes `UNCERTAIN` or failed.
