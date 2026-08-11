@@ -19,6 +19,10 @@
 | [traceability.md](traceability.md) | reviewers | requirements-to-evidence mapping |
 | [adr/README.md](adr/README.md) | decision makers | accepted decision index and ADR process |
 
+The executable daemon API source is
+[`appliance/contracts/cs71d-v1.openapi.json`](../../appliance/contracts/cs71d-v1.openapi.json);
+architecture prose explains its semantics but does not replace it.
+
 ## Status legend
 
 | Label | Meaning |

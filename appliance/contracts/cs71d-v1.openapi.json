@@ -1,0 +1,1972 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CS7.1 daemon API",
+    "version": "1.0.0",
+    "description": "Private API exposed by cs71d only over /run/cs71/cs71d.sock. HTTP 202 acknowledges durable admission or deduplication; it never means that firmware completed an operation."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "x-transport": "unix-domain-socket",
+  "x-unix-socket-path": "/run/cs71/cs71d.sock",
+  "x-browser-addressable": false,
+  "security": [
+    {
+      "BffServiceAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "health"
+    },
+    {
+      "name": "state"
+    },
+    {
+      "name": "session"
+    },
+    {
+      "name": "machine"
+    },
+    {
+      "name": "operations"
+    },
+    {
+      "name": "configuration"
+    }
+  ],
+  "paths": {
+    "/v1/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "tags": [
+          "health"
+        ],
+        "summary": "Report process liveness only",
+        "responses": {
+          "200": {
+            "description": "The daemon process is live; controller readiness is not implied.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "tags": [
+          "health"
+        ],
+        "summary": "Report daemon and controller readiness",
+        "responses": {
+          "200": {
+            "description": "Current readiness state. A false ready value is still a successful health read.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/snapshot": {
+      "get": {
+        "operationId": "getMachineSnapshot",
+        "tags": [
+          "state"
+        ],
+        "summary": "Read the complete immutable machine snapshot",
+        "responses": {
+          "200": {
+            "description": "Complete snapshot for reconciliation.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/GenerationEtag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "tags": [
+          "state"
+        ],
+        "summary": "Stream bounded, resumable daemon events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LastEventId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream. A stale cursor receives snapshot.required before the stream closes.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Cache-Control": {
+                "description": "SSE responses are not cached.",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "x-sse-event-schema": {
+                  "$ref": "#/components/schemas/DaemonEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/session/connect": {
+      "post": {
+        "operationId": "connectSession",
+        "tags": [
+          "session"
+        ],
+        "summary": "Verify and connect the configured controller session",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ActorCommand"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/session/recover": {
+      "post": {
+        "operationId": "recoverSession",
+        "tags": [
+          "session"
+        ],
+        "summary": "Run explicitly confirmed fail-closed session recovery",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/machine/stop": {
+      "post": {
+        "operationId": "stopMachine",
+        "tags": [
+          "machine"
+        ],
+        "summary": "Request priority software stop",
+        "description": "This is a software stop, not a physical emergency stop. The wildcard generation requests an attempt despite stale or uncertain state and does not imply success.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/StopIfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ActorCommand"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/operations/home": {
+      "post": {
+        "operationId": "homeMachine",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Home the feeder, sorter, or both",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HomeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/operations/sort": {
+      "post": {
+        "operationId": "sortCase",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Sort one case to a capability-validated slot",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SortRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/operations/feed": {
+      "post": {
+        "operationId": "feedCase",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Run one capability-validated feed operation",
+        "description": "The daemon rejects this operation as NOT_READY until the firmware feed lifecycle gate is qualified and the active session advertises support.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ActorCommand"
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/QueueFull"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/operations": {
+      "get": {
+        "operationId": "listOperations",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Read bounded durable operation history",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OperationState"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OperationType"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A bounded page of operations ordered newest first.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/operations/{operation_id}": {
+      "get": {
+        "operationId": "getOperation",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Read one durable operation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OperationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/configuration": {
+      "get": {
+        "operationId": "getConfiguration",
+        "tags": [
+          "configuration"
+        ],
+        "summary": "Read controlled daemon configuration",
+        "responses": {
+          "200": {
+            "description": "Current configuration and snapshot generation.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/GenerationEtag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Configuration"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateConfiguration",
+        "tags": [
+          "configuration"
+        ],
+        "summary": "Apply an allow-listed daemon configuration change",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchGeneration"
+          },
+          {
+            "$ref": "#/components/parameters/DeadlineMs"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigurationPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/OperationAccepted"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/DeadlineExpired"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BffServiceAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque installation-local service credential",
+        "description": "Authenticates only the local SvelteKit service over the protected Unix socket. Browser credentials are never accepted."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Opaque key scoped to the authenticated BFF identity. Same key and canonical request returns the original result; different content conflicts.",
+        "schema": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._~-]+$"
+        }
+      },
+      "IfMatchGeneration": {
+        "name": "If-Match-Generation",
+        "in": "header",
+        "required": true,
+        "description": "Exact snapshot generation observed by the caller.",
+        "schema": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      },
+      "StopIfMatchGeneration": {
+        "name": "If-Match-Generation",
+        "in": "header",
+        "required": true,
+        "description": "Exact observed generation or * to request a priority stop attempt despite stale or uncertain state.",
+        "schema": {
+          "type": "string",
+          "pattern": "^(\\*|0|[1-9][0-9]*)$"
+        }
+      },
+      "DeadlineMs": {
+        "name": "X-Deadline-Ms",
+        "in": "header",
+        "required": true,
+        "description": "Finite remaining execution budget in milliseconds when cs71d receives the request. Daemon policy may impose a lower operation-specific maximum.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        }
+      },
+      "LastEventId": {
+        "name": "Last-Event-ID",
+        "in": "header",
+        "required": false,
+        "description": "Last applied daemon event_id. It is unrelated to a firmware protocol request_id.",
+        "schema": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      },
+      "OperationId": {
+        "name": "operation_id",
+        "in": "path",
+        "required": true,
+        "description": "Durable daemon operation identifier, never a firmware protocol request_id.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Opaque daemon HTTP request correlation identifier for diagnostics.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "GenerationEtag": {
+        "description": "Quoted immutable snapshot generation in the form \"generation:<n>\".",
+        "schema": {
+          "type": "string",
+          "pattern": "^\"generation:(0|[1-9][0-9]*)\"$"
+        }
+      }
+    },
+    "requestBodies": {
+      "ActorCommand": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ActorCommand"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "OperationAccepted": {
+        "description": "Durably admitted or deduplicated operation. Firmware completion is not implied.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OperationAccepted"
+            }
+          }
+        }
+      },
+      "ValidationFailed": {
+        "description": "VALIDATION_FAILED or DEADLINE_INVALID.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "UNAUTHENTICATED.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnauthenticatedError"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "FORBIDDEN.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ForbiddenError"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "RESOURCE_NOT_FOUND.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundError"
+            }
+          }
+        }
+      },
+      "DeadlineExpired": {
+        "description": "DEADLINE_EXPIRED.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/DeadlineExpiredError"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "STALE_GENERATION, IDEMPOTENCY_CONFLICT, NOT_READY, or UNCERTAIN.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ConflictError"
+            }
+          }
+        }
+      },
+      "QueueFull": {
+        "description": "QUEUE_FULL.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/QueueFullError"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Sanitized INTERNAL_ERROR. No machine success is implied.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/InternalError"
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "JOURNAL_UNAVAILABLE or SERVICE_UNAVAILABLE.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnavailableError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ApiVersion": {
+        "type": "string",
+        "enum": [
+          "v1"
+        ]
+      },
+      "Generation": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "RFC 3339 UTC timestamp."
+      },
+      "Actor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_id",
+          "role"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Opaque SvelteKit attribution; not a daemon authentication credential."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "viewer",
+              "operator",
+              "administrator"
+            ]
+          }
+        }
+      },
+      "ActorCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "actor"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        }
+      },
+      "RecoverRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "actor",
+          "confirm_uncertain_recovery"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "confirm_uncertain_recovery": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "HomeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "actor",
+          "target"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "feeder",
+              "sorter",
+              "both"
+            ]
+          }
+        }
+      },
+      "SortRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "actor",
+          "slot"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 63,
+            "description": "The active firmware capability snapshot may impose a lower maximum."
+          }
+        }
+      },
+      "ConnectionState": {
+        "type": "string",
+        "enum": [
+          "DISCONNECTED",
+          "CONNECTING",
+          "VERIFYING_V1",
+          "ACTIVATING_V2",
+          "READY",
+          "RECOVERING",
+          "UNCERTAIN"
+        ]
+      },
+      "FaultState": {
+        "type": "string",
+        "enum": [
+          "CLEAR",
+          "ACTIVE",
+          "LATCHED",
+          "UNCERTAIN"
+        ]
+      },
+      "OperationState": {
+        "type": "string",
+        "enum": [
+          "QUEUED",
+          "ACCEPTED",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED",
+          "UNCERTAIN"
+        ]
+      },
+      "OperationType": {
+        "type": "string",
+        "enum": [
+          "CONNECT",
+          "RECOVER",
+          "STOP",
+          "HOME",
+          "SORT",
+          "FEED",
+          "CONFIGURE"
+        ]
+      },
+      "OperationOutcome": {
+        "type": "string",
+        "enum": [
+          "COMPLETED",
+          "STOPPED",
+          "FAILED",
+          "CANCELLED",
+          "UNCERTAIN"
+        ]
+      },
+      "OperationAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "operation_id",
+          "state",
+          "generation",
+          "accepted_at",
+          "status_url"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "operation_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Durable daemon identity; never a firmware protocol request_id."
+          },
+          "state": {
+            "$ref": "#/components/schemas/OperationState"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "accepted_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "status_url": {
+            "type": "string",
+            "pattern": "^/v1/operations/[0-9a-fA-F-]{36}$"
+          }
+        }
+      },
+      "Operation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "operation_id",
+          "type",
+          "state",
+          "actor",
+          "created_at",
+          "deadline_at",
+          "generation",
+          "trusted_terminal"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "$ref": "#/components/schemas/OperationType"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OperationState"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "deadline_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "trusted_terminal": {
+            "type": "boolean",
+            "description": "True only after a trusted correlated firmware terminal. SUCCEEDED requires true."
+          },
+          "started_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "terminal_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/OperationOutcome"
+          },
+          "error": {
+            "$ref": "#/components/schemas/OperationError"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "SUCCEEDED",
+                    "FAILED",
+                    "CANCELLED",
+                    "UNCERTAIN"
+                  ]
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "required": [
+                "terminal_at",
+                "outcome"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "SUCCEEDED"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "properties": {
+                "trusted_terminal": {
+                  "const": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "OperationError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "OperationPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "items"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "v2_available",
+          "crc_active",
+          "slot_count",
+          "home_available",
+          "sort_available",
+          "feed_available"
+        ],
+        "properties": {
+          "v2_available": {
+            "type": "boolean"
+          },
+          "crc_active": {
+            "type": "boolean"
+          },
+          "slot_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          },
+          "home_available": {
+            "type": "boolean"
+          },
+          "sort_available": {
+            "type": "boolean"
+          },
+          "feed_available": {
+            "type": "boolean"
+          },
+          "feed_unavailable_reason": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      },
+      "FirmwareState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "capabilities"
+        ],
+        "properties": {
+          "firmware_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "protocol_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "description": "Negotiated firmware protocol version, independent of daemon API v1."
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          }
+        }
+      },
+      "MachineState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "feed_homed",
+          "sort_homed"
+        ],
+        "properties": {
+          "feed_homed": {
+            "type": "boolean"
+          },
+          "sort_homed": {
+            "type": "boolean"
+          },
+          "sorter_slot": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 63
+          }
+        }
+      },
+      "Fault": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fault_id",
+          "state",
+          "code",
+          "source",
+          "opened_at"
+        ],
+        "properties": {
+          "fault_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/FaultState"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "daemon",
+              "journal",
+              "transport",
+              "protocol",
+              "firmware"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "opened_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "MachineSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "generation",
+          "connection_state",
+          "fault_state",
+          "ready",
+          "firmware",
+          "machine",
+          "faults",
+          "observed_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "connection_state": {
+            "$ref": "#/components/schemas/ConnectionState"
+          },
+          "fault_state": {
+            "$ref": "#/components/schemas/FaultState"
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "Verified daemon/session readiness only; not physical safety or homing."
+          },
+          "readiness_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          },
+          "active_operation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Operation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "firmware": {
+            "$ref": "#/components/schemas/FirmwareState"
+          },
+          "machine": {
+            "$ref": "#/components/schemas/MachineState"
+          },
+          "faults": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/components/schemas/Fault"
+            }
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "Liveness": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "live",
+          "observed_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "live": {
+            "type": "boolean",
+            "const": true
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "ready",
+          "connection_state",
+          "fault_state",
+          "generation",
+          "observed_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          },
+          "connection_state": {
+            "$ref": "#/components/schemas/ConnectionState"
+          },
+          "fault_state": {
+            "$ref": "#/components/schemas/FaultState"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "DaemonEventType": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+        "description": "Extensible v1 event name. Consumers ignore unknown names and reconcile from snapshots when required.",
+        "x-known-values": [
+          "snapshot.changed",
+          "operation.accepted",
+          "operation.progress",
+          "operation.terminal",
+          "fault.changed",
+          "connection.changed",
+          "journal.fault",
+          "heartbeat",
+          "snapshot.required"
+        ]
+      },
+      "DaemonEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "event_id",
+          "occurred_at",
+          "generation",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "event_id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Monotonic daemon SSE cursor; not a protocol request_id."
+          },
+          "occurred_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DaemonEventType"
+          },
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Bounded event-type-specific payload. Consumers ignore unknown fields and event types within API v1."
+          }
+        }
+      },
+      "ConfigurationValues": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "heartbeat_interval_ms",
+          "event_retention_count",
+          "operation_retention_days",
+          "max_deadline_ms"
+        ],
+        "properties": {
+          "heartbeat_interval_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 60000
+          },
+          "event_retention_count": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 100000
+          },
+          "operation_retention_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          },
+          "max_deadline_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 120000
+          }
+        }
+      },
+      "Configuration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "generation",
+          "values",
+          "updated_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "values": {
+            "$ref": "#/components/schemas/ConfigurationValues"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "ConfigurationPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "actor",
+          "changes"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "changes": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "heartbeat_interval_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 60000
+              },
+              "event_retention_count": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 100000
+              },
+              "operation_retention_days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 365
+              },
+              "max_deadline_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 120000
+              }
+            }
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "VALIDATION_FAILED",
+          "UNAUTHENTICATED",
+          "FORBIDDEN",
+          "RESOURCE_NOT_FOUND",
+          "STALE_GENERATION",
+          "IDEMPOTENCY_CONFLICT",
+          "NOT_READY",
+          "UNCERTAIN",
+          "QUEUE_FULL",
+          "DEADLINE_INVALID",
+          "DEADLINE_EXPIRED",
+          "JOURNAL_UNAVAILABLE",
+          "SERVICE_UNAVAILABLE",
+          "INTERNAL_ERROR"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "code",
+          "message",
+          "request_id"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Daemon HTTP diagnostic request identifier, not a firmware protocol request_id."
+          },
+          "generation": {
+            "$ref": "#/components/schemas/Generation"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Sanitized bounded details; secrets, arbitrary protocol payloads, and raw serial data are forbidden."
+          }
+        }
+      },
+      "ValidationError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "VALIDATION_FAILED",
+                  "DEADLINE_INVALID"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "UnauthenticatedError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "UNAUTHENTICATED"
+              }
+            }
+          }
+        ]
+      },
+      "ForbiddenError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "FORBIDDEN"
+              }
+            }
+          }
+        ]
+      },
+      "NotFoundError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "RESOURCE_NOT_FOUND"
+              }
+            }
+          }
+        ]
+      },
+      "DeadlineExpiredError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "DEADLINE_EXPIRED"
+              }
+            }
+          }
+        ]
+      },
+      "ConflictError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "STALE_GENERATION",
+                  "IDEMPOTENCY_CONFLICT",
+                  "NOT_READY",
+                  "UNCERTAIN"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "QueueFullError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "QUEUE_FULL"
+              }
+            }
+          }
+        ]
+      },
+      "InternalError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "const": "INTERNAL_ERROR"
+              }
+            }
+          }
+        ]
+      },
+      "UnavailableError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "properties": {
+              "code": {
+                "enum": [
+                  "JOURNAL_UNAVAILABLE",
+                  "SERVICE_UNAVAILABLE"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

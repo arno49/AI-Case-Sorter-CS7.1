@@ -19,6 +19,8 @@ Tasks are dependency-ordered and deliberately PR-sized. Size is a rough planning
 
 **Goal:** freeze initial resource, error, ID and compatibility rules. **Implementation notes:** author OpenAPI source in the implementation PR; preserve daemon/protocol ID separation. **Dependencies:** PI-ARCH-001. **Hardware required:** No. **Size:** M.
 
+**Status:** Implemented in `appliance/contracts/cs71d-v1.openapi.json`; executable baseline and invariant tests run in CI.
+
 - `/v1` resources, required headers and representative schemas match [api-and-events.md](api-and-events.md).
 - Contract distinguishes `operation_id`, daemon `event_id`, protocol `request_id` and snapshot generation.
 - Additive versus breaking compatibility rules have executable contract tests planned.
