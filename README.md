@@ -36,6 +36,8 @@ pio run -e uno && pio run -e uno_v2
 pio test -e native && pio test -e native_v2
 (cd host && python -m pip install ".[dev]" "build==1.2.2.post1" && python -m pytest && python -m build --wheel --sdist)
 python -m unittest discover -s appliance/contracts/tests -v
+(python -m pip install -e ./host -e "./appliance/daemon[dev]" "build==1.2.2.post1" && python -m pytest appliance/daemon/tests && python -m build --wheel --sdist appliance/daemon)
+(cd appliance/web && npm ci && npm run check && npm run build)
 ```
 
 These checks do not replace firmware serial parity, HIL, or Windows
@@ -52,7 +54,9 @@ boundary is documented in [host/README.md](host/README.md).
 
 The appliance architecture and executable private
 [`cs71d` OpenAPI v1 contract](appliance/contracts/cs71d-v1.openapi.json) are
-approved. The daemon and SvelteKit application have not been implemented yet.
+approved, and initial Python daemon/SvelteKit SSR workspaces now exist under
+`appliance/`. Serial ownership, machine-control runtime, authentication, and the
+operator UI have not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
