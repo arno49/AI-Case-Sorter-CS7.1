@@ -141,6 +141,16 @@ in `cs71d.device`, which refuses POSIX opens while the DTR gate is
 
 **Goal:** admit and track durable operation lifecycle. **Implementation notes:** canonical request fingerprint includes action/body/actor policy; protocol `request_id` is diagnostic only. **Dependencies:** PI-DAEMON-002. **Hardware required:** No. **Size:** L.
 
+**Status:** In progress. The durable half is implemented as `cs71d.operations`
+(identity, lifecycle, canonical fingerprint) and `cs71d.journal` (`machine.db`
+with forward-only checksummed migrations). Admission, each transition and every
+terminal outcome are journal writes; `operation_transitions` is append-only and
+`SUCCEEDED` without a trusted firmware terminal is refused by the operation
+model and, independently, by a database trigger. Protocol `request_id` is
+stored only as diagnostic session-scoped metadata. Snapshot-generation
+admission, idempotent replay and worker dispatch follow in the next change,
+which also closes the deferred PI-SIM-002 terminal-mismatch assertion.
+
 - Each admitted command has a UUID `operation_id`, finite deadline and durable lifecycle transition record.
 - Same idempotency key and equivalent request returns the original operation; a differing request conflicts.
 - Stale snapshot generation rejects before serial enqueue.
