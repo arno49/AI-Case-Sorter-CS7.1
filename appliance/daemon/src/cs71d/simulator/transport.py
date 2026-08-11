@@ -29,6 +29,25 @@ class TranscriptDirection(StrEnum):
     RESET = "reset"
 
 
+class AdverseScenario(StrEnum):
+    DISCONNECT = "disconnect-on-sort"
+    EVENT_GAP = "event-gap-on-ping"
+    FAULT = "fault-feed-overtravel"
+    MALFORMED_FRAME = "malformed-on-sort"
+    TERMINAL_MISMATCH = "terminal-mismatch-on-sort"
+    TIMEOUT = "timeout-on-sort"
+
+
+_SCENARIO_TRIGGER = {
+    AdverseScenario.DISCONNECT: "sortto:3",
+    AdverseScenario.EVENT_GAP: "ping",
+    AdverseScenario.FAULT: "sortto:3",
+    AdverseScenario.MALFORMED_FRAME: "sortto:3",
+    AdverseScenario.TERMINAL_MISMATCH: "sortto:3",
+    AdverseScenario.TIMEOUT: "sortto:3",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptEntry:
     at_ms: int
@@ -115,8 +134,12 @@ class SimulatorTransport:
         if size < 1:
             return b""
         with self._condition:
+            if self._read_error is not None:
+                raise self._read_error
             if not self._outgoing and not self.closed and timeout is not None:
                 self._condition.wait(timeout)
+            if self._read_error is not None:
+                raise self._read_error
             if not self._outgoing:
                 return b""
             result = bytes(self._outgoing[:size])
@@ -190,6 +213,8 @@ class SimulatorTransport:
         self._queue_previous = 0
         self._queue_next = 0
         self._config_generation = 0
+        self._fault_code = 0
+        self._read_error: OSError | None = None
         self._boot_at_ms = self.clock.now_ms
         if emit_startup:
             self._emit_unprotected("Ready")
@@ -262,6 +287,8 @@ class SimulatorTransport:
         if command == "stop":
             self._handle_correlated_stop(request_id)
             return
+        if self._inject_adverse_scenario(request_id, command):
+            return
         state_changing = command in {
             "crc:on",
             "crc:off",
@@ -309,6 +336,51 @@ class SimulatorTransport:
             self._start_home(request_id, command)
         else:
             self._respond(request_id, "error:1004:unknown_command")
+
+    def _inject_adverse_scenario(self, request_id: int, command: str) -> bool:
+        try:
+            scenario = AdverseScenario(self.config.scenario)
+        except ValueError:
+            return False
+        if command != _SCENARIO_TRIGGER[scenario]:
+            return False
+
+        if scenario is AdverseScenario.DISCONNECT:
+            self._read_error = OSError("simulated serial disconnect")
+            self._condition.notify_all()
+        elif scenario is AdverseScenario.EVENT_GAP:
+            self._emit_event(f"state:mode={self._machine_mode} phase=idle")
+            self._event_sequence = 1 if self._event_sequence == 65535 else self._event_sequence + 1
+            self._emit_event(f"state:mode={self._machine_mode} phase=idle")
+            self._respond(request_id, "done:uptime_ms=0")
+        elif scenario is AdverseScenario.FAULT:
+            self._start_injected_fault(request_id)
+        elif scenario is AdverseScenario.MALFORMED_FRAME:
+            self._emit_unprotected(f"@{request_id} d\x01ne")
+        elif scenario is AdverseScenario.TERMINAL_MISMATCH:
+            mismatched_id = 1 if request_id == 65535 else request_id + 1
+            self._respond(mismatched_id, "done:slot=3")
+        elif scenario is AdverseScenario.TIMEOUT:
+            pass
+        return True
+
+    def _start_injected_fault(self, request_id: int) -> None:
+        if not self._start_operation(request_id, operation="sort", phase="sort_move"):
+            return
+
+        def fail() -> None:
+            if self._active_id != request_id:
+                return
+            self._active_id = None
+            self._machine_mode = "recovering"
+            self._phase = "idle"
+            self._feed_homed = False
+            self._fault_code = 3001
+            self._respond(request_id, "error:3001:feed_overtravel")
+            self._emit_event("fault:3001:feed_overtravel latched=1")
+            self._emit_event("state:mode=recovering phase=idle")
+
+        self._schedule(self._operation_delay_ms(), fail)
 
     def _enable_crc(self, request_id: int) -> None:
         if not self.config.crc_available:
@@ -452,7 +524,10 @@ class SimulatorTransport:
         return (
             f"mode={self._machine_mode} phase={self._phase} feed_homed={int(self._feed_homed)}",
             f"sort_homed={int(self._sort_homed)} motor_enabled=0 active_id={active_id}",
-            (f"fault_code=0 queue_previous={self._queue_previous} queue_next={self._queue_next}"),
+            (
+                f"fault_code={self._fault_code} "
+                f"queue_previous={self._queue_previous} queue_next={self._queue_next}"
+            ),
             f"config_generation={self._config_generation}",
         )
 
