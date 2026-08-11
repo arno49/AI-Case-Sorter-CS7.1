@@ -14,6 +14,7 @@ hardware-evidence boundaries below.
 | `ArduinoCode/PROTOCOL_V2_PLAN.md` | Firmware/host delivery status and hardware gates |
 | `test/` | PlatformIO native firmware tests and fixtures |
 | `host/` | Python `cs71_protocol` library and `cs71-protocol` CLI |
+| `appliance/contracts/` | Executable private `cs71d` OpenAPI contract and compatibility tests |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
 | `3DModels/` | Canonical printable mechanical parts |
@@ -57,6 +58,12 @@ cd host
 python -m pip install ".[dev]" "build==1.2.2.post1"
 python -m pytest
 python -m build --wheel --sdist
+```
+
+Raspberry Pi daemon contract:
+
+```sh
+python -m unittest discover -s appliance/contracts/tests -v
 ```
 
 Use the smallest existing command that covers a change, then run all affected
