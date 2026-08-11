@@ -8,7 +8,7 @@ the Arduino IDE workflow, or the serial contract used by AI Sorter software
 
 **Implementation status:** the software work is implemented through firmware
 `7.1.260714.6`. Current software evidence includes 89 native tests, 49 native-v2
-tests, 116 host tests, and 112 daemon/simulator tests. Unchecked criteria below
+tests, 116 host tests, and 141 daemon/simulator tests. Unchecked criteria below
 require an Arduino IDE run, physical hardware, long-duration testing, a logic
 analyzer, or the Windows application; they are not being represented as
 complete.
@@ -28,8 +28,11 @@ is maintained in [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md).
 - [x] PI-DAEMON-002: publish session states and conservative reconnect without
       command replay. Real POSIX serial opening stays blocked by the
       unqualified DTR gate.
-- [ ] PI-DOMAIN-001: implement durable operations; close the deferred
-      terminal-mismatch daemon-result assertion.
+- [x] PI-DOMAIN-001: implement durable operations, idempotent admission and
+      snapshot generation. The deferred terminal-mismatch daemon-result
+      assertion is closed: an unverified terminal makes the operation
+      `UNCERTAIN`.
+- [ ] PI-DOMAIN-002: make journal failure and priority stop fail closed.
 
 ## Constraints that apply to every phase
 

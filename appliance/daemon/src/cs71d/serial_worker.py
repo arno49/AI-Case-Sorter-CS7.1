@@ -117,6 +117,7 @@ class WorkerShutdownTimeout(SerialWorkerError):
 class _WorkItem:
     intent: WorkerIntent
     future: Future[WorkerResult]
+    on_dispatch: Callable[[], None] | None = None
 
 
 @dataclass(slots=True)
@@ -216,7 +217,21 @@ class SerialWorker:
             if self._state is not WorkerState.RUNNING:
                 raise WorkerStartupError("serial worker startup failed") from self._failure
 
-    def submit(self, intent: WorkerIntent) -> Future[WorkerResult]:
+    def submit(
+        self,
+        intent: WorkerIntent,
+        *,
+        on_dispatch: Callable[[], None] | None = None,
+    ) -> Future[WorkerResult]:
+        """Admit one intent and return its future.
+
+        ``on_dispatch`` runs on the worker thread immediately before the first
+        byte of this intent is written, which is the only moment a caller can
+        distinguish "queued" from "transmitted". Raising from it aborts the
+        intent before transmission and fails the future with that exception, so
+        a caller whose own preconditions expired can stop the command from
+        reaching the controller. It must not call back into this worker.
+        """
         if not isinstance(intent, QueryIntent | HomeIntent | SortIntent):
             raise TypeError("intent must be a closed serial worker intent")
         future: Future[WorkerResult] = Future()
@@ -234,7 +249,7 @@ class SerialWorker:
                 raise StopInProgressError("priority stop is in progress")
             if len(self._normal) >= self._normal_capacity:
                 raise QueueFullError("normal serial admission queue is full")
-            self._normal.append(_WorkItem(intent, future))
+            self._normal.append(_WorkItem(intent, future, on_dispatch))
             self._condition.notify_all()
         return future
 
@@ -423,6 +438,14 @@ class SerialWorker:
         """Run one intent; return the fault that broke the session, if any."""
         if not item.future.set_running_or_notify_cancel():
             return None
+        if item.on_dispatch is not None:
+            try:
+                item.on_dispatch()
+            except Exception as exc:
+                # The caller withdrew this intent before any byte was written,
+                # so the session is untouched and nothing needs recovery.
+                item.future.set_exception(exc)
+                return None
         try:
             result = self._dispatch(client, item.intent)
         except RequestInterruptedError:

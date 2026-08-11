@@ -2,9 +2,9 @@
 
 `cs71d` is the private machine-control daemon for the Raspberry Pi appliance.
 This workspace currently provides the package boundary, strict configuration
-validation, sole serial ownership, published session state, and the durable
-operation journal. Operation admission, scheduling, and the Unix-socket API
-arrive in later roadmap tasks.
+validation, sole serial ownership, published session state, and durable
+operations with idempotent admission. Journal-failure handling, priority-stop
+operations, and the Unix-socket API arrive in later roadmap tasks.
 
 The package depends on the repository's `cs71_protocol` implementation and does
 not duplicate framing or recovery logic.
@@ -78,6 +78,42 @@ operation row cannot enter `succeeded` without a trusted terminal.
 The protocol `request_id` is recorded only as diagnostic, session-scoped
 metadata for transcript correlation. It wraps, it is not unique across
 sessions, and it is never used to find, match or deduplicate an operation.
+
+## Admission, generation and dispatch
+
+`cs71d.MachineState` owns the snapshot generation. It is the *machine's*
+version, not the session's: `SessionState` folds connection confidence into it,
+and every operation transition advances the same counter, so a caller holding
+generation *N* can trust that nothing material happened while it still observes
+*N*.
+
+`cs71d.OperationDomain.submit` evaluates the idempotency key, the observed
+generation and readiness while holding the machine view still, and journals the
+operation before anything is enqueued:
+
+- A replayed key with an equivalent canonical request returns the original
+  operation, including when the caller's generation has since gone stale — a
+  retry that lost the race must deduplicate, not start a second movement.
+- A key reused for a different request conflicts.
+- A stale generation is rejected with no journal write, no published change and
+  no serial I/O.
+- Exactly one command can be admitted against one observed generation;
+  concurrent callers see `STALE_GENERATION`.
+
+Dispatch is gated on the worker thread immediately before the first byte is
+written. A deadline that expired while the operation waited in the queue fails
+it there, which is the last moment the command can still be stopped, and the
+same gate means a lifecycle write that cannot be recorded is never transmitted.
+
+Outcomes are fail-closed. `SUCCEEDED` requires a trusted correlated firmware
+terminal; a correlated error terminal is `FAILED`; work invalidated by a stop
+or discarded by recovery is `CANCELLED` and never replayed; and anything that
+reached the wire without a trusted terminal is `UNCERTAIN`, because the daemon
+does not know whether the machine moved.
+
+Locks are taken as `MachineState` → `Journal` → `SerialWorker` and never the
+reverse. An admitting thread releases the machine lock before it enqueues,
+because the worker thread enters that lock holding nothing.
 
 ## Device policy and the DTR gate
 
