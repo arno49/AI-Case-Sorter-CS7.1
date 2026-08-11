@@ -10,6 +10,9 @@ Neither workspace opens a real serial device in its development defaults.
 `cs71d` defaults to the simulator backend with no `device_path`; production
 configuration accepts only the installer-managed `/dev/cs71` identity.
 
+The daemon workspace includes a deterministic `SIMULATOR_ONLY` protocol
+transport with explicit clock advancement. It is software evidence only.
+
 ## Daemon
 
 From the repository root in a Python 3.12 virtual environment:

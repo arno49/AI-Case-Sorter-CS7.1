@@ -64,6 +64,10 @@ explicit `SOFTWARE_SIMULATOR_ONLY` evidence labels.
 
 **Goal:** provide an injected-clock CS7.1 simulator around the protocol boundary. **Implementation notes:** model documented v1/v2 negotiation, CRC, events and terminals; never sleep to advance test time. **Dependencies:** PI-FOUNDATION-001. **Hardware required:** No. **Size:** L.
 
+**Status:** Implemented under `appliance/daemon/src/cs71d/simulator` with an
+explicit manual clock, seeded scenarios, real `cs71_protocol` integration, and
+conspicuous `SIMULATOR_ONLY` identity.
+
 - Given the same seed/scenario, emitted bytes, events and terminals are identical.
 - Scenarios cover startup, legacy discovery, v2 activation, optional CRC and status/capabilities/queue responses.
 - Time advances through explicit test control rather than wall-clock sleeps.

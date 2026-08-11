@@ -8,6 +8,18 @@ arrive in later roadmap tasks.
 The package depends on the repository's `cs71_protocol` implementation and does
 not duplicate framing or recovery logic.
 
+## Deterministic simulator
+
+`cs71d.simulator.SimulatorTransport` implements the same byte-stream boundary
+used by `ProtocolClient`. It starts in v1, supports legacy/v2 discovery,
+activation snapshots, queue inspection, optional CRC transitions, lifecycle
+events, reset, and priority stop. Scheduled physical-operation terminals appear
+only after tests call `advance(milliseconds)`; simulator code never sleeps.
+
+Every instance logs and exposes an identity beginning with `SIMULATOR_ONLY`.
+Its transcripts and CI evidence cannot satisfy hardware, DTR, motion, or HIL
+gates.
+
 From the repository root:
 
 ```sh
