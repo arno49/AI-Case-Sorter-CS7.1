@@ -15,7 +15,7 @@ hardware-evidence boundaries below.
 | `test/` | PlatformIO native firmware tests and fixtures |
 | `host/` | Python `cs71_protocol` library and `cs71-protocol` CLI |
 | `appliance/contracts/` | Executable private `cs71d` OpenAPI contract and compatibility tests |
-| `appliance/daemon/` | Python `cs71d` workspace; future sole serial owner |
+| `appliance/daemon/` | Python `cs71d` workspace; sole serial owner |
 | `appliance/daemon/src/cs71d/simulator/` | Deterministic no-hardware protocol simulator |
 | `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
@@ -25,9 +25,9 @@ hardware-evidence boundaries below.
 | `CommunityContributions/` | Independent variants; not canonical by default |
 
 The Raspberry Pi application currently has approved architecture, an executable
-API contract, and initial daemon/web workspace scaffolds. Machine-control and
-operator features are not implemented; do not describe it as deployed or
-qualified.
+API contract, initial daemon/web workspace scaffolds, and a single-owner serial
+worker. Session state, the machine-control domain, and operator features are not
+implemented; do not describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -140,6 +140,9 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - `cs71d` and SvelteKit own separate SQLite databases and never share writes.
 - Native Raspberry Pi OS deployment uses systemd, udev, and Caddy; containers
   are excluded from the MVP.
+- Only `appliance/daemon/src/cs71d/serial_worker.py` may import or construct
+  `ProtocolClient` or a configured serial transport. Other daemon code submits
+  typed intents to `SerialWorker` and never performs serial I/O itself.
 - Simulator code uses explicit clock advancement, carries a conspicuous
   `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
   evidence.

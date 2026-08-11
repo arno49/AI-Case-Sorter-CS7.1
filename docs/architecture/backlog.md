@@ -97,10 +97,15 @@ operation domain exists under PI-DOMAIN-001.
 
 **Goal:** isolate `ProtocolClient` in one dedicated serial worker. **Implementation notes:** API/domain threads enqueue typed intents only; use bounded normal and priority-stop lanes. **Dependencies:** PI-SIM-002. **Hardware required:** No. **Size:** L.
 
-**Status:** In progress. The host protocol prerequisite now provides
-deadline-preserving interrupt polling so the owning worker can issue a trusted
-out-of-band stop while a synchronous request is active, without cross-thread
-serial access.
+**Status:** Implemented as `cs71d.SerialWorker`. One dedicated thread
+constructs the transport and `ProtocolClient` and performs every read and
+write; callers submit closed typed intents and receive futures. A static test
+confines the `ProtocolClient` import to `serial_worker.py`, and a concurrent
+start/submit test proves a second serial open cannot occur. Preemption uses the
+host prerequisite's deadline-preserving interrupt polling and trusted
+same-owner out-of-band stop, so no cross-thread serial access is required.
+A failed stop marks the affected result `UNCERTAIN` rather than stopped or
+successful.
 
 - Only serial-worker code can construct/use `ProtocolClient` or configured serial transport.
 - Normal queue saturation returns a defined rejection without unbounded allocation.
