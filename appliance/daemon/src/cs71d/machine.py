@@ -11,9 +11,10 @@ happened while it still observes *N*.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import StrEnum
 
 from .session import ConnectionState, SessionSnapshot
@@ -69,6 +70,8 @@ class MachineSnapshot:
     journal_available: bool = True
     firmware: FirmwareProfile | None = None
     readiness: MachineReadiness | None = None
+    fault_id: str | None = None
+    fault_opened_at: datetime | None = None
 
     @property
     def admits_work(self) -> bool:
@@ -89,10 +92,17 @@ class MachineSnapshot:
 class MachineState:
     """Publish the machine view under one monotonic generation."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        observer: Callable[[MachineSnapshot], None] | None = None,
+    ) -> None:
         # Re-entrant because an admission decision publishes the transition it
         # just made durable without leaving the block that froze the view.
         self._lock = threading.RLock()
+        # Invoked for every published snapshot while the view is held still, so
+        # observers see them in order. It must not block or re-enter the domain.
+        self._observer = observer
         self._snapshot = MachineSnapshot(1, ConnectionState.DISCONNECTED, "initial")
         self._history: list[MachineSnapshot] = [self._snapshot]
 
@@ -166,7 +176,13 @@ class MachineState:
                 )
             )
 
-    def record_journal_fault(self, reason: str) -> MachineSnapshot:
+    def record_journal_fault(
+        self,
+        reason: str,
+        *,
+        fault_id: str | None = None,
+        opened_at: datetime | None = None,
+    ) -> MachineSnapshot:
         """Latch the machine as undurable after a failed journal operation.
 
         This does not clear on its own. Durability loss needs operator or
@@ -183,6 +199,8 @@ class MachineState:
                     journal_available=False,
                     fault=FaultState.LATCHED,
                     reason=reason,
+                    fault_id=fault_id,
+                    fault_opened_at=opened_at,
                 )
             )
 
@@ -190,4 +208,6 @@ class MachineState:
         published = replace(candidate, generation=self._snapshot.generation + 1)
         self._snapshot = published
         self._history.append(published)
+        if self._observer is not None:
+            self._observer(published)
         return published

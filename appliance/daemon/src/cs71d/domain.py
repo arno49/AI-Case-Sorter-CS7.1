@@ -122,13 +122,14 @@ class OperationDomain:
         min_deadline_ms: int = MIN_DEADLINE_MS,
         max_deadline_ms: int = MAX_DEADLINE_MS,
         operation_observer: Callable[[OperationRecord], None] | None = None,
+        machine_observer: Callable[[MachineSnapshot], None] | None = None,
     ) -> None:
         if idempotency_ttl <= timedelta(0):
             raise ValueError("idempotency_ttl must be positive")
         if not 0 < min_deadline_ms <= max_deadline_ms:
             raise ValueError("deadline policy must be a positive ascending range")
         self._journal = journal
-        self._machine = MachineState()
+        self._machine = MachineState(observer=machine_observer)
         self._now = now
         self._idempotency_ttl = idempotency_ttl
         self._min_deadline_ms = min_deadline_ms
@@ -352,6 +353,14 @@ class OperationDomain:
         )
         return self._transition(operation.operation_id, OperationState.ACCEPTED, reason)
 
+    def _record_journal_fault(self, reason: str) -> None:
+        """Latch durability loss with an identity the API can report."""
+        self._machine.record_journal_fault(
+            reason,
+            fault_id=new_operation_id(),
+            opened_at=self._now(),
+        )
+
     def _require_durable(self, view: MachineSnapshot) -> None:
         if not view.journal_available:
             raise JournalUnavailableError(
@@ -365,7 +374,7 @@ class OperationDomain:
         try:
             yield
         except JournalError as exc:
-            self._machine.record_journal_fault(f"journal failure while {activity}: {exc}")
+            self._record_journal_fault(f"journal failure while {activity}: {exc}")
             raise JournalUnavailableError(f"could not record while {activity}: {exc}") from exc
 
     def _replay(self, key: str, fingerprint: str, *, at: datetime) -> OperationRecord | None:
@@ -472,7 +481,7 @@ class OperationDomain:
         try:
             return self._journal.operation(operation_id)
         except JournalError as exc:
-            self._machine.record_journal_fault(f"journal read failed: {exc}")
+            self._record_journal_fault(f"journal read failed: {exc}")
             return None
 
     def _safe_transition(
@@ -536,7 +545,7 @@ class OperationDomain:
                 terminal_fields=terminal_fields,
             )
         except JournalError as exc:
-            self._machine.record_journal_fault(
+            self._record_journal_fault(
                 f"journal failure recording {state} for operation {operation_id}: {exc}"
             )
             raise

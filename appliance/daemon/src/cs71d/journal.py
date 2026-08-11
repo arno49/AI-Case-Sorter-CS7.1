@@ -378,6 +378,42 @@ class Journal:
         with self._guard() as cursor:
             return self._read_operation(cursor, operation_id)
 
+    def recent_operations(
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        state: OperationState | None = None,
+        action: OperationAction | None = None,
+    ) -> tuple[tuple[int, OperationRecord], ...]:
+        """Return a bounded newest-first page of operations with their cursors.
+
+        The cursor is the storage row identity, which is stable and strictly
+        increasing with admission order. It is opaque to callers and is not an
+        operation identity.
+        """
+        if limit < 1:
+            raise ValidationError("limit must be positive")
+        clauses = ["1 = 1"]
+        parameters: list[object] = []
+        if before is not None:
+            clauses.append("rowid < ?")
+            parameters.append(before)
+        if state is not None:
+            clauses.append("state = ?")
+            parameters.append(state.value)
+        if action is not None:
+            clauses.append("action = ?")
+            parameters.append(action.value)
+        parameters.append(limit)
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                f"SELECT rowid AS cursor, {_OPERATION_COLUMNS} FROM operations"
+                f" WHERE {' AND '.join(clauses)} ORDER BY rowid DESC LIMIT ?",
+                tuple(parameters),
+            ).fetchall()
+        return tuple((int(row["cursor"]), _decode_operation(row)) for row in rows)
+
     def transitions(self, operation_id: str) -> tuple[TransitionRecord, ...]:
         with self._guard() as cursor:
             rows = cursor.execute(
