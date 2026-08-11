@@ -16,6 +16,7 @@ hardware-evidence boundaries below.
 | `host/` | Python `cs71_protocol` library and `cs71-protocol` CLI |
 | `appliance/contracts/` | Executable private `cs71d` OpenAPI contract and compatibility tests |
 | `appliance/daemon/` | Python `cs71d` workspace; future sole serial owner |
+| `appliance/daemon/src/cs71d/simulator/` | Deterministic no-hardware protocol simulator |
 | `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
@@ -139,6 +140,9 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - `cs71d` and SvelteKit own separate SQLite databases and never share writes.
 - Native Raspberry Pi OS deployment uses systemd, udev, and Caddy; containers
   are excluded from the MVP.
+- Simulator code uses explicit clock advancement, carries a conspicuous
+  `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
+  evidence.
 - New architecture decisions require a new or superseding ADR. Keep
   `roadmap.md`, `backlog.md`, and `traceability.md` synchronized.
 
