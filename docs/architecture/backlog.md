@@ -190,6 +190,23 @@ and the physical E-stop is the independent safety device.
 
 **Goal:** map the MVP machine intents to typed `cs71_protocol` calls without exposing raw commands. **Implementation notes:** capability and firmware-gate checks precede dispatch; feed remains unavailable in production until V2-09 and its hardware evidence pass. **Dependencies:** PI-DOMAIN-002. **Hardware required:** No for simulator implementation; production enablement requires the existing firmware/HIL gates. **Size:** M.
 
+**Status:** Implemented as `cs71d.adapters`. The serial worker gathers the
+required snapshots — advertised capabilities and observed status — before
+publishing `READY`, and re-observes them after each completed movement, so the
+daemon validates against what the controller reports rather than what it
+assumes. Home accepts only the three axes and only when the controller
+advertises the matching homing capability; sort is bounded by the advertised
+`slot_max` and refused while the sorter position is unknown; both checks run
+against the frozen admission view before any serial I/O. Trusted terminal
+fields are recorded on the operation through schema migration 2.
+
+Feed is refused outright: `FEED_LIFECYCLE_GATE` is `NOT_EXECUTED` and no
+firmware build advertises a v2 feed lifecycle, so a feed request returns
+`UNSUPPORTED` without touching the serial session. Its accepted, progress,
+completion, fault, cancellation and `UNCERTAIN` coverage therefore remains
+**blocked** on V2-09 and its hardware evidence; simulator runs cannot close
+that gate. Home and sort are covered for all six.
+
 - Home accepts only feeder, sorter or both and records the trusted terminal fields.
 - Sort validates the advertised slot range and known sorter position before serial enqueue.
 - Feed validates advertised capability and readiness; an unqualified firmware build returns `NOT_READY` or `UNSUPPORTED` without serial I/O.

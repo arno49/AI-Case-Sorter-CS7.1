@@ -19,6 +19,7 @@ from cs71d import (
     QueueFullError,
     SerialWorker,
     SessionNotReadyError,
+    SessionProfile,
     SessionSnapshot,
     SortIntent,
     WorkerStartupError,
@@ -496,4 +497,37 @@ def test_a_refusing_dispatch_hook_withdraws_the_intent_without_touching_the_sess
     assert _sort_command_count(simulator) == 0
     assert worker.session.state is ConnectionState.READY
     assert isinstance(worker.submit(QueryIntent(QueryKind.STATUS)).result(timeout=0.5), Status)
+    worker.close(timeout=0.5)
+
+
+def test_required_snapshots_are_gathered_before_ready_and_after_each_movement() -> None:
+    profiles: list[SessionProfile] = []
+    states: list[ConnectionState] = []
+    simulator = SimulatorTransport(SimulatorConfig())
+
+    def on_session(snapshot: SessionSnapshot) -> None:
+        states.append(snapshot.state)
+        if snapshot.state is ConnectionState.READY:
+            # READY may only be published once the snapshots already exist.
+            assert profiles
+
+    worker = SerialWorker(
+        lambda: simulator,
+        protocol_timeout=0.1,
+        session_observer=on_session,
+        profile_observer=profiles.append,
+    )
+    worker.start(timeout=0.5)
+    assert len(profiles) == 1
+    assert profiles[0].capabilities.slot_max == 102
+    assert not profiles[0].status.sort_homed
+
+    home = worker.submit(HomeIntent(HomeAxis.BOTH))
+    assert simulator.wait_until_scheduled(timeout=0.5)
+    simulator.advance(10_000)
+    assert _completion(home).succeeded
+
+    assert len(profiles) == 2
+    assert profiles[1].status.sort_homed
+    assert ConnectionState.READY in states
     worker.close(timeout=0.5)

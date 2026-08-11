@@ -15,10 +15,11 @@ storage engine itself rather than by convention:
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,7 @@ from .operations import (
     can_transition,
     is_terminal,
     require_reason,
+    require_terminal_fields,
 )
 
 IN_MEMORY = ":memory:"
@@ -138,6 +140,11 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=2,
+        name="operation_terminal_fields",
+        statements=("ALTER TABLE operations ADD COLUMN terminal_fields TEXT",),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -153,7 +160,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 _OPERATION_COLUMNS = (
     "operation_id, action, fingerprint, state, generation, created_at, deadline_at,"
-    " actor_user_id, actor_role, trusted_terminal, outcome, terminal_at, protocol_request_id"
+    " actor_user_id, actor_role, trusted_terminal, outcome, terminal_at, protocol_request_id,"
+    " terminal_fields"
 )
 
 
@@ -250,7 +258,7 @@ class Journal:
         with self._transaction() as cursor:
             cursor.execute(
                 f"INSERT INTO operations ({_OPERATION_COLUMNS})"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     operation.operation_id,
                     operation.action.value,
@@ -265,6 +273,7 @@ class Journal:
                     operation.outcome,
                     _encode_optional_time(operation.terminal_at),
                     operation.protocol_request_id,
+                    _encode_fields(operation.terminal_fields),
                 ),
             )
             self._append_transition(
@@ -301,6 +310,7 @@ class Journal:
         trusted_terminal: bool = False,
         outcome: str | None = None,
         protocol_request_id: int | None = None,
+        terminal_fields: Mapping[str, str] | None = None,
     ) -> OperationRecord:
         """Record one lifecycle transition and return the updated operation.
 
@@ -332,7 +342,8 @@ class Journal:
             cursor.execute(
                 "UPDATE operations SET state = ?, generation = ?, trusted_terminal = ?,"
                 " outcome = ?, terminal_at = ?,"
-                " protocol_request_id = coalesce(?, protocol_request_id)"
+                " protocol_request_id = coalesce(?, protocol_request_id),"
+                " terminal_fields = coalesce(?, terminal_fields)"
                 " WHERE operation_id = ?",
                 (
                     to_state.value,
@@ -341,6 +352,11 @@ class Journal:
                     outcome,
                     _encode_optional_time(terminal_at),
                     protocol_request_id,
+                    _encode_fields(
+                        None
+                        if terminal_fields is None
+                        else require_terminal_fields(terminal_fields)
+                    ),
                     operation_id,
                 ),
             )
@@ -537,6 +553,7 @@ def _decode_operation(row: sqlite3.Row) -> OperationRecord:
         protocol_request_id=(
             None if row["protocol_request_id"] is None else int(row["protocol_request_id"])
         ),
+        terminal_fields=_decode_fields(row["terminal_fields"]),
     )
 
 
@@ -582,6 +599,19 @@ def _decode_time(value: str) -> datetime:
 
 def _decode_optional_time(value: str | None) -> datetime | None:
     return None if value is None else _decode_time(value)
+
+
+def _encode_fields(fields: Mapping[str, str] | None) -> str | None:
+    return None if fields is None else json.dumps(dict(fields), sort_keys=True)
+
+
+def _decode_fields(value: str | None) -> Mapping[str, str] | None:
+    if value is None:
+        return None
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, dict):  # pragma: no cover - written by this module only
+        raise JournalError("stored terminal fields are not a mapping")
+    return {str(name): str(field) for name, field in decoded.items()}
 
 
 def _utcnow() -> datetime:

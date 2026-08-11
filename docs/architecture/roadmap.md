@@ -56,7 +56,14 @@ graph LR
   command before transmission. Priority stop is an attributable durable
   operation that bypasses queued normal work; without its trusted exact
   `stopped` terminal, the stop and the work it affected are `UNCERTAIN`.
-- PI-DOMAIN-003 typed home, sort and feed operation adapters is the active
+- PI-DOMAIN-003 is complete for home and sort: the worker gathers advertised
+  capabilities and observed readiness before publishing `READY`, and the
+  adapters refuse an unadvertised axis, an out-of-range slot or an unknown
+  sorter position before any serial I/O. Feed returns `UNSUPPORTED` because
+  its firmware lifecycle gate is `NOT_EXECUTED`; its operation coverage stays
+  blocked on V2-09 and hardware evidence, so the PI-DOMAIN epic exit criteria
+  are met only for the operations the firmware actually implements.
+- PI-API-001 internal HTTP/JSON over the Unix socket is the active
   critical-path implementation step. PI-WEB-001 remains independently
   available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence

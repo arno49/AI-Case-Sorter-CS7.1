@@ -115,6 +115,35 @@ Locks are taken as `MachineState` → `Journal` → `SerialWorker` and never the
 reverse. An admitting thread releases the machine lock before it enqueues,
 because the worker thread enters that lock holding nothing.
 
+## Operation adapters and firmware gates
+
+The worker gathers the required snapshots — advertised capabilities and
+observed status — before it publishes `READY`, and re-observes them after each
+completed movement. The daemon therefore validates commands against what the
+controller *reports*, not against what it assumes; a firmware build that
+advertises less cannot be asked for more.
+
+`cs71d.adapters` translates an allow-listed request into a closed worker
+intent in two stages, because the two answers mean different things to a
+caller. Shape and vocabulary are checked first (`VALIDATION_FAILED`), then
+capability, firmware gate and readiness against the frozen admission view
+(`UNSUPPORTED` or `NOT_READY`) — all before anything is enqueued:
+
+- Home accepts only `feeder`, `sorter` or `both`, and only when the controller
+  advertises the matching homing capability.
+- Sort is bounded by the advertised `slot_max` and refused while the sorter
+  position is unknown, because until it is homed the daemon cannot say where a
+  sort would move to.
+- Feed is refused outright. `FEED_LIFECYCLE_GATE` is `NOT_EXECUTED` and no
+  firmware build advertises a v2 feed lifecycle, so feed returns `UNSUPPORTED`
+  without touching the serial session. That gate closes with V2-09 and its
+  hardware evidence; a simulator run cannot close it.
+
+The action selects the intent and the body must contain exactly that intent's
+own field, so no API or BFF input can smuggle a raw protocol payload. The
+trusted terminal's fields are recorded against the operation as evidence of
+what the controller actually reported.
+
 ## Durability and priority stop
 
 A journal write that is refused latches the machine view as undurable with a

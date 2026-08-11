@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,26 +9,29 @@ from uuid import UUID
 
 import pytest
 
+from cs71d.adapters import FEED_LIFECYCLE_GATE
 from cs71d.domain import (
     DeadlineInvalidError,
     IdempotencyConflictError,
     JournalUnavailableError,
-    NotReadyError,
     OperationDomain,
     OperationQueueFullError,
     StaleGenerationError,
+    WorkerObservers,
 )
 from cs71d.journal import IN_MEMORY, Journal, JournalError
 from cs71d.machine import FaultState
 from cs71d.operations import (
     Actor,
     IdempotencyRecord,
+    NotReadyError,
     OperationAction,
     OperationRecord,
     OperationState,
+    UnsupportedOperationError,
+    ValidationError,
 )
 from cs71d.serial_worker import SerialWorker
-from cs71d.session import SessionSnapshot
 from cs71d.simulator import AdverseScenario, SimulatorConfig, SimulatorTransport
 from cs71d.simulator.transport import TranscriptDirection
 
@@ -195,6 +198,7 @@ class BreakableJournal(Journal):
         trusted_terminal: bool = False,
         outcome: str | None = None,
         protocol_request_id: int | None = None,
+        terminal_fields: Mapping[str, str] | None = None,
     ) -> OperationRecord:
         self._refuse_when_broken()
         return super().record_transition(
@@ -206,6 +210,7 @@ class BreakableJournal(Journal):
             trusted_terminal=trusted_terminal,
             outcome=outcome,
             protocol_request_id=protocol_request_id,
+            terminal_fields=terminal_fields,
         )
 
     def wait_for_refusals(self, count: int, *, timeout: float = 2.0) -> None:
@@ -257,22 +262,28 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
         start: bool = True,
         breakable: bool = False,
         swallow_stop: bool = False,
+        slot_max: int = 102,
     ) -> Harness:
         clock = FakeClock(START)
         watcher = OperationWatcher()
-        config = SimulatorConfig() if scenario is None else SimulatorConfig(scenario=scenario)
+        config = (
+            SimulatorConfig(slot_max=slot_max)
+            if scenario is None
+            else SimulatorConfig(scenario=scenario, slot_max=slot_max)
+        )
         simulator = SimulatorTransport(config)
         opener = BreakableJournal.open if breakable else Journal.open
         journal = opener(IN_MEMORY, now=clock)
         transport = StopSwallowingTransport(simulator) if swallow_stop else simulator
 
-        def worker_factory(observer: Callable[[SessionSnapshot], None]) -> SerialWorker:
+        def worker_factory(observers: WorkerObservers) -> SerialWorker:
             return SerialWorker(
                 lambda: transport,
                 normal_capacity=normal_capacity,
                 protocol_timeout=0.1,
                 interrupt_poll_interval=0.005,
-                session_observer=observer,
+                session_observer=observers.session,
+                profile_observer=observers.profile,
             )
 
         domain = OperationDomain(
@@ -298,7 +309,11 @@ def test_an_admitted_command_is_durable_with_identity_deadline_and_audit(
     make_harness: Callable[..., Harness],
 ) -> None:
     harness = make_harness()
+    harness.home()
+    harness.submit(OperationAction.HOME, HOME_BODY, key="blocker")
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
 
+    # Admitted behind a blocker, so it is still queued when this is asserted.
     admitted = harness.submit(deadline_ms=5_000)
 
     assert UUID(admitted.operation_id).version == 4
@@ -412,6 +427,7 @@ def test_a_different_actor_reusing_a_key_conflicts(
     make_harness: Callable[..., Harness],
 ) -> None:
     harness = make_harness()
+    harness.home()
     harness.submit(key="retry-3")
 
     with pytest.raises(IdempotencyConflictError):
@@ -465,6 +481,7 @@ def test_a_deadline_that_expires_before_dispatch_fails_without_transmission(
     make_harness: Callable[..., Harness],
 ) -> None:
     harness = make_harness()
+    harness.home()
     blocker = harness.submit(OperationAction.HOME, HOME_BODY, key="blocker")
     assert harness.simulator.wait_until_scheduled(timeout=1.0)
     expiring = harness.submit(key="expiring", deadline_ms=100)
@@ -486,6 +503,7 @@ def test_a_saturated_lane_is_rejected_and_the_attempt_stays_durable(
     make_harness: Callable[..., Harness],
 ) -> None:
     harness = make_harness(normal_capacity=1)
+    harness.home()
     harness.submit(OperationAction.HOME, HOME_BODY, key="active")
     assert harness.simulator.wait_until_scheduled(timeout=1.0)
     harness.submit(key="queued")
@@ -521,6 +539,7 @@ def test_session_recovery_cancels_queued_work_without_replaying_it(
     make_harness: Callable[..., Harness],
 ) -> None:
     harness = make_harness(scenario=AdverseScenario.TERMINAL_MISMATCH)
+    harness.home()
     blocker = harness.submit(OperationAction.HOME, HOME_BODY, key="blocker")
     assert harness.simulator.wait_until_scheduled(timeout=1.0)
     breaking = harness.submit(key="breaking")
@@ -722,3 +741,86 @@ def test_a_stop_that_cannot_be_recorded_is_refused(
 
     assert raised.value.code == "JOURNAL_UNAVAILABLE"
     assert not harness.domain.snapshot.journal_available
+
+
+def test_the_machine_view_publishes_observed_capabilities_and_readiness(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+
+    firmware = harness.domain.snapshot.firmware
+    readiness = harness.domain.snapshot.readiness
+
+    assert firmware is not None
+    assert firmware.protocol_version == 2
+    assert firmware.slot_max == 102
+    assert firmware.sort_home and firmware.feed_home
+    assert readiness is not None
+    # Nothing is assumed: a fresh controller has not homed anything.
+    assert not readiness.sort_homed
+
+    harness.home()
+
+    refreshed = harness.domain.snapshot.readiness
+    assert refreshed is not None
+    assert refreshed.sort_homed
+
+
+def test_a_sort_before_homing_is_refused_before_any_serial_io(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+
+    with pytest.raises(NotReadyError, match="sorter position is unknown") as raised:
+        harness.submit()
+
+    assert raised.value.code == "NOT_READY"
+    assert harness.sort_commands() == 0
+    assert harness.watcher.transitions == ()
+
+
+def test_a_slot_beyond_the_advertised_range_is_refused_before_any_serial_io(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness(slot_max=8)
+    harness.home()
+
+    with pytest.raises(ValidationError, match="advertised maximum 8") as raised:
+        harness.submit(body={"slot": 9})
+
+    assert raised.value.code == "VALIDATION_FAILED"
+    assert harness.domain.operation(raised.value.operation_id or "") is None
+
+
+def test_feed_is_refused_without_serial_io_while_its_firmware_gate_is_open(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+    harness.home()
+    before = harness.domain.snapshot.generation
+
+    with pytest.raises(UnsupportedOperationError, match=FEED_LIFECYCLE_GATE) as raised:
+        harness.submit(OperationAction.FEED, {"slot": 3}, key="feed-1")
+
+    assert raised.value.code == "UNSUPPORTED"
+    # Refused before admission: no operation, no generation change, no bytes.
+    assert harness.domain.snapshot.generation == before
+    assert not any(record.action is OperationAction.FEED for record in harness.watcher.transitions)
+
+
+def test_a_trusted_terminal_records_the_fields_the_controller_reported(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+    homed = harness.home()
+    admitted = harness.submit()
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    # While the movement runs, the machine view names the active operation.
+    assert harness.domain.snapshot.active_operation_id == admitted.operation_id
+
+    harness.simulator.advance(10_000)
+    sorted_record = harness.watcher.wait_for(admitted.operation_id, OperationState.SUCCEEDED)
+
+    assert sorted_record.terminal_fields == {"slot": "3"}
+    assert homed.terminal_fields is not None
+    assert harness.domain.snapshot.active_operation_id is None
