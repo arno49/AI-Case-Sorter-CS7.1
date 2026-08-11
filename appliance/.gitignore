@@ -3,4 +3,5 @@
 daemon/.pytest_cache/
 daemon/build/
 daemon/dist/
+daemon/reports/
 daemon/src/*.egg-info/

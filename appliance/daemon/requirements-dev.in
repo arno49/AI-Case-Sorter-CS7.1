@@ -1,0 +1,7 @@
+build==1.2.2.post1
+mypy==2.3.0
+pip-audit==2.10.1
+pip==26.2.1
+pytest==9.1.1
+ruff==0.16.2
+setuptools==84.0.0

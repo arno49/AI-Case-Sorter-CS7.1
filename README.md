@@ -36,8 +36,8 @@ pio run -e uno && pio run -e uno_v2
 pio test -e native && pio test -e native_v2
 (cd host && python -m pip install ".[dev]" "build==1.2.2.post1" && python -m pytest && python -m build --wheel --sdist)
 python -m unittest discover -s appliance/contracts/tests -v
-(python -m pip install -e ./host -e "./appliance/daemon[dev]" "build==1.2.2.post1" && python -m pytest appliance/daemon/tests && python -m build --wheel --sdist appliance/daemon)
-(cd appliance/web && npm ci && npm run check && npm run build)
+(python -m pip install --require-hashes -r appliance/daemon/requirements-dev.txt && python -m pip install --no-build-isolation -e ./host -e ./appliance/daemon && cd appliance/daemon && ruff format --check . && ruff check . && mypy && pytest && python -m build --no-isolation --wheel --sdist)
+(cd appliance/web && npm ci && npm run check:api && npm run lint && npm run check && npm test && npm run build)
 ```
 
 These checks do not replace firmware serial parity, HIL, or Windows

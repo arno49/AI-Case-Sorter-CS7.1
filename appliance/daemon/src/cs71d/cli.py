@@ -30,10 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     device = config.device_path if config.device_path is not None else "none"
-    print(
-        "configuration valid: "
-        f"profile={config.profile} backend={config.backend} device={device}"
-    )
+    print(f"configuration valid: profile={config.profile} backend={config.backend} device={device}")
     return 0
 
 

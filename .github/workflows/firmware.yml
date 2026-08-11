@@ -25,13 +25,163 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.11"
       - name: Install OpenAPI validator
-        run: python -m pip install --disable-pip-version-check -r appliance/contracts/requirements.txt
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r appliance/contracts/requirements.txt
       - name: Validate OpenAPI document
         run: openapi-spec-validator appliance/contracts/cs71d-v1.openapi.json
       - name: Run cs71d v1 contract tests
         run: python -m unittest discover -s appliance/contracts/tests -v
+
+  appliance-daemon:
+    name: Appliance daemon (software/simulator evidence only)
+    runs-on: ubuntu-latest
+    env:
+      EVIDENCE_CLASS: SOFTWARE_SIMULATOR_ONLY
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+          cache: pip
+          cache-dependency-path: appliance/daemon/requirements-dev.txt
+      - name: Install daemon development dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r appliance/daemon/requirements-dev.txt
+          python -m pip install --disable-pip-version-check --no-build-isolation \
+            -e ./host -e ./appliance/daemon
+          python -m pip check
+      - name: Record daemon dependency and build metadata
+        run: |
+          mkdir -p appliance/daemon/reports
+          python appliance/daemon/scripts/dependency_report.py \
+            > appliance/daemon/reports/dependencies-and-licenses.json
+          cp appliance/daemon/pyproject.toml appliance/daemon/requirements-dev.in \
+            appliance/daemon/requirements-dev.txt appliance/daemon/reports/
+          printf '{"source_revision":"%s","evidence_class":"%s"}\n' \
+            "$GITHUB_SHA" "$EVIDENCE_CLASS" \
+            > appliance/daemon/reports/build-metadata.json
+          printf '### Appliance daemon evidence\n\n`%s`: no hardware or DTR claims.\n' \
+            "$EVIDENCE_CLASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check daemon formatting and lint
+        working-directory: appliance/daemon
+        run: |
+          ruff format --check .
+          ruff check .
+      - name: Check daemon types
+        working-directory: appliance/daemon
+        run: mypy
+      - name: Run daemon tests
+        working-directory: appliance/daemon
+        run: pytest
+      - name: Build daemon distributions
+        run: python -m build --no-isolation --wheel --sdist appliance/daemon
+      - name: Audit daemon dependencies
+        run: |
+          set +e
+          pip-audit --local --format json \
+            --output appliance/daemon/reports/security-audit.json \
+            2> appliance/daemon/reports/security-audit.stderr.log
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              result=clean
+              ;;
+            1)
+              result=vulnerabilities
+              echo "::warning::Python dependency vulnerabilities are recorded in the audit artifact"
+              ;;
+            *)
+              result=unavailable
+              echo "::warning::Python security audit unavailable (exit $status); see audit artifact"
+              ;;
+          esac
+          printf '{"available":%s,"result":"%s","exit_code":%s}\n' \
+            "$([ "$result" = unavailable ] && echo false || echo true)" \
+            "$result" "$status" \
+            > appliance/daemon/reports/audit-status.json
+      - name: Upload daemon artifacts and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs71d-software-simulator-${{ github.sha }}
+          path: |
+            appliance/daemon/dist/
+            appliance/daemon/reports/
+          if-no-files-found: error
+
+  appliance-web:
+    name: Appliance web (software/simulator evidence only)
+    runs-on: ubuntu-latest
+    env:
+      EVIDENCE_CLASS: SOFTWARE_SIMULATOR_ONLY
+    defaults:
+      run:
+        working-directory: appliance/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+          cache: npm
+          cache-dependency-path: appliance/web/package-lock.json
+      - name: Install locked web dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Record web dependency and build metadata
+        run: |
+          mkdir -p reports
+          npm run --silent report:dependencies > reports/dependencies-and-licenses.json
+          npm ls --all --json > reports/dependency-tree.json
+          cp package.json package-lock.json reports/
+          printf '{"source_revision":"%s","evidence_class":"%s"}\n' \
+            "$GITHUB_SHA" "$EVIDENCE_CLASS" > reports/build-metadata.json
+          printf '### Appliance web evidence\n\n`%s`: no hardware or DTR claims.\n' \
+            "$EVIDENCE_CLASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check generated daemon API types
+        run: npm run check:api
+      - name: Check web formatting and lint
+        run: npm run lint
+      - name: Check web types
+        run: npm run check
+      - name: Run web tests
+        run: npm test
+      - name: Build Node SSR bundle
+        run: npm run build
+      - name: Audit web dependencies
+        run: |
+          set +e
+          npm audit --json > reports/security-audit.json 2> reports/security-audit.stderr.log
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              result=clean
+              ;;
+            1)
+              result=vulnerabilities
+              echo "::warning::Node dependency vulnerabilities are recorded in the audit artifact"
+              ;;
+            *)
+              result=unavailable
+              echo "::warning::Node security audit unavailable (exit $status); see audit artifact"
+              ;;
+          esac
+          printf '{"available":%s,"result":"%s","exit_code":%s}\n' \
+            "$([ "$result" = unavailable ] && echo false || echo true)" \
+            "$result" "$status" > reports/audit-status.json
+      - name: Upload web artifacts and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs71-web-software-simulator-${{ github.sha }}
+          path: |
+            appliance/web/build/
+            appliance/web/reports/
+          if-no-files-found: error
 
   firmware:
     runs-on: ubuntu-latest

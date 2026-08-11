@@ -67,16 +67,19 @@ python -m build --wheel --sdist
 Raspberry Pi daemon contract:
 
 ```sh
+python -m pip install --require-hashes -r appliance/contracts/requirements.txt
+openapi-spec-validator appliance/contracts/cs71d-v1.openapi.json
 python -m unittest discover -s appliance/contracts/tests -v
 ```
 
 Raspberry Pi application workspaces:
 
 ```sh
-python -m pip install -e ./host -e "./appliance/daemon[dev]" "build==1.2.2.post1"
-python -m pytest appliance/daemon/tests
-python -m build --wheel --sdist appliance/daemon
-(cd appliance/web && npm ci && npm run check && npm run build)
+python -m pip install --require-hashes -r appliance/daemon/requirements-dev.txt
+python -m pip install --no-build-isolation -e ./host -e ./appliance/daemon
+(cd appliance/daemon && ruff format --check . && ruff check . && mypy && pytest)
+python -m build --no-isolation --wheel --sdist appliance/daemon
+(cd appliance/web && npm ci && npm run check:api && npm run lint && npm run check && npm test && npm run build)
 ```
 
 Use the smallest existing command that covers a change, then run all affected
