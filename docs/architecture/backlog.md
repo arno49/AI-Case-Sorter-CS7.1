@@ -34,6 +34,10 @@ Tasks are dependency-ordered and deliberately PR-sized. Size is a rough planning
 
 **Goal:** add isolated Python `cs71d` and Node/SvelteKit workspace scaffolds. **Implementation notes:** consume `cs71_protocol` as a library; do not modify its public wire behavior. **Dependencies:** PI-ARCH-002. **Hardware required:** No. **Size:** M.
 
+**Status:** Implemented under `appliance/daemon` and `appliance/web`; both
+workspaces have reproducible package manifests and safe no-device development
+defaults.
+
 - A clean checkout builds both workspaces using documented existing package commands.
 - `cs71d` imports `cs71_protocol` rather than copying parser/client code.
 - Development configuration uses no real serial device by default.

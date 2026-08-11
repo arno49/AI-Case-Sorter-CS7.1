@@ -1,0 +1,6 @@
+[daemon]
+profile = "production"
+backend = "serial"
+device_path = "/dev/cs71"
+socket_path = "/run/cs71/cs71d.sock"
+database_path = "/var/lib/cs71d/machine.db"

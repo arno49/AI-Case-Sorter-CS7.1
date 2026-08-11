@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cs71d"
+version = "0.1.0"
+description = "Local control daemon for the CS7.1 Raspberry Pi appliance"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "CS7.1 maintainers"}]
+dependencies = ["cs71-protocol==0.1.0"]
+
+[project.scripts]
+cs71d = "cs71d.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src", "../../host/src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cs71d = ["py.typed"]

@@ -1,0 +1,5 @@
+[daemon]
+profile = "development"
+backend = "simulator"
+socket_path = "/tmp/cs71/cs71d.sock"
+database_path = "/tmp/cs71/machine.db"

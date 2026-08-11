@@ -15,14 +15,18 @@ hardware-evidence boundaries below.
 | `test/` | PlatformIO native firmware tests and fixtures |
 | `host/` | Python `cs71_protocol` library and `cs71-protocol` CLI |
 | `appliance/contracts/` | Executable private `cs71d` OpenAPI contract and compatibility tests |
+| `appliance/daemon/` | Python `cs71d` workspace; future sole serial owner |
+| `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
 | `3DModels/` | Canonical printable mechanical parts |
 | `Mods/` | Optional approved modifications |
 | `CommunityContributions/` | Independent variants; not canonical by default |
 
-The Raspberry Pi application is currently an approved architecture and backlog,
-not implemented application code. Do not describe it as deployed or qualified.
+The Raspberry Pi application currently has approved architecture, an executable
+API contract, and initial daemon/web workspace scaffolds. Machine-control and
+operator features are not implemented; do not describe it as deployed or
+qualified.
 
 ## Current validated baseline
 
@@ -64,6 +68,15 @@ Raspberry Pi daemon contract:
 
 ```sh
 python -m unittest discover -s appliance/contracts/tests -v
+```
+
+Raspberry Pi application workspaces:
+
+```sh
+python -m pip install -e ./host -e "./appliance/daemon[dev]" "build==1.2.2.post1"
+python -m pytest appliance/daemon/tests
+python -m build --wheel --sdist appliance/daemon
+(cd appliance/web && npm ci && npm run check && npm run build)
 ```
 
 Use the smallest existing command that covers a change, then run all affected
