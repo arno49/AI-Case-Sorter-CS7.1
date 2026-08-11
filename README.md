@@ -1,11 +1,30 @@
 # AI-Case-Sorter-CS7.1
 
-This is a project for building a case sorter which uses machine vision, machine learing AI to sort cases by headstamp. This repo contains the Arduino code as well as all the 3d Models required to complete this project. 
+This project builds a case sorter that uses machine vision and machine learning
+to identify cartridge cases by headstamp. The repository contains the canonical
+Arduino firmware, host protocol tooling, mechanical models, and the approved
+architecture for a future Raspberry Pi 5 control appliance.
 
-The current canonical firmware is `7.1.260714.6`. Its automated Uno build and
-65 native tests pass; hardware and Windows-application regression checks remain
-required before deployment. See [ArduinoCode/README.md](ArduinoCode/README.md)
-for commands, protocol details, and the validation boundary.
+## Current software status
+
+The canonical firmware is `7.1.260714.6`. Reset and the default `uno` build
+remain protocol v1 for compatibility; `uno_v2` compiles opt-in v2 support while
+also starting in v1.
+
+| Environment | Current validated result |
+| --- | --- |
+| `uno` | 17,594 bytes flash / 899 bytes static SRAM |
+| `uno_v2` | 26,290 bytes flash / 997 bytes static SRAM |
+| `native` | 89 tests pass |
+| `native_v2` | 49 tests pass |
+| Python host package | 100 pytest tests pass |
+
+The Python package under `host/` implements the v1/v2 client, typed protocol
+models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
+Physical bench, Linux DTR, HIL, and Windows-application qualification remain
+required; software tests do not satisfy those gates. See
+[ArduinoCode/README.md](ArduinoCode/README.md) for firmware details and
+[host/README.md](host/README.md) for the host API and CLI.
 
 ## Software checks
 
@@ -29,6 +48,9 @@ architecture, ADRs, delivery backlog, roadmap, and traceability are under
 [docs/architecture/](docs/architecture/README.md). Firmware protocol behavior remains
 in [ArduinoCode/PROTOCOL_V2.md](ArduinoCode/PROTOCOL_V2.md); the Python host-library
 boundary is documented in [host/README.md](host/README.md).
+
+The appliance architecture is approved, but `cs71d` and the SvelteKit
+application have not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

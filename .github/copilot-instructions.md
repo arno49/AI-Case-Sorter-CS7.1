@@ -1,5 +1,9 @@
 # Copilot instructions
 
+Follow the repository-wide requirements in [`AGENTS.md`](../AGENTS.md). The
+notes below add firmware-specific context and do not override its protocol,
+safety, Raspberry Pi architecture, or hardware-evidence boundaries.
+
 ## Build and hardware checks
 
 - The maintained firmware sketch is `ArduinoCode/CS71_Arduino/CS71_Arduino.ino`. Open that sketch in Arduino IDE 2.x, select **Arduino Uno**, then use **Verify** to compile and **Upload** to flash it. The sketch directory must keep the same `CS71_Arduino` name as the `.ino` file.
