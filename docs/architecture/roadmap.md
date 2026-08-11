@@ -43,13 +43,16 @@ graph LR
   snapshot generation, recovery is delegated to `cs71_protocol` and escalates
   to reconnect without replaying an incomplete command, and opening a real
   POSIX serial port is refused while the DTR gate is `NOT_EXECUTED`.
-- M2 is therefore complete. PI-DOMAIN-001 operations, idempotency and snapshot
-  generation is the active critical-path implementation step, opening M3.
-  PI-WEB-001 remains independently available in parallel.
-- PI-DOMAIN-001 is partially delivered: the operation model and the durable
-  `machine.db` journal exist, with append-only lifecycle audit and success
-  gated on a trusted firmware terminal. Admission against snapshot generation,
-  idempotent replay and worker dispatch are still outstanding.
+- M2 is therefore complete and M3 is open.
+- PI-DOMAIN-001 is complete: operations are durable in `machine.db`, admission
+  evaluates idempotency, snapshot generation and readiness atomically before
+  any serial enqueue, every material transition advances one machine-wide
+  generation, and `SUCCEEDED` requires a trusted correlated firmware terminal.
+  An unverified terminal now resolves as `UNCERTAIN`, which closes the
+  assertion PI-SIM-002 deferred.
+- PI-DOMAIN-002 journal failure and priority-stop semantics is the active
+  critical-path implementation step. PI-WEB-001 remains independently
+  available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

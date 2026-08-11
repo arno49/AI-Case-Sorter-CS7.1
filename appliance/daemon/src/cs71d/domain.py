@@ -1,0 +1,445 @@
+"""Operation admission, dispatch and terminal outcome.
+
+This is where a caller's request becomes a durable operation. Admission
+evaluates the idempotency key, the observed snapshot generation and machine
+readiness atomically, and makes the operation durable *before* anything is
+enqueued for the serial worker, so a stale or duplicate request cannot reach
+the controller.
+
+The layering is deliberate and one-directional:
+
+``OperationDomain`` -> ``MachineState`` -> ``Journal`` -> ``SerialWorker``
+
+Locks are taken in that order and never the other way. The worker thread
+publishes its transitions while holding nothing, so it can always enter the
+machine lock; an admitting thread therefore never holds the machine lock while
+waiting on the worker.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from concurrent.futures import Future
+from datetime import UTC, datetime, timedelta
+
+from cs71_protocol import Completion, ParseError, ResponseKind
+
+from .journal import Journal, JournalError
+from .machine import MachineSnapshot, MachineState
+from .operations import (
+    Actor,
+    DomainError,
+    IdempotencyRecord,
+    OperationAction,
+    OperationRecord,
+    OperationState,
+    RequestBody,
+    ValidationError,
+    new_operation_id,
+    request_fingerprint,
+    require_idempotency_key,
+)
+from .serial_worker import (
+    HomeAxis,
+    HomeIntent,
+    PreemptedByRecoveryError,
+    PreemptedByStopError,
+    QueueFullError,
+    SerialWorker,
+    SerialWorkerError,
+    SessionNotReadyError,
+    SortIntent,
+    StopInProgressError,
+    WorkerIntent,
+    WorkerNotRunningError,
+    WorkerResult,
+    WorkerUncertainError,
+)
+from .session import SessionSnapshot
+
+MIN_DEADLINE_MS = 100
+MAX_DEADLINE_MS = 600_000
+DEFAULT_IDEMPOTENCY_TTL = timedelta(hours=24)
+
+
+class StaleGenerationError(DomainError):
+    """The caller acted on a machine view that has since moved."""
+
+    code = "STALE_GENERATION"
+
+
+class IdempotencyConflictError(DomainError):
+    """One idempotency key was reused for a different canonical request."""
+
+    code = "IDEMPOTENCY_CONFLICT"
+
+
+class NotReadyError(DomainError):
+    """A session, fault or admission precondition is not met."""
+
+    code = "NOT_READY"
+
+
+class OperationQueueFullError(DomainError):
+    """Bounded admission rejected the request; retry needs user intent."""
+
+    code = "QUEUE_FULL"
+
+
+class DeadlineInvalidError(DomainError):
+    """The requested deadline is missing or outside daemon policy."""
+
+    code = "DEADLINE_INVALID"
+
+
+class DeadlineExpiredError(DomainError):
+    """The finite deadline passed before the command could be transmitted."""
+
+    code = "DEADLINE_EXPIRED"
+
+
+type WorkerFactory = Callable[[Callable[[SessionSnapshot], None]], SerialWorker]
+
+
+class OperationDomain:
+    """Admit, track and durably resolve state-changing machine operations."""
+
+    def __init__(
+        self,
+        journal: Journal,
+        worker_factory: WorkerFactory,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        idempotency_ttl: timedelta = DEFAULT_IDEMPOTENCY_TTL,
+        min_deadline_ms: int = MIN_DEADLINE_MS,
+        max_deadline_ms: int = MAX_DEADLINE_MS,
+        operation_observer: Callable[[OperationRecord], None] | None = None,
+    ) -> None:
+        if idempotency_ttl <= timedelta(0):
+            raise ValueError("idempotency_ttl must be positive")
+        if not 0 < min_deadline_ms <= max_deadline_ms:
+            raise ValueError("deadline policy must be a positive ascending range")
+        self._journal = journal
+        self._machine = MachineState()
+        self._now = now
+        self._idempotency_ttl = idempotency_ttl
+        self._min_deadline_ms = min_deadline_ms
+        self._max_deadline_ms = max_deadline_ms
+        # Reports every lifecycle transition, on whichever thread caused it.
+        # It must not call back into the domain.
+        self._operation_observer = operation_observer
+        # The worker publishes connection state into the machine view, so it
+        # must be constructed with the observer already wired.
+        self._worker = worker_factory(self._observe_session)
+
+    @property
+    def worker(self) -> SerialWorker:
+        return self._worker
+
+    @property
+    def machine(self) -> MachineState:
+        return self._machine
+
+    @property
+    def snapshot(self) -> MachineSnapshot:
+        return self._machine.snapshot
+
+    def start(self, *, timeout: float = 5.0) -> None:
+        self._worker.start(timeout=timeout)
+
+    def close(self, *, timeout: float = 5.0) -> None:
+        """Stop the worker. The caller owns the journal and closes it."""
+        self._worker.close(timeout=timeout)
+
+    def operation(self, operation_id: str) -> OperationRecord | None:
+        return self._journal.operation(operation_id)
+
+    def _observe_session(self, session: SessionSnapshot) -> None:
+        """Fold session confidence into the machine view, on the worker thread."""
+        self._machine.observe_connection(session)
+
+    def submit(
+        self,
+        action: OperationAction,
+        body: RequestBody,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        """Admit one state-changing request and return its durable operation.
+
+        The returned record is the operation as admitted, not its outcome. A
+        replayed idempotency key returns the original operation, which may
+        already be terminal.
+        """
+        intent = _intent_for(action, body)
+        fingerprint = request_fingerprint(action, body, actor)
+        key = require_idempotency_key(idempotency_key)
+        window = self._require_deadline(deadline_ms)
+        now = self._now()
+
+        with self._machine.admission() as view:
+            replayed = self._replay(key, fingerprint, at=now)
+            if replayed is not None:
+                return replayed
+            if expected_generation != view.generation:
+                raise StaleGenerationError(
+                    f"request observed generation {expected_generation};"
+                    f" the machine is at {view.generation}"
+                )
+            if not view.admits_work:
+                raise NotReadyError(f"machine does not admit work: {view.connection}")
+
+            operation = OperationRecord(
+                operation_id=new_operation_id(),
+                action=action,
+                fingerprint=fingerprint,
+                state=OperationState.QUEUED,
+                generation=view.generation,
+                created_at=now,
+                deadline_at=now + window,
+                actor=actor,
+            )
+            self._journal.record_admission(
+                operation,
+                reason=f"admitted against generation {view.generation}",
+                idempotency=IdempotencyRecord(
+                    key=key,
+                    fingerprint=fingerprint,
+                    operation_id=operation.operation_id,
+                    created_at=now,
+                    expires_at=now + self._idempotency_ttl,
+                ),
+            )
+            accepted = self._transition(
+                operation.operation_id,
+                OperationState.ACCEPTED,
+                "admitted to the serial lane",
+            )
+
+        # Outside the machine lock on purpose: the worker thread enters that
+        # lock to publish its own transitions, so holding it across an enqueue
+        # would invert the lock order. Every admission check already ran, and
+        # the operation is already durable.
+        try:
+            future = self._worker.submit(intent, on_dispatch=lambda: self._dispatch(accepted))
+        except SerialWorkerError as exc:
+            self._resolve(accepted.operation_id, exc)
+            raise _translate(exc, accepted.operation_id) from exc
+        future.add_done_callback(lambda done: self._settle(accepted.operation_id, done))
+        return accepted
+
+    def _replay(self, key: str, fingerprint: str, *, at: datetime) -> OperationRecord | None:
+        existing = self._journal.idempotency_record(key, at=at)
+        if existing is None:
+            return None
+        if existing.fingerprint != fingerprint:
+            raise IdempotencyConflictError(
+                f"idempotency key {key} is already bound to a different canonical request"
+            )
+        record = self._journal.operation(existing.operation_id)
+        if record is None:  # pragma: no cover - written in one transaction
+            raise JournalError(f"idempotency key {key} points at a missing operation")
+        return record
+
+    def _dispatch(self, operation: OperationRecord) -> None:
+        """Gate transmission on the worker thread, immediately before the write.
+
+        A deadline that expired while the operation waited in the queue fails
+        it here, which is the last moment the command can still be stopped
+        from reaching the controller. Raising also covers a failed journal
+        write: the daemon does not transmit what it cannot record.
+        """
+        if operation.expired_at(self._now()):
+            raise DeadlineExpiredError(
+                f"deadline expired before operation {operation.operation_id} was transmitted"
+            )
+        self._transition(
+            operation.operation_id,
+            OperationState.RUNNING,
+            "dispatched to the controller",
+        )
+
+    def _settle(self, operation_id: str, future: Future[WorkerResult]) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._resolve(operation_id, exc)
+            return
+        self._complete(operation_id, result)
+
+    def _complete(self, operation_id: str, result: WorkerResult) -> None:
+        record = self._journal.operation(operation_id)
+        if record is None or record.is_terminal:
+            return
+        if not isinstance(result, Completion):  # pragma: no cover - queries own no operation
+            self._transition(
+                operation_id,
+                OperationState.UNCERTAIN,
+                f"worker returned a non-command result: {type(result).__name__}",
+                outcome="UNEXPECTED_RESULT",
+            )
+            return
+        if _is_trusted_terminal(result):
+            self._transition(
+                operation_id,
+                OperationState.SUCCEEDED,
+                "trusted correlated firmware terminal",
+                trusted_terminal=True,
+                outcome="done",
+                protocol_request_id=result.request_id,
+            )
+            return
+        fault = result.error
+        self._transition(
+            operation_id,
+            OperationState.FAILED,
+            "firmware reported a correlated error terminal",
+            outcome="error" if fault is None else fault.name,
+            protocol_request_id=result.request_id,
+        )
+
+    def _resolve(self, operation_id: str, error: Exception) -> None:
+        record = self._journal.operation(operation_id)
+        if record is None or record.is_terminal:
+            return
+        state, reason = _classify(record.state, error)
+        self._transition(operation_id, state, reason, outcome=_outcome_of(error))
+
+    def _transition(
+        self,
+        operation_id: str,
+        state: OperationState,
+        reason: str,
+        *,
+        trusted_terminal: bool = False,
+        outcome: str | None = None,
+        protocol_request_id: int | None = None,
+    ) -> OperationRecord:
+        """Advance one operation and publish the generation it moved to.
+
+        The durable write and the published generation happen under the same
+        machine lock, so the version a caller observes is never ahead of the
+        journal: if the write fails, the generation does not move either.
+        """
+        active = None if state in _SETTLED else operation_id
+        with self._machine.transition(active, f"operation {state}: {reason}") as generation:
+            record = self._journal.record_transition(
+                operation_id,
+                to_state=state,
+                generation=generation,
+                occurred_at=self._now(),
+                reason=reason,
+                trusted_terminal=trusted_terminal,
+                outcome=outcome,
+                protocol_request_id=protocol_request_id,
+            )
+        if self._operation_observer is not None:
+            self._operation_observer(record)
+        return record
+
+    def _require_deadline(self, deadline_ms: int) -> timedelta:
+        if isinstance(deadline_ms, bool) or not isinstance(deadline_ms, int):
+            raise DeadlineInvalidError("deadline must be an integer count of milliseconds")
+        if not self._min_deadline_ms <= deadline_ms <= self._max_deadline_ms:
+            raise DeadlineInvalidError(
+                f"deadline must be between {self._min_deadline_ms} and"
+                f" {self._max_deadline_ms} ms, got {deadline_ms}"
+            )
+        return timedelta(milliseconds=deadline_ms)
+
+
+_SETTLED = frozenset(
+    {
+        OperationState.SUCCEEDED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
+        OperationState.UNCERTAIN,
+    }
+)
+
+_NEVER_DISPATCHED = (
+    WorkerNotRunningError,
+    SessionNotReadyError,
+    QueueFullError,
+    StopInProgressError,
+)
+
+
+def _intent_for(action: OperationAction, body: RequestBody) -> WorkerIntent:
+    """Translate an allow-listed request body into a closed worker intent.
+
+    No caller can reach an arbitrary protocol command through this: the action
+    selects the intent, and the body must contain exactly its own field.
+    Capability and advertised-range validation belong to the typed operation
+    adapters in PI-DOMAIN-003.
+    """
+    if action is OperationAction.HOME:
+        if set(body) != {"axis"}:
+            raise ValidationError("home takes exactly an axis")
+        axis = body["axis"]
+        if not isinstance(axis, str):
+            raise ValidationError("home axis must be a string")
+        try:
+            return HomeIntent(HomeAxis(axis))
+        except ValueError as exc:
+            raise ValidationError(f"unknown home axis {axis!r}") from exc
+    if set(body) != {"slot"}:
+        raise ValidationError("sort takes exactly a slot")
+    slot = body["slot"]
+    if isinstance(slot, bool) or not isinstance(slot, int):
+        raise ValidationError("sort slot must be an integer")
+    try:
+        return SortIntent(slot)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
+def _is_trusted_terminal(completion: Completion) -> bool:
+    """Report whether this completion is a trusted correlated firmware terminal."""
+    try:
+        terminal = completion.terminal_response
+    except ParseError:
+        return False
+    return (
+        completion.succeeded
+        and terminal.kind is ResponseKind.DONE
+        and terminal.request_id == completion.request_id
+    )
+
+
+def _classify(current: OperationState, error: Exception) -> tuple[OperationState, str]:
+    """Map a failure to a fail-closed terminal state.
+
+    Anything that reached the wire without a trusted terminal is `UNCERTAIN`,
+    never failed: the daemon does not know whether the machine moved.
+    """
+    if isinstance(error, DeadlineExpiredError):
+        return OperationState.FAILED, "deadline expired before transmission"
+    if isinstance(error, PreemptedByStopError):
+        return OperationState.CANCELLED, "invalidated by a trusted priority stop"
+    if isinstance(error, PreemptedByRecoveryError):
+        return OperationState.CANCELLED, "discarded by session recovery; never replayed"
+    if isinstance(error, WorkerUncertainError):
+        return OperationState.UNCERTAIN, f"worker could not establish a trusted outcome: {error}"
+    if isinstance(error, _NEVER_DISPATCHED):
+        return OperationState.CANCELLED, f"never dispatched: {error}"
+    if current is not OperationState.RUNNING:
+        return OperationState.FAILED, f"failed before transmission: {error}"
+    return OperationState.UNCERTAIN, f"transmitted without a trusted terminal: {error}"
+
+
+def _outcome_of(error: Exception) -> str:
+    if isinstance(error, DomainError):
+        return error.code
+    return type(error).__name__
+
+
+def _translate(error: SerialWorkerError, operation_id: str) -> DomainError:
+    if isinstance(error, QueueFullError):
+        return OperationQueueFullError(str(error), operation_id=operation_id)
+    if isinstance(error, StopInProgressError):
+        return NotReadyError(f"priority stop is in progress: {error}", operation_id=operation_id)
+    return NotReadyError(str(error), operation_id=operation_id)

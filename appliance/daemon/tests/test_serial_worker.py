@@ -459,3 +459,41 @@ def test_importing_the_package_never_pulls_in_a_real_serial_backend() -> None:
     }
 
     assert "SerialTransport" not in module_scope_imports
+
+
+def test_a_dispatch_hook_runs_on_the_owner_thread_before_transmission() -> None:
+    worker, simulator, _transport, _factory_threads = _started_worker()
+    hook_threads: list[int] = []
+    commands_at_hook: list[int] = []
+
+    def hook() -> None:
+        hook_threads.append(threading.get_ident())
+        commands_at_hook.append(_sort_command_count(simulator))
+
+    completion = _completion(worker.submit(SortIntent(3), on_dispatch=hook))
+
+    assert hook_threads == [worker.worker_thread_id]
+    # The hook is the last moment before the first byte is written.
+    assert commands_at_hook == [0]
+    assert _sort_command_count(simulator) == 1
+    assert not completion.succeeded
+    worker.close(timeout=0.5)
+
+
+def test_a_refusing_dispatch_hook_withdraws_the_intent_without_touching_the_session() -> None:
+    worker, simulator, _transport, _factory_threads = _started_worker()
+
+    class Withdrawn(RuntimeError):
+        """Raised by a caller whose own preconditions expired while queued."""
+
+    def refuse() -> None:
+        raise Withdrawn("caller withdrew the intent")
+
+    future = worker.submit(SortIntent(3), on_dispatch=refuse)
+
+    with pytest.raises(Withdrawn):
+        future.result(timeout=0.5)
+    assert _sort_command_count(simulator) == 0
+    assert worker.session.state is ConnectionState.READY
+    assert isinstance(worker.submit(QueryIntent(QueryKind.STATUS)).result(timeout=0.5), Status)
+    worker.close(timeout=0.5)

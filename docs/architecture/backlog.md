@@ -81,8 +81,9 @@ conspicuous `SIMULATOR_ONLY` identity.
 fault/disconnect/malformed/timeout/event-gap/terminal-mismatch scenarios and
 strict replay of the existing v1/v2 golden files through `ProtocolClient`.
 The terminal-mismatch fixture proves fail-closed recovery at the protocol
-boundary; its daemon operation-result assertion remains pending until the
-operation domain exists under PI-DOMAIN-001.
+boundary. Its daemon operation-result assertion is closed by PI-DOMAIN-001:
+`test_an_unverified_terminal_makes_the_operation_uncertain` shows the injected
+mismatch resolving the durable operation as `UNCERTAIN`, never successful.
 
 - Fixtures cover stop, fault, disconnect, malformed frame, timeout and event-gap behavior.
 - Existing v1 and v2 golden transcripts replay through the intended `cs71_protocol` boundary.
@@ -141,15 +142,20 @@ in `cs71d.device`, which refuses POSIX opens while the DTR gate is
 
 **Goal:** admit and track durable operation lifecycle. **Implementation notes:** canonical request fingerprint includes action/body/actor policy; protocol `request_id` is diagnostic only. **Dependencies:** PI-DAEMON-002. **Hardware required:** No. **Size:** L.
 
-**Status:** In progress. The durable half is implemented as `cs71d.operations`
-(identity, lifecycle, canonical fingerprint) and `cs71d.journal` (`machine.db`
-with forward-only checksummed migrations). Admission, each transition and every
-terminal outcome are journal writes; `operation_transitions` is append-only and
-`SUCCEEDED` without a trusted firmware terminal is refused by the operation
-model and, independently, by a database trigger. Protocol `request_id` is
-stored only as diagnostic session-scoped metadata. Snapshot-generation
-admission, idempotent replay and worker dispatch follow in the next change,
-which also closes the deferred PI-SIM-002 terminal-mismatch assertion.
+**Status:** Implemented as `cs71d.operations` (identity, lifecycle, canonical
+fingerprint), `cs71d.journal` (`machine.db` with forward-only checksummed
+migrations), `cs71d.machine` (the machine-wide snapshot generation) and
+`cs71d.domain` (admission, dispatch and terminal outcome). Admission evaluates
+the idempotency key, the observed generation and readiness while holding the
+machine view still, and makes the operation durable before anything is
+enqueued, so a stale or duplicate request never reaches the controller. The
+generation belongs to the machine, not the session: connection confidence is
+folded into the same counter that operation transitions advance. `SUCCEEDED`
+without a trusted firmware terminal is refused by the operation model and,
+independently, by a database trigger, and a transmitted command without a
+trusted terminal resolves as `UNCERTAIN` rather than failed. Protocol
+`request_id` is stored only as diagnostic session-scoped metadata. Capability
+and advertised-range validation remain with PI-DOMAIN-003.
 
 - Each admitted command has a UUID `operation_id`, finite deadline and durable lifecycle transition record.
 - Same idempotency key and equivalent request returns the original operation; a differing request conflicts.

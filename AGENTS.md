@@ -26,9 +26,11 @@ hardware-evidence boundaries below.
 
 The Raspberry Pi application currently has approved architecture, an executable
 API contract, initial daemon/web workspace scaffolds, a single-owner serial
-worker, published session state with conservative reconnect, and a durable
-operation journal. Operation admission, the internal API and operator features
-are not implemented; do not describe it as deployed or qualified.
+worker, published session state with conservative reconnect, and durable
+operations with idempotent admission against a machine-wide snapshot
+generation. Journal-failure and priority-stop semantics, the internal API and
+operator features are not implemented; do not describe it as deployed or
+qualified.
 
 ## Current validated baseline
 
@@ -39,7 +41,7 @@ are not implemented; do not describe it as deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 112 passing pytest tests.
+- `cs71d` daemon package: 141 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -166,6 +168,18 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   a command that was never transmitted cannot have a firmware terminal.
 - Journal migrations are forward-only and checksummed. A newer or diverged
   schema refuses to open rather than downgrading in place.
+- The snapshot generation belongs to the machine view, not to the serial
+  session. `SessionState` contributes connection confidence into
+  `MachineState`; it does not own the version callers compare against.
+- Admission evaluates the idempotency key, the observed generation and
+  readiness while the machine view is held still, and journals the operation
+  before anything is enqueued. A stale or duplicate request must never reach
+  the controller.
+- Lock order is `MachineState` then `Journal` then `SerialWorker`, never the
+  reverse. An admitting thread releases the machine lock before enqueueing,
+  because the worker thread enters that lock while holding nothing.
+- A command that reached the wire without a trusted terminal is `UNCERTAIN`,
+  never `FAILED`: the daemon does not know whether the machine moved.
 - Simulator code uses explicit clock advancement, carries a conspicuous
   `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
   evidence.

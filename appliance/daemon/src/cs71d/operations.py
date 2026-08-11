@@ -33,9 +33,16 @@ class DomainError(RuntimeError):
     ``code`` is the machine-readable error code from
     ``docs/architecture/api-and-events.md``. It is part of the daemon's
     contract, so subclasses set it deliberately rather than incidentally.
+
+    ``operation_id`` is present when the rejection already produced a durable
+    operation, so a caller can look up what was recorded on its behalf.
     """
 
     code: ClassVar[str] = "INTERNAL_ERROR"
+
+    def __init__(self, message: str, *, operation_id: str | None = None) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
 
 
 class ValidationError(DomainError):
