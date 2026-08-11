@@ -181,6 +181,73 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - Do not propagate contributor-specific pins, mechanics, or board assumptions
   into canonical code.
 - Update documentation and fixtures when behavior, resources, commands,
-  architecture decisions, or qualification status change.
+  architecture decisions, or qualification status change. The required files
+  are listed under "Ways of working" below; do not infer the set from what an
+  earlier commit happened to touch.
 - Keep changes narrowly scoped; do not rewrite unrelated user changes or
   silently tighten legacy behavior.
+
+## Ways of working
+
+These are requirements, not suggestions. A task is not complete until every
+applicable item is satisfied.
+
+### Before implementing
+
+- Read the current source of any library you are about to build on, and design
+  against what it actually does. `cs71_protocol` in particular already owns
+  v1/v2/CRC recovery, correlation, and stop semantics; wrapping it is correct,
+  duplicating it is not.
+- Verify an assumption about behavior by running it, not by inference. Probing
+  a simulator scenario before writing assertions is cheaper than debugging a
+  test that encodes a wrong belief.
+- Confirm the backlog entry's acceptance criteria and dependencies, and check
+  the architecture documents for the canonical model before inventing one.
+  `backlog.md` may state a subset; `docs/architecture/` is canonical.
+
+### Finishing a task
+
+Update every file below that the change touches. Missing one leaves the
+repository describing a state that no longer exists:
+
+| File | Update when |
+| --- | --- |
+| `docs/architecture/backlog.md` | A task's status or acceptance evidence changes |
+| `docs/architecture/roadmap.md` | Implementation status or the active critical-path step changes |
+| `docs/architecture/traceability.md` | The requirement-to-task or evidence mapping changes |
+| `issues.md` | An appliance checklist item closes, or a recorded test count changes |
+| `README.md` | Component status or a published test/resource count changes |
+| `AGENTS.md` | An invariant, boundary, repository-map entry, or baseline number changes |
+| Workspace `README.md` | The workspace gains or changes a capability |
+
+- Run the smallest gate set that covers the change, then every affected
+  workspace's full gate set before declaring completion. For daemon work that
+  is `ruff format --check`, `ruff check`, `mypy`, and `pytest`.
+- Report gate results as observed. If a gate cannot run locally, say which one
+  and why rather than omitting it.
+
+### Tests
+
+- Tests that observe a worker thread must await a published transition through
+  an observer or event. Do not sleep, poll, or rely on a future's completion to
+  imply that the thread finished its follow-up work; the worker resolves a
+  caller's future before it finishes recovering.
+- Never advance simulated time with a wall-clock sleep. Use explicit clock
+  advancement.
+- Re-run a suite containing concurrency tests several times before declaring it
+  stable.
+- State the evidence class. Simulator results are labelled and never presented
+  as hardware evidence.
+
+### Branch and PR flow
+
+- Branch from an up-to-date `main`; never commit directly to `main`.
+- One reviewable change per PR. Land documentation for a change with that
+  change, not afterwards.
+- The PR body states what changed, how each acceptance criterion is met, the
+  evidence class, and any deliberately deferred work.
+- Wait for CI to pass before merging. Merge with a merge commit, then delete
+  the branch locally and on the remote.
+- Root-level `*.md` changes do not match the CI path filters, so a docs-only PR
+  legitimately reports no checks. Confirm that is the reason rather than
+  assuming a broken workflow.
