@@ -51,6 +51,18 @@ class ValidationError(DomainError):
     code: ClassVar[str] = "VALIDATION_FAILED"
 
 
+class NotReadyError(DomainError):
+    """A session, capability, homing or fault precondition is not met."""
+
+    code: ClassVar[str] = "NOT_READY"
+
+
+class UnsupportedOperationError(DomainError):
+    """The controller does not advertise this operation, or its gate is open."""
+
+    code: ClassVar[str] = "UNSUPPORTED"
+
+
 class InvalidTransitionError(DomainError):
     """A lifecycle transition the operation model does not permit.
 
@@ -65,6 +77,7 @@ class OperationAction(StrEnum):
 
     HOME = "home"
     SORT = "sort"
+    FEED = "feed"
     STOP = "stop"
 
 
@@ -107,9 +120,12 @@ MAX_IDEMPOTENCY_KEY_LENGTH = 200
 MAX_BODY_FIELDS = 16
 MAX_BODY_STRING_LENGTH = 128
 MAX_REASON_LENGTH = 512
+MAX_TERMINAL_FIELDS = 16
+MAX_TERMINAL_VALUE_LENGTH = 64
 
 _ACTOR_FIELD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]*\Z")
 _BODY_FIELD = re.compile(r"[a-z][a-z0-9_]*\Z")
+_TERMINAL_FIELD = re.compile(r"[a-z][a-z0-9_]*\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[\x21-\x7e]+\Z")
 
 type BodyValue = str | int | bool | None
@@ -162,6 +178,7 @@ class OperationRecord:
     outcome: str | None = None
     terminal_at: datetime | None = None
     protocol_request_id: int | None = None
+    terminal_fields: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -182,6 +199,10 @@ class OperationRecord:
             raise ValidationError("only a succeeded operation records a trusted terminal")
         if self.state is OperationState.SUCCEEDED and not self.trusted_terminal:
             raise ValidationError("a succeeded operation requires a trusted firmware terminal")
+        if self.terminal_fields is not None:
+            object.__setattr__(
+                self, "terminal_fields", require_terminal_fields(self.terminal_fields)
+            )
 
     @property
     def is_terminal(self) -> bool:
@@ -237,6 +258,23 @@ def require_idempotency_key(key: str) -> str:
             f"idempotency key must be at most {MAX_IDEMPOTENCY_KEY_LENGTH} characters"
         )
     return key
+
+
+def require_terminal_fields(fields: Mapping[str, str]) -> Mapping[str, str]:
+    """Validate the firmware terminal fields recorded against an operation.
+
+    These are protocol-supplied, so they are bounded before they are stored:
+    the journal keeps evidence of what the controller reported, not unbounded
+    raw serial content.
+    """
+    if len(fields) > MAX_TERMINAL_FIELDS:
+        raise ValidationError(f"a terminal carries at most {MAX_TERMINAL_FIELDS} fields")
+    for name, value in fields.items():
+        if not isinstance(name, str) or not _TERMINAL_FIELD.fullmatch(name):
+            raise ValidationError(f"terminal field {name!r} is not a protocol field name")
+        if not isinstance(value, str) or len(value) > MAX_TERMINAL_VALUE_LENGTH:
+            raise ValidationError(f"terminal field {name!r} has an unusable value")
+    return dict(fields)
 
 
 def canonical_request(action: OperationAction, body: RequestBody, actor: Actor) -> str:

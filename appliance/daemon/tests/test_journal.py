@@ -4,7 +4,7 @@ import ast
 import sqlite3
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -84,6 +84,7 @@ def _run_to_terminal(
     *,
     to_state: OperationState,
     trusted_terminal: bool = False,
+    terminal_fields: Mapping[str, str] | None = None,
 ) -> OperationRecord:
     journal.record_transition(
         operation.operation_id,
@@ -108,6 +109,7 @@ def _run_to_terminal(
         reason=f"controller reported {to_state}",
         trusted_terminal=trusted_terminal,
         outcome="done",
+        terminal_fields=terminal_fields,
     )
 
 
@@ -488,3 +490,76 @@ def test_admission_and_transitions_are_safe_from_several_threads(journal: Journa
         and journal.transitions(operation.operation_id)[-1].to_state is OperationState.ACCEPTED
         for operation in operations
     )
+
+
+def test_an_existing_database_migrates_forward_without_losing_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reopening an older schema applies the pending migration in place."""
+    database = tmp_path / "machine.db"
+    monkeypatch.setattr("cs71d.journal.MIGRATIONS", MIGRATIONS[:1])
+    with Journal.open(database, now=lambda: CREATED) as older:
+        assert older.schema_version == 1
+    monkeypatch.undo()
+
+    # Written the way the older release would have, without the newer column.
+    operation_id = new_operation_id()
+    with _raw(database) as raw:
+        raw.execute(
+            "INSERT INTO operations (operation_id, action, fingerprint, state, generation,"
+            " created_at, deadline_at, actor_user_id, actor_role)"
+            " VALUES (?, 'sort', ?, 'queued', 7, ?, ?, ?, ?)",
+            (
+                operation_id,
+                FINGERPRINT,
+                CREATED.isoformat(),
+                DEADLINE.isoformat(),
+                OPERATOR.user_id,
+                OPERATOR.role,
+            ),
+        )
+        raw.execute(
+            "INSERT INTO operation_transitions"
+            " (operation_id, from_state, to_state, generation, occurred_at, reason)"
+            " VALUES (?, NULL, 'queued', 7, ?, 'admitted by an older release')",
+            (operation_id, CREATED.isoformat()),
+        )
+
+    with Journal.open(database, now=lambda: CREATED) as upgraded:
+        assert upgraded.schema_version == SCHEMA_VERSION
+        carried = upgraded.operation(operation_id)
+        assert carried is not None
+        assert carried.state is OperationState.QUEUED
+        assert carried.terminal_fields is None
+        assert len(upgraded.transitions(operation_id)) == 1
+
+
+def test_a_terminal_records_the_fields_the_controller_reported(journal: Journal) -> None:
+    operation = _admit(journal, _operation())
+
+    final = _run_to_terminal(
+        journal,
+        operation,
+        to_state=OperationState.SUCCEEDED,
+        trusted_terminal=True,
+        terminal_fields={"slot": "3", "elapsed_ms": "25"},
+    )
+
+    assert final.terminal_fields == {"slot": "3", "elapsed_ms": "25"}
+    reread = journal.operation(operation.operation_id)
+    assert reread is not None
+    assert reread.terminal_fields == {"slot": "3", "elapsed_ms": "25"}
+
+
+def test_unusable_terminal_fields_are_refused(journal: Journal) -> None:
+    operation = _admit(journal, _operation())
+
+    with pytest.raises(ValidationError):
+        _run_to_terminal(
+            journal,
+            operation,
+            to_state=OperationState.SUCCEEDED,
+            trusted_terminal=True,
+            terminal_fields={"Slot": "3"},
+        )

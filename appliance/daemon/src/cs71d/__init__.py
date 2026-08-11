@@ -1,5 +1,6 @@
 """CS7.1 appliance daemon package."""
 
+from .adapters import FEED_LIFECYCLE_GATE, intent_for, require_supported
 from .config import Backend, ConfigError, DaemonConfig, Profile, load_config
 from .device import (
     DTR_GATE_STATUS,
@@ -16,7 +17,6 @@ from .domain import (
     DeadlineInvalidError,
     IdempotencyConflictError,
     JournalUnavailableError,
-    NotReadyError,
     OperationDomain,
     OperationQueueFullError,
     StaleGenerationError,
@@ -28,16 +28,24 @@ from .journal import (
     JournalError,
     JournalSchemaError,
 )
-from .machine import FaultState, MachineSnapshot, MachineState
+from .machine import (
+    FaultState,
+    FirmwareProfile,
+    MachineReadiness,
+    MachineSnapshot,
+    MachineState,
+)
 from .operations import (
     Actor,
     DomainError,
     IdempotencyRecord,
     InvalidTransitionError,
+    NotReadyError,
     OperationAction,
     OperationRecord,
     OperationState,
     TransitionRecord,
+    UnsupportedOperationError,
     ValidationError,
     canonical_request,
     new_operation_id,
@@ -53,6 +61,7 @@ from .serial_worker import (
     QueueFullError,
     SerialWorker,
     SessionNotReadyError,
+    SessionProfile,
     SortIntent,
     StopInProgressError,
     WorkerNotRunningError,
@@ -85,7 +94,9 @@ __all__ = [
     "DevicePolicyError",
     "DomainError",
     "DtrGateError",
+    "FEED_LIFECYCLE_GATE",
     "FaultState",
+    "FirmwareProfile",
     "FixtureReplayTransport",
     "HomeAxis",
     "HomeIntent",
@@ -99,6 +110,7 @@ __all__ = [
     "MAX_DEADLINE_MS",
     "MIGRATIONS",
     "MIN_DEADLINE_MS",
+    "MachineReadiness",
     "MachineSnapshot",
     "MachineState",
     "ManualClock",
@@ -119,6 +131,7 @@ __all__ = [
     "SIMULATOR_EVIDENCE_CLASS",
     "SerialWorker",
     "SessionNotReadyError",
+    "SessionProfile",
     "SessionSnapshot",
     "SessionState",
     "SimulatorConfig",
@@ -127,6 +140,7 @@ __all__ = [
     "StaleGenerationError",
     "StopInProgressError",
     "TransitionRecord",
+    "UnsupportedOperationError",
     "ValidationError",
     "WorkerNotRunningError",
     "WorkerShutdownTimeout",
@@ -135,7 +149,9 @@ __all__ = [
     "WorkerUncertainError",
     "canonical_request",
     "create_transport_factory",
+    "intent_for",
     "load_config",
     "new_operation_id",
     "request_fingerprint",
+    "require_supported",
 ]

@@ -29,6 +29,35 @@ class FaultState(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class FirmwareProfile:
+    """What the controller advertises, as observed at activation.
+
+    These are the limits the daemon validates commands against. They are read
+    from the controller rather than configured, so a firmware build that
+    advertises less cannot be asked for more.
+    """
+
+    protocol_version: int
+    slot_max: int
+    slot_count: int
+    queue_depth: int
+    feed_sensor: bool
+    feed_home: bool
+    sort_home: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MachineReadiness:
+    """The observed physical readiness the daemon must not assume."""
+
+    feed_homed: bool
+    sort_homed: bool
+    fault_code: int
+    mode: str
+    phase: str
+
+
+@dataclass(frozen=True, slots=True)
 class MachineSnapshot:
     """An immutable published view of the machine at one generation."""
 
@@ -38,6 +67,8 @@ class MachineSnapshot:
     active_operation_id: str | None = None
     fault: FaultState = FaultState.CLEAR
     journal_available: bool = True
+    firmware: FirmwareProfile | None = None
+    readiness: MachineReadiness | None = None
 
     @property
     def admits_work(self) -> bool:
@@ -115,6 +146,24 @@ class MachineState:
                 return self._snapshot
             return self._publish(
                 replace(self._snapshot, connection=session.state, reason=session.reason)
+            )
+
+    def observe_profile(
+        self,
+        firmware: FirmwareProfile,
+        readiness: MachineReadiness,
+    ) -> MachineSnapshot:
+        """Fold observed controller capabilities and readiness into the view."""
+        with self._lock:
+            if (firmware, readiness) == (self._snapshot.firmware, self._snapshot.readiness):
+                return self._snapshot
+            return self._publish(
+                replace(
+                    self._snapshot,
+                    firmware=firmware,
+                    readiness=readiness,
+                    reason="observed controller capabilities and readiness",
+                )
             )
 
     def record_journal_fault(self, reason: str) -> MachineSnapshot:

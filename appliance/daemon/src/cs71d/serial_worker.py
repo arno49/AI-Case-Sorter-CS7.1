@@ -113,6 +113,19 @@ class WorkerShutdownTimeout(SerialWorkerError):
     """The worker thread did not stop within the caller's finite deadline."""
 
 
+@dataclass(frozen=True, slots=True)
+class SessionProfile:
+    """The required snapshots gathered before a session is published READY.
+
+    `runtime-and-domain.md` requires that ``READY`` means a verified session
+    *and* that required snapshots exist. These are what the daemon validates
+    against, so they are observed from the controller rather than assumed.
+    """
+
+    capabilities: Capabilities
+    status: Status
+
+
 @dataclass(slots=True)
 class _WorkItem:
     intent: WorkerIntent
@@ -143,6 +156,7 @@ class SerialWorker:
         interrupt_poll_interval: float = 0.01,
         max_reconnect_attempts: int = 1,
         session_observer: Callable[[SessionSnapshot], None] | None = None,
+        profile_observer: Callable[[SessionProfile], None] | None = None,
     ) -> None:
         if normal_capacity < 1:
             raise ValueError("normal_capacity must be positive")
@@ -158,6 +172,7 @@ class SerialWorker:
         self._interrupt_poll_interval = interrupt_poll_interval
         self._max_reconnect_attempts = max_reconnect_attempts
         self._session = SessionState(observer=session_observer)
+        self._profile_observer = profile_observer
         self._condition = threading.Condition()
         self._state = WorkerState.NEW
         self._normal: deque[_WorkItem] = deque()
@@ -357,7 +372,16 @@ class SerialWorker:
         self._session.transition(ConnectionState.ACTIVATING_V2, "negotiating protocol v2")
         if not client.activate():
             raise WorkerStartupError("controller does not provide protocol v2")
+        # Gather the required snapshots before publishing READY: what the
+        # controller advertises is what the daemon validates commands against.
+        self._publish_profile(client)
         self._session.transition(ConnectionState.READY, "verified v2 session")
+
+    def _publish_profile(self, client: ProtocolClient) -> None:
+        if self._profile_observer is None:
+            return
+        profile = SessionProfile(client.get_capabilities(), client.get_status())
+        self._profile_observer(profile)
 
     def _recover(self, link: _Link, fault: Exception) -> _Link | None:
         """Return a usable link, or ``None`` when the session stays uncertain.
@@ -481,6 +505,13 @@ class SerialWorker:
                 self._resolve_stop(None)
             return None
         item.future.set_result(result)
+        if isinstance(item.intent, HomeIntent | SortIntent):
+            # A completed movement changes what the controller will accept
+            # next, so re-observe readiness instead of inferring it.
+            try:
+                self._publish_profile(client)
+            except Exception as exc:
+                return exc if isinstance(exc, ProtocolError | OSError) else None
         return None
 
     def _dispatch(self, client: ProtocolClient, intent: WorkerIntent) -> WorkerResult:

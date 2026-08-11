@@ -27,10 +27,10 @@ hardware-evidence boundaries below.
 The Raspberry Pi application currently has approved architecture, an executable
 API contract, initial daemon/web workspace scaffolds, a single-owner serial
 worker, published session state with conservative reconnect, and durable
-operations with idempotent admission, fail-closed durability and an
-attributable priority stop. Typed operation adapters, the internal API and
-operator features are not implemented; do not describe it as deployed or
-qualified.
+operations with idempotent admission, fail-closed durability, an attributable
+priority stop, and capability-validated home and sort adapters. Feed, the
+internal API and operator features are not implemented; do not describe it as
+deployed or qualified.
 
 ## Current validated baseline
 
@@ -41,7 +41,7 @@ qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 151 passing pytest tests.
+- `cs71d` daemon package: 190 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -184,6 +184,12 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   motion with `JOURNAL_UNAVAILABLE`. It does not self-clear; durability loss
   needs operator or service intervention. Never substitute an in-memory claim
   of success for a durable record.
+- Validate a command against what the controller advertised, not against what
+  the daemon assumes. The worker gathers capabilities and status before
+  publishing `READY` and re-observes them after each completed movement;
+  capability, gate and readiness checks run before any serial I/O.
+- The v2 feed lifecycle gate `FEED_LIFECYCLE_GATE` is `NOT_EXECUTED`. Feed
+  returns `UNSUPPORTED` and no simulator run may close that gate.
 - Priority stop is a durable attributable operation that skips the readiness
   check ordinary motion must pass and may be requested against a stale or
   uncertain view. Without its trusted exact `stopped` terminal, the stop and

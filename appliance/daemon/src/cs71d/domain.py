@@ -18,40 +18,39 @@ waiting on the worker.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from cs71_protocol import Completion, ParseError, ResponseKind
 
+from .adapters import intent_for, require_supported
 from .journal import Journal, JournalError
-from .machine import MachineSnapshot, MachineState
+from .machine import FirmwareProfile, MachineReadiness, MachineSnapshot, MachineState
 from .operations import (
     Actor,
     DomainError,
     IdempotencyRecord,
+    NotReadyError,
     OperationAction,
     OperationRecord,
     OperationState,
     RequestBody,
-    ValidationError,
     new_operation_id,
     request_fingerprint,
     require_idempotency_key,
 )
 from .serial_worker import (
-    HomeAxis,
-    HomeIntent,
     PreemptedByRecoveryError,
     PreemptedByStopError,
     QueueFullError,
     SerialWorker,
     SerialWorkerError,
     SessionNotReadyError,
-    SortIntent,
+    SessionProfile,
     StopInProgressError,
-    WorkerIntent,
     WorkerNotRunningError,
     WorkerResult,
     WorkerUncertainError,
@@ -73,12 +72,6 @@ class IdempotencyConflictError(DomainError):
     """One idempotency key was reused for a different canonical request."""
 
     code = "IDEMPOTENCY_CONFLICT"
-
-
-class NotReadyError(DomainError):
-    """A session, fault or admission precondition is not met."""
-
-    code = "NOT_READY"
 
 
 class OperationQueueFullError(DomainError):
@@ -105,7 +98,15 @@ class JournalUnavailableError(DomainError):
     code = "JOURNAL_UNAVAILABLE"
 
 
-type WorkerFactory = Callable[[Callable[[SessionSnapshot], None]], SerialWorker]
+@dataclass(frozen=True, slots=True)
+class WorkerObservers:
+    """The callbacks a worker must publish into the machine view."""
+
+    session: Callable[[SessionSnapshot], None]
+    profile: Callable[[SessionProfile], None]
+
+
+type WorkerFactory = Callable[[WorkerObservers], SerialWorker]
 
 
 class OperationDomain:
@@ -137,7 +138,9 @@ class OperationDomain:
         self._operation_observer = operation_observer
         # The worker publishes connection state into the machine view, so it
         # must be constructed with the observer already wired.
-        self._worker = worker_factory(self._observe_session)
+        self._worker = worker_factory(
+            WorkerObservers(session=self._observe_session, profile=self._observe_profile)
+        )
 
     @property
     def worker(self) -> SerialWorker:
@@ -165,6 +168,29 @@ class OperationDomain:
         """Fold session confidence into the machine view, on the worker thread."""
         self._machine.observe_connection(session)
 
+    def _observe_profile(self, profile: SessionProfile) -> None:
+        """Translate observed protocol snapshots into the machine view."""
+        capabilities = profile.capabilities
+        status = profile.status
+        self._machine.observe_profile(
+            FirmwareProfile(
+                protocol_version=capabilities.protocol,
+                slot_max=capabilities.slot_max,
+                slot_count=capabilities.slot_count,
+                queue_depth=capabilities.queue_depth,
+                feed_sensor=capabilities.feed_sensor,
+                feed_home=capabilities.feed_home,
+                sort_home=capabilities.sort_home,
+            ),
+            MachineReadiness(
+                feed_homed=status.feed_homed,
+                sort_homed=status.sort_homed,
+                fault_code=status.fault_code,
+                mode=status.mode,
+                phase=status.phase,
+            ),
+        )
+
     def submit(
         self,
         action: OperationAction,
@@ -181,7 +207,7 @@ class OperationDomain:
         replayed idempotency key returns the original operation, which may
         already be terminal.
         """
-        intent = _intent_for(action, body)
+        intent = intent_for(action, body)
         fingerprint = request_fingerprint(action, body, actor)
         key = require_idempotency_key(idempotency_key)
         window = self._require_deadline(deadline_ms)
@@ -200,6 +226,9 @@ class OperationDomain:
                     )
                 if not view.admits_work:
                     raise NotReadyError(f"machine does not admit work: {view.connection}")
+                # Capability, gate and readiness checks run against the frozen
+                # view, before the operation exists and before any enqueue.
+                require_supported(intent, view)
 
                 accepted = self._admit(
                     action,
@@ -419,6 +448,7 @@ class OperationDomain:
                 trusted_terminal=True,
                 outcome="done",
                 protocol_request_id=result.request_id,
+                terminal_fields=result.terminal_fields,
             )
             return
         fault = result.error
@@ -428,6 +458,7 @@ class OperationDomain:
             "firmware reported a correlated error terminal",
             outcome="error" if fault is None else fault.name,
             protocol_request_id=result.request_id,
+            terminal_fields=result.terminal_fields,
         )
 
     def _resolve(self, operation_id: str, error: Exception) -> None:
@@ -453,6 +484,7 @@ class OperationDomain:
         trusted_terminal: bool = False,
         outcome: str | None = None,
         protocol_request_id: int | None = None,
+        terminal_fields: Mapping[str, str] | None = None,
     ) -> None:
         """Record an outcome that has nowhere else to go.
 
@@ -469,6 +501,7 @@ class OperationDomain:
                 trusted_terminal=trusted_terminal,
                 outcome=outcome,
                 protocol_request_id=protocol_request_id,
+                terminal_fields=terminal_fields,
             )
         except JournalError:
             return
@@ -482,6 +515,7 @@ class OperationDomain:
         trusted_terminal: bool = False,
         outcome: str | None = None,
         protocol_request_id: int | None = None,
+        terminal_fields: Mapping[str, str] | None = None,
     ) -> OperationRecord:
         """Advance one operation and publish the generation it moved to.
 
@@ -499,6 +533,7 @@ class OperationDomain:
                 trusted_terminal=trusted_terminal,
                 outcome=outcome,
                 protocol_request_id=protocol_request_id,
+                terminal_fields=terminal_fields,
             )
         except JournalError as exc:
             self._machine.record_journal_fault(
@@ -519,6 +554,7 @@ class OperationDomain:
         trusted_terminal: bool,
         outcome: str | None,
         protocol_request_id: int | None,
+        terminal_fields: Mapping[str, str] | None,
     ) -> OperationRecord:
         with self._machine.transition(active, f"operation {state}: {reason}") as generation:
             record = self._journal.record_transition(
@@ -530,6 +566,7 @@ class OperationDomain:
                 trusted_terminal=trusted_terminal,
                 outcome=outcome,
                 protocol_request_id=protocol_request_id,
+                terminal_fields=terminal_fields,
             )
         return record
 
@@ -559,37 +596,6 @@ _NEVER_DISPATCHED = (
     QueueFullError,
     StopInProgressError,
 )
-
-
-def _intent_for(action: OperationAction, body: RequestBody) -> WorkerIntent:
-    """Translate an allow-listed request body into a closed worker intent.
-
-    No caller can reach an arbitrary protocol command through this: the action
-    selects the intent, and the body must contain exactly its own field.
-    Capability and advertised-range validation belong to the typed operation
-    adapters in PI-DOMAIN-003.
-    """
-    if action is OperationAction.STOP:
-        raise ValidationError("a priority stop is admitted through OperationDomain.stop")
-    if action is OperationAction.HOME:
-        if set(body) != {"axis"}:
-            raise ValidationError("home takes exactly an axis")
-        axis = body["axis"]
-        if not isinstance(axis, str):
-            raise ValidationError("home axis must be a string")
-        try:
-            return HomeIntent(HomeAxis(axis))
-        except ValueError as exc:
-            raise ValidationError(f"unknown home axis {axis!r}") from exc
-    if set(body) != {"slot"}:
-        raise ValidationError("sort takes exactly a slot")
-    slot = body["slot"]
-    if isinstance(slot, bool) or not isinstance(slot, int):
-        raise ValidationError("sort slot must be an integer")
-    try:
-        return SortIntent(slot)
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
 
 
 def _is_trusted_terminal(completion: Completion) -> bool:
