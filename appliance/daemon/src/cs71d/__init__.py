@@ -15,6 +15,7 @@ from .domain import (
     DeadlineExpiredError,
     DeadlineInvalidError,
     IdempotencyConflictError,
+    JournalUnavailableError,
     NotReadyError,
     OperationDomain,
     OperationQueueFullError,
@@ -27,7 +28,7 @@ from .journal import (
     JournalError,
     JournalSchemaError,
 )
-from .machine import MachineSnapshot, MachineState
+from .machine import FaultState, MachineSnapshot, MachineState
 from .operations import (
     Actor,
     DomainError,
@@ -71,9 +72,9 @@ from .simulator import (
 )
 
 __all__ = [
-    "Backend",
     "Actor",
     "AdverseScenario",
+    "Backend",
     "ConfigError",
     "ConnectionState",
     "DEFAULT_IDEMPOTENCY_TTL",
@@ -84,6 +85,7 @@ __all__ = [
     "DevicePolicyError",
     "DomainError",
     "DtrGateError",
+    "FaultState",
     "FixtureReplayTransport",
     "HomeAxis",
     "HomeIntent",
@@ -93,6 +95,7 @@ __all__ = [
     "Journal",
     "JournalError",
     "JournalSchemaError",
+    "JournalUnavailableError",
     "MAX_DEADLINE_MS",
     "MIGRATIONS",
     "MIN_DEADLINE_MS",
@@ -114,12 +117,12 @@ __all__ = [
     "QueueFullError",
     "SCHEMA_VERSION",
     "SIMULATOR_EVIDENCE_CLASS",
+    "SerialWorker",
     "SessionNotReadyError",
     "SessionSnapshot",
     "SessionState",
     "SimulatorConfig",
     "SimulatorTransport",
-    "SerialWorker",
     "SortIntent",
     "StaleGenerationError",
     "StopInProgressError",

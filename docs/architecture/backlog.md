@@ -167,6 +167,20 @@ and advertised-range validation remain with PI-DOMAIN-003.
 
 **Goal:** make durability and stop preemption fail closed. **Implementation notes:** persist intent/transition before reporting durable state; route stop through protocol library universal-stop behavior. **Dependencies:** PI-DOMAIN-001. **Hardware required:** No. **Size:** M.
 
+**Status:** Implemented in `cs71d.machine` and `cs71d.domain`. A refused
+journal write latches the machine view as undurable with a `LATCHED` fault; it
+stops admitting work and rejects new motion with `JOURNAL_UNAVAILABLE`. It does
+not self-clear, because durability loss needs operator or service
+intervention. The dispatch gate means a lifecycle write that cannot be recorded
+stops the command before transmission, and a terminal that cannot be recorded
+leaves the operation non-successful rather than being claimed in memory.
+Priority stop is a durable attributable operation admitted through
+`OperationDomain.stop`; it skips the readiness check ordinary motion must
+pass, accepts `*` for the observed generation, and is routed through the
+protocol library's exact universal stop. A stop is refused when it cannot be
+recorded: an unattributable software stop is a claim this daemon does not make,
+and the physical E-stop is the independent safety device.
+
 - Injected journal write failure rejects new motion with `JOURNAL_UNAVAILABLE` and changes readiness/fault status.
 - Journal failure cannot yield an unrecorded successful operation in tests.
 - Stop bypasses queued normal work and creates an attributable stop operation.

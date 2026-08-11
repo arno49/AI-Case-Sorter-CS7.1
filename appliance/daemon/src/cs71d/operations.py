@@ -65,6 +65,7 @@ class OperationAction(StrEnum):
 
     HOME = "home"
     SORT = "sort"
+    STOP = "stop"
 
 
 class OperationState(StrEnum):

@@ -50,7 +50,13 @@ graph LR
   generation, and `SUCCEEDED` requires a trusted correlated firmware terminal.
   An unverified terminal now resolves as `UNCERTAIN`, which closes the
   assertion PI-SIM-002 deferred.
-- PI-DOMAIN-002 journal failure and priority-stop semantics is the active
+- PI-DOMAIN-002 is complete: a refused journal write latches the machine as
+  undurable, blocks new motion with `JOURNAL_UNAVAILABLE` and cannot yield an
+  unrecorded successful operation, and a lifecycle write that fails stops the
+  command before transmission. Priority stop is an attributable durable
+  operation that bypasses queued normal work; without its trusted exact
+  `stopped` terminal, the stop and the work it affected are `UNCERTAIN`.
+- PI-DOMAIN-003 typed home, sort and feed operation adapters is the active
   critical-path implementation step. PI-WEB-001 remains independently
   available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence

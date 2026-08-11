@@ -27,8 +27,8 @@ hardware-evidence boundaries below.
 The Raspberry Pi application currently has approved architecture, an executable
 API contract, initial daemon/web workspace scaffolds, a single-owner serial
 worker, published session state with conservative reconnect, and durable
-operations with idempotent admission against a machine-wide snapshot
-generation. Journal-failure and priority-stop semantics, the internal API and
+operations with idempotent admission, fail-closed durability and an
+attributable priority stop. Typed operation adapters, the internal API and
 operator features are not implemented; do not describe it as deployed or
 qualified.
 
@@ -41,7 +41,7 @@ qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 141 passing pytest tests.
+- `cs71d` daemon package: 151 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -180,6 +180,15 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   because the worker thread enters that lock while holding nothing.
 - A command that reached the wire without a trusted terminal is `UNCERTAIN`,
   never `FAILED`: the daemon does not know whether the machine moved.
+- A refused journal write latches the machine as undurable and blocks new
+  motion with `JOURNAL_UNAVAILABLE`. It does not self-clear; durability loss
+  needs operator or service intervention. Never substitute an in-memory claim
+  of success for a durable record.
+- Priority stop is a durable attributable operation that skips the readiness
+  check ordinary motion must pass and may be requested against a stale or
+  uncertain view. Without its trusted exact `stopped` terminal, the stop and
+  the work it affected are `UNCERTAIN`, never stopped-successful. It is still
+  a software stop, not an E-stop.
 - Simulator code uses explicit clock advancement, carries a conspicuous
   `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
   evidence.

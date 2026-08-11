@@ -14,8 +14,18 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 from .session import ConnectionState, SessionSnapshot
+
+
+class FaultState(StrEnum):
+    """Machine fault confidence, independent of session confidence."""
+
+    CLEAR = "clear"
+    ACTIVE = "active"
+    LATCHED = "latched"
+    UNCERTAIN = "uncertain"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,15 +36,23 @@ class MachineSnapshot:
     connection: ConnectionState
     reason: str
     active_operation_id: str | None = None
+    fault: FaultState = FaultState.CLEAR
+    journal_available: bool = True
 
     @property
     def admits_work(self) -> bool:
-        """Only a verified, fully activated session admits new machine work.
+        """Report whether new state-changing work may be admitted.
 
-        Readiness is session confidence. It does not assert homing, safe
-        surroundings, or permission to move.
+        This is session confidence plus durability, not permission to move: it
+        does not assert homing or safe surroundings. A machine that cannot
+        record what it is about to do does not admit new work, because an
+        unjournaled command has no audit trail and no recoverable outcome.
         """
-        return self.connection is ConnectionState.READY
+        return (
+            self.connection is ConnectionState.READY
+            and self.journal_available
+            and self.fault is FaultState.CLEAR
+        )
 
 
 class MachineState:
@@ -97,6 +115,26 @@ class MachineState:
                 return self._snapshot
             return self._publish(
                 replace(self._snapshot, connection=session.state, reason=session.reason)
+            )
+
+    def record_journal_fault(self, reason: str) -> MachineSnapshot:
+        """Latch the machine as undurable after a failed journal operation.
+
+        This does not clear on its own. Durability loss needs operator or
+        service intervention, so the daemon stays not-ready until it is
+        restarted against a healthy journal rather than quietly resuming
+        control on an unrecorded path.
+        """
+        with self._lock:
+            if not self._snapshot.journal_available:
+                return self._snapshot
+            return self._publish(
+                replace(
+                    self._snapshot,
+                    journal_available=False,
+                    fault=FaultState.LATCHED,
+                    reason=reason,
+                )
             )
 
     def _publish(self, candidate: MachineSnapshot) -> MachineSnapshot:
