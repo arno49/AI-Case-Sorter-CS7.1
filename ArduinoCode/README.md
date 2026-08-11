@@ -3,12 +3,14 @@ This repo was created to isolate all the code and resources for the CS7.1 Versio
 
 ## Release validation status
 
-Firmware `7.1.260714.6` compiles for Arduino Uno with PlatformIO and has 85
-passing native tests. CI verifies both on every firmware pull request. Physical
-bench validation is still required before treating this firmware as a hardware
-release: motor direction, homing and offsets, stop latency, AirDrop pulse
-timing, PWM output, sensor behavior, and Windows application compatibility have
-not been exercised from the development environment.
+Firmware `7.1.260714.6` compiles for Arduino Uno with PlatformIO. The current
+software baseline has 89 passing `native` tests, 49 passing `native_v2` tests,
+and 100 passing Python host tests. CI builds both Uno variants and runs the
+firmware and host suites. Physical bench validation is still required before
+treating this firmware as a hardware release: motor direction, homing and
+offsets, stop latency, AirDrop pulse timing, PWM output, sensor behavior, Linux
+DTR behavior, and Windows application compatibility have not been exercised
+from the development environment.
 
 ### V2-08 software evidence
 
@@ -53,6 +55,9 @@ pio test -e native -f test_runtime_timer
 pio test -e native -f test_feed_completion
 pio test -e native -f test_proximity_settler
 pio test -e native -f test_step_sequence
+pio test -e native -f test_crc16
+pio test -e native_v2 -f test_protocol_v2_envelope
+pio test -e native_v2 -f test_physical_request_tracker
 ```
 
 ## Serial command framing
