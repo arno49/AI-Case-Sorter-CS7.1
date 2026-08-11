@@ -233,9 +233,15 @@ instead of leaking outward. Responses are checked against the frozen contract
 schemas by a conformance checker that fails closed on any keyword it does not
 implement, and that checker has its own negative tests.
 
-Outstanding: the state-changing endpoints and their idempotency, generation and
-deadline headers; `/v1/session/connect`, `/v1/session/recover` and
-`/v1/configuration`, which need domain capabilities that do not exist yet; and
+The state-changing endpoints are served: `/v1/operations/home`, `/sort`,
+`/feed` and `/v1/machine/stop` require `Idempotency-Key`,
+`If-Match-Generation` and `X-Deadline-Ms`, return `202 OperationAccepted`, and
+accept `*` for the generation only on a priority stop. Attribution is
+validated against the contract's role vocabulary and a `viewer` is refused;
+that is defence in depth, not authority, which stays with SvelteKit.
+
+Outstanding: `/v1/session/connect`, `/v1/session/recover` and
+`/v1/configuration`, which need domain capabilities that do not exist yet, and
 wiring the server into the daemon entry point with a credential source. The
 generated TypeScript client and its CI divergence check already exist as
 `npm run check:api` in the web workspace.

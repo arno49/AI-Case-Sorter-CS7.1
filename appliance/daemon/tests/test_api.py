@@ -317,7 +317,9 @@ def test_an_unknown_resource_and_an_unavailable_method_are_reported_as_errors(
     harness = make_api()
 
     unknown = harness.client.request("GET", "/v1/nope")
-    unavailable = harness.client.request("POST", "/v1/operations/sort", body=b"{}")
+    # Configuration is in the contract but has no domain behind it yet, so the
+    # daemon reports it as absent rather than pretending to accept a change.
+    unavailable = harness.client.request("PATCH", "/v1/configuration", body=b"{}")
 
     assert unknown.status == 404
     assert_conforms(unknown.body, "NotFoundError")
@@ -386,3 +388,294 @@ def test_an_error_body_never_carries_protocol_internals(
     assert "request_id" in response.body
     assert response.body["code"] == "RESOURCE_NOT_FOUND"
     assert OperationState.QUEUED.value not in json.dumps(response.body)
+
+
+COMMAND_HEADERS = {
+    "Idempotency-Key": "bff-idempotency-key-0001",
+    "If-Match-Generation": "5",
+    "X-Deadline-Ms": "5000",
+    "Content-Type": "application/json",
+}
+
+
+def _command(
+    harness: ApiHarness,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+    generation: int | None = None,
+) -> Response:
+    sent = dict(COMMAND_HEADERS)
+    if generation is not None:
+        sent["If-Match-Generation"] = str(generation)
+    sent.update(headers or {})
+    return harness.client.request("POST", path, headers=sent, body=json.dumps(payload).encode())
+
+
+def _home_payload(role: str = "operator") -> dict[str, Any]:
+    return {
+        "api_version": "v1",
+        "actor": {"user_id": OPERATOR.user_id, "role": role},
+        "target": "both",
+    }
+
+
+def test_a_home_command_is_accepted_and_becomes_a_durable_operation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/home",
+        _home_payload(),
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 202
+    assert_conforms(response.body, "OperationAccepted")
+    assert response.body["status_url"] == f"/v1/operations/{response.body['operation_id']}"
+    recorded = harness.domain.operation(response.body["operation_id"])
+    assert recorded is not None
+    assert recorded.action is OperationAction.HOME
+
+
+def test_a_replayed_key_returns_the_original_operation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    generation = harness.domain.snapshot.generation
+
+    first = _command(harness, "/v1/operations/home", _home_payload(), generation=generation)
+    replayed = _command(harness, "/v1/operations/home", _home_payload(), generation=generation)
+
+    assert first.status == replayed.status == 202
+    assert first.body["operation_id"] == replayed.body["operation_id"]
+
+
+def test_a_stale_generation_conflicts_without_admitting_anything(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(harness, "/v1/operations/home", _home_payload(), generation=1)
+
+    assert response.status == 409
+    assert_conforms(response.body, "ConflictError")
+    assert response.body["code"] == "STALE_GENERATION"
+
+
+def test_a_key_reused_for_a_different_request_conflicts(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    generation = harness.domain.snapshot.generation
+    _command(harness, "/v1/operations/home", _home_payload(), generation=generation)
+
+    conflicting = _command(
+        harness,
+        "/v1/operations/home",
+        {**_home_payload(), "target": "feeder"},
+        generation=generation,
+    )
+
+    assert conflicting.status == 409
+    assert conflicting.body["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    ("header", "value", "code"),
+    [
+        ("Idempotency-Key", "too-short", "VALIDATION_FAILED"),
+        ("Idempotency-Key", "key with spaces and enough length", "VALIDATION_FAILED"),
+        ("If-Match-Generation", "*", "VALIDATION_FAILED"),
+        ("If-Match-Generation", "latest", "VALIDATION_FAILED"),
+        ("X-Deadline-Ms", "0", "DEADLINE_INVALID"),
+        ("X-Deadline-Ms", "120001", "DEADLINE_INVALID"),
+        ("X-Deadline-Ms", "forever", "DEADLINE_INVALID"),
+    ],
+)
+def test_a_command_requires_well_formed_headers(
+    make_api: Callable[..., ApiHarness],
+    header: str,
+    value: str,
+    code: str,
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/home",
+        _home_payload(),
+        headers={header: value},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+    assert response.body["code"] == code
+
+
+@pytest.mark.parametrize("header", ["Idempotency-Key", "If-Match-Generation", "X-Deadline-Ms"])
+def test_a_command_requires_every_header(
+    make_api: Callable[..., ApiHarness],
+    header: str,
+) -> None:
+    harness = make_api()
+    sent = {name: value for name, value in COMMAND_HEADERS.items() if name != header}
+
+    response = harness.client.request(
+        "POST",
+        "/v1/operations/home",
+        headers=sent,
+        body=json.dumps(_home_payload()).encode(),
+    )
+
+    assert response.status == 400
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"api_version": "v2", "actor": {"user_id": "u", "role": "operator"}, "target": "both"},
+        {"api_version": "v1", "target": "both"},
+        {"api_version": "v1", "actor": {"user_id": "u"}, "target": "both"},
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "root"}, "target": "both"},
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}},
+        {
+            "api_version": "v1",
+            "actor": {"user_id": "u", "role": "operator"},
+            "target": "both",
+            "command": "sortto:3",
+        },
+    ],
+)
+def test_a_malformed_command_body_is_refused(
+    make_api: Callable[..., ApiHarness],
+    payload: dict[str, Any],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/home",
+        payload,
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+
+
+def test_a_viewer_may_not_command_the_machine(make_api: Callable[..., ApiHarness]) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/home",
+        _home_payload(role="viewer"),
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+@pytest.mark.parametrize("slot", [-1, 64, "3", True])
+def test_a_sort_outside_the_contract_slot_range_is_refused(
+    make_api: Callable[..., ApiHarness],
+    slot: Any,
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/sort",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}, "slot": slot},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+
+
+def test_a_sort_before_homing_is_a_precondition_conflict(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/sort",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}, "slot": 3},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 409
+    assert_conforms(response.body, "ConflictError")
+    assert response.body["code"] == "NOT_READY"
+
+
+def test_feed_is_reported_as_unavailable_rather_than_attempted(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/operations/feed",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 409
+    assert_conforms(response.body, "ConflictError")
+    assert response.body["code"] == "NOT_READY"
+    assert "NOT_EXECUTED" in response.body["message"]
+
+
+def test_a_priority_stop_is_accepted_against_a_stale_or_uncertain_view(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/machine/stop",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}},
+        headers={"If-Match-Generation": "*"},
+    )
+
+    assert response.status == 202
+    assert_conforms(response.body, "OperationAccepted")
+    recorded = harness.domain.operation(response.body["operation_id"])
+    assert recorded is not None
+    assert recorded.action is OperationAction.STOP
+
+
+def test_a_stop_may_also_pin_an_exact_generation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    stale = _command(
+        harness,
+        "/v1/machine/stop",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}},
+        generation=1,
+    )
+
+    assert stale.status == 409
+    assert stale.body["code"] == "STALE_GENERATION"
+
+
+def test_an_unknown_command_resource_is_not_found(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(harness, "/v1/operations/dance", _home_payload())
+
+    assert response.status == 404
+    assert_conforms(response.body, "NotFoundError")

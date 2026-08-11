@@ -36,10 +36,14 @@ from .adapters import FEED_LIFECYCLE_GATE
 from .domain import OperationDomain
 from .journal import Journal, JournalError
 from .machine import FaultState, MachineSnapshot
-from .operations import DomainError, OperationAction, OperationRecord, OperationState
+from .operations import Actor, DomainError, OperationAction, OperationRecord, OperationState
 
 API_VERSION = "v1"
 MAX_BODY_BYTES = 64 * 1024
+MAX_CONTRACT_DEADLINE_MS = 120_000
+MAX_API_SLOT = 63
+COMMANDING_ROLES = frozenset({"operator", "administrator"})
+API_ROLES = frozenset({"viewer", *COMMANDING_ROLES})
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 SOCKET_MODE = 0o660
@@ -48,6 +52,14 @@ SHUTDOWN_POLL_SECONDS = 0.02
 _LOGGER = logging.getLogger("cs71d.api")
 _REQUEST_ID = re.compile(r"[0-9a-fA-F-]{36}\Z")
 _OPERATION_PATH = re.compile(r"/v1/operations/(?P<operation_id>[0-9a-fA-F-]{36})\Z")
+_IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._~-]{16,128}\Z")
+_EXACT_GENERATION = re.compile(r"(0|[1-9][0-9]*)\Z")
+
+_COMMAND_ACTIONS: Mapping[str, OperationAction] = {
+    "/v1/operations/home": OperationAction.HOME,
+    "/v1/operations/sort": OperationAction.SORT,
+    "/v1/operations/feed": OperationAction.FEED,
+}
 
 # The contract's HTTP mapping. Keeping it here, keyed by the domain error code,
 # means a new domain error cannot silently acquire a default status.
@@ -164,10 +176,18 @@ class ApiServer:
         ):
             raise ApiError("UNAUTHENTICATED", "a valid local service credential is required")
 
-    def route(self, method: str, path: str, query: Mapping[str, list[str]]) -> _Response:
+    def route(
+        self,
+        method: str,
+        path: str,
+        query: Mapping[str, list[str]],
+        *,
+        headers: Mapping[str, str] | None = None,
+        body: bytes = b"",
+    ) -> _Response:
+        if method == "POST":
+            return self._command(path, headers or {}, body)
         if method not in {"GET", "HEAD"}:
-            # State-changing resources arrive with the command endpoints; until
-            # then an honest 405 beats a route that silently accepts nothing.
             raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
         if path == "/v1/health/live":
             return _Response(HTTPStatus.OK, self._liveness())
@@ -186,6 +206,40 @@ class ApiServer:
         if matched is not None:
             return _Response(HTTPStatus.OK, self._operation(matched.group("operation_id")))
         raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
+
+    def _command(self, path: str, headers: Mapping[str, str], body: bytes) -> _Response:
+        """Admit one state-changing request from the BFF.
+
+        Every command carries all three required headers. They are evaluated
+        here so a malformed request is refused at the boundary, and the domain
+        still re-evaluates the ones that guard the machine.
+        """
+        action = _COMMAND_ACTIONS.get(path)
+        if action is None and path != "/v1/machine/stop":
+            raise ApiError("RESOURCE_NOT_FOUND", f"POST {path} is not a resource of this API")
+        payload = _json_object(body)
+        actor = _commanding_actor(payload)
+        key = _idempotency_key(headers)
+        deadline_ms = _deadline_ms(headers)
+
+        if action is None:
+            _require_exact_fields(payload, {"api_version", "actor"}, "stop")
+            record = self._domain.stop(
+                actor=actor,
+                idempotency_key=key,
+                expected_generation=_stop_generation(headers),
+                deadline_ms=deadline_ms,
+            )
+        else:
+            record = self._domain.submit(
+                action,
+                _command_body(action, payload),
+                actor=actor,
+                idempotency_key=key,
+                expected_generation=_exact_generation(headers),
+                deadline_ms=deadline_ms,
+            )
+        return _Response(HTTPStatus.ACCEPTED, _accepted_body(record))
 
     def _liveness(self) -> dict[str, Any]:
         # Liveness is process liveness only. It deliberately says nothing about
@@ -355,9 +409,15 @@ class _Handler(BaseHTTPRequestHandler):
         request_id = self._request_id()
         try:
             api.authenticate(self.headers.get("Authorization"))
-            self._reject_unread_body()
+            body = self._read_body()
             split = urlsplit(self.path)
-            response = api.route(method, split.path, parse_qs(split.query))
+            response = api.route(
+                method,
+                split.path,
+                parse_qs(split.query),
+                headers={name.lower(): value for name, value in self.headers.items()},
+                body=body,
+            )
         except ApiError as exc:
             self._write(_error_response(exc, request_id), request_id)
         except DomainError as exc:
@@ -384,18 +444,18 @@ class _Handler(BaseHTTPRequestHandler):
         supplied = (self.headers.get("X-Request-ID") or "").strip()
         return supplied if _REQUEST_ID.fullmatch(supplied) else str(uuid4())
 
-    def _reject_unread_body(self) -> None:
+    def _read_body(self) -> bytes:
         declared = self.headers.get("Content-Length")
         if declared is None:
-            return
+            return b""
         try:
             length = int(declared)
         except ValueError as exc:
             raise ApiError("VALIDATION_FAILED", "Content-Length must be an integer") from exc
         if length > MAX_BODY_BYTES:
+            # Refused without reading: an oversized body is never buffered.
             raise ApiError("VALIDATION_FAILED", "the request body exceeds the daemon limit")
-        if length:
-            self.rfile.read(length)
+        return self.rfile.read(length) if length else b""
 
     def _write(self, response: _Response, request_id: str) -> None:
         payload = json.dumps(response.body, separators=(",", ":")).encode("utf-8")
@@ -450,6 +510,119 @@ def _operation_body(record: OperationRecord) -> dict[str, Any]:
             outcome = "STOPPED"
         body["outcome"] = outcome
     return body
+
+
+def _accepted_body(record: OperationRecord) -> dict[str, Any]:
+    return {
+        "api_version": API_VERSION,
+        "operation_id": record.operation_id,
+        "state": record.state.name,
+        "generation": record.generation,
+        "accepted_at": _rfc3339(record.created_at),
+        "status_url": f"/v1/operations/{record.operation_id}",
+    }
+
+
+def _json_object(body: bytes) -> dict[str, Any]:
+    if not body:
+        raise ApiError("VALIDATION_FAILED", "a JSON request body is required")
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise ApiError("VALIDATION_FAILED", "the request body is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ApiError("VALIDATION_FAILED", "the request body must be a JSON object")
+    if payload.get("api_version") != API_VERSION:
+        raise ApiError("VALIDATION_FAILED", f"api_version must be {API_VERSION!r}")
+    return payload
+
+
+def _commanding_actor(payload: Mapping[str, Any]) -> Actor:
+    """Read the propagated attribution and refuse a role that cannot command.
+
+    SvelteKit authorizes the browser identity; this is not that authority. The
+    daemon validates the restricted format it accepts and refuses a role that
+    the contract says can only read, so a mistake at the BFF is not silently
+    executed as motion.
+    """
+    supplied = payload.get("actor")
+    if not isinstance(supplied, dict) or set(supplied) != {"user_id", "role"}:
+        raise ApiError("VALIDATION_FAILED", "actor must carry exactly a user_id and a role")
+    role = supplied["role"]
+    if role not in API_ROLES:
+        raise ApiError("VALIDATION_FAILED", "actor role is not a role of this API")
+    if role not in COMMANDING_ROLES:
+        raise ApiError("FORBIDDEN", f"the {role} role may not command the machine")
+    try:
+        return Actor(user_id=str(supplied["user_id"]), role=str(role))
+    except DomainError as exc:
+        raise ApiError("VALIDATION_FAILED", str(exc)) from exc
+
+
+def _command_body(action: OperationAction, payload: Mapping[str, Any]) -> dict[str, Any]:
+    if action is OperationAction.HOME:
+        _require_exact_fields(payload, {"api_version", "actor", "target"}, "home")
+        target = payload["target"]
+        if not isinstance(target, str):
+            raise ApiError("VALIDATION_FAILED", "home target must be a string")
+        return {"axis": target}
+    if action is OperationAction.SORT:
+        _require_exact_fields(payload, {"api_version", "actor", "slot"}, "sort")
+        return {"slot": _api_slot(payload["slot"])}
+    _require_exact_fields(payload, {"api_version", "actor"}, "feed")
+    # Feed carries no slot at this version; the domain refuses it at the gate.
+    return {"slot": 0}
+
+
+def _api_slot(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ApiError("VALIDATION_FAILED", "slot must be an integer")
+    if not 0 <= value <= MAX_API_SLOT:
+        raise ApiError("VALIDATION_FAILED", f"slot must be between 0 and {MAX_API_SLOT}")
+    return value
+
+
+def _require_exact_fields(payload: Mapping[str, Any], allowed: set[str], name: str) -> None:
+    if set(payload) != allowed:
+        raise ApiError("VALIDATION_FAILED", f"a {name} request carries exactly {sorted(allowed)}")
+
+
+def _idempotency_key(headers: Mapping[str, str]) -> str:
+    key = headers.get("idempotency-key", "")
+    if not _IDEMPOTENCY_KEY.fullmatch(key):
+        raise ApiError("VALIDATION_FAILED", "Idempotency-Key is missing or malformed")
+    return key
+
+
+def _exact_generation(headers: Mapping[str, str]) -> int:
+    supplied = headers.get("if-match-generation", "")
+    if not _EXACT_GENERATION.fullmatch(supplied):
+        raise ApiError(
+            "VALIDATION_FAILED", "If-Match-Generation must be the exact observed generation"
+        )
+    return int(supplied)
+
+
+def _stop_generation(headers: Mapping[str, str]) -> int | None:
+    """A priority stop may be requested against a stale or uncertain view."""
+    supplied = headers.get("if-match-generation", "")
+    if supplied == "*":
+        return None
+    return _exact_generation(headers)
+
+
+def _deadline_ms(headers: Mapping[str, str]) -> int:
+    supplied = headers.get("x-deadline-ms", "")
+    try:
+        deadline = int(supplied)
+    except ValueError as exc:
+        raise ApiError("DEADLINE_INVALID", "X-Deadline-Ms is missing or not an integer") from exc
+    if not 1 <= deadline <= MAX_CONTRACT_DEADLINE_MS:
+        raise ApiError(
+            "DEADLINE_INVALID",
+            f"X-Deadline-Ms must be between 1 and {MAX_CONTRACT_DEADLINE_MS}",
+        )
+    return deadline
 
 
 def _bounded_int(
