@@ -26,9 +26,9 @@ hardware-evidence boundaries below.
 
 The Raspberry Pi application currently has approved architecture, an executable
 API contract, initial daemon/web workspace scaffolds, a single-owner serial
-worker, and published session state with conservative reconnect. The
-machine-control domain and operator features are not implemented; do not
-describe it as deployed or qualified.
+worker, published session state with conservative reconnect, and a durable
+operation journal. Operation admission, the internal API and operator features
+are not implemented; do not describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -39,7 +39,7 @@ describe it as deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 57 passing pytest tests.
+- `cs71d` daemon package: 112 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -154,6 +154,18 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - Keep daemon connection state separate from worker-thread lifecycle state. A
   running thread may hold a `RECOVERING` or `UNCERTAIN` session, and only a
   `READY` session admits work.
+- Only `appliance/daemon/src/cs71d/journal.py` may import `sqlite3` or open
+  `machine.db`. Other daemon code passes typed records and never writes SQL.
+- A durable record is committed before the state it describes is reported:
+  admission, every lifecycle transition and every terminal outcome are journal
+  writes. `operation_transitions` is append-only, and `SUCCEEDED` requires a
+  trusted correlated firmware terminal — enforced by the operation model and
+  independently by a database trigger.
+- Operation lifecycle is `QUEUED → ACCEPTED → RUNNING → {SUCCEEDED, FAILED,
+  CANCELLED, UNCERTAIN}`. `SUCCEEDED` is reachable only from `RUNNING`, because
+  a command that was never transmitted cannot have a firmware terminal.
+- Journal migrations are forward-only and checksummed. A newer or diverged
+  schema refuses to open rather than downgrading in place.
 - Simulator code uses explicit clock advancement, carries a conspicuous
   `SIMULATOR_ONLY` identity, and never upgrades simulator results into hardware
   evidence.

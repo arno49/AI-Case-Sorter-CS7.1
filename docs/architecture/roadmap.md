@@ -46,6 +46,10 @@ graph LR
 - M2 is therefore complete. PI-DOMAIN-001 operations, idempotency and snapshot
   generation is the active critical-path implementation step, opening M3.
   PI-WEB-001 remains independently available in parallel.
+- PI-DOMAIN-001 is partially delivered: the operation model and the durable
+  `machine.db` journal exist, with append-only lifecycle audit and success
+  gated on a trusted firmware terminal. Admission against snapshot generation,
+  idempotent replay and worker dispatch are still outstanding.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

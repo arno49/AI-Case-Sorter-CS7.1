@@ -2,9 +2,9 @@
 
 `cs71d` is the private machine-control daemon for the Raspberry Pi appliance.
 This workspace currently provides the package boundary, strict configuration
-validation, sole serial ownership, and published session state. The operation
-domain, scheduling, persistence, and the Unix-socket API arrive in later
-roadmap tasks.
+validation, sole serial ownership, published session state, and the durable
+operation journal. Operation admission, scheduling, and the Unix-socket API
+arrive in later roadmap tasks.
 
 The package depends on the repository's `cs71_protocol` implementation and does
 not duplicate framing or recovery logic.
@@ -51,6 +51,33 @@ Recovery never replays an incomplete state-changing command. Queued work is
 discarded with `PreemptedByRecoveryError` rather than carried across the break,
 because the snapshot generation has moved and callers must re-admit against the
 new generation.
+
+## Operations and the durable journal
+
+`cs71d.operations` is pure vocabulary: a UUID `operation_id`, restricted actor
+attribution, a finite deadline, the lifecycle `QUEUED → ACCEPTED → RUNNING →
+{SUCCEEDED, FAILED, CANCELLED, UNCERTAIN}`, and the canonical request
+fingerprint two requests must share to count as the same request. The
+fingerprint covers the action, the validated body and the actor, so reusing one
+idempotency key across different actors conflicts instead of silently sharing
+an operation.
+
+`SUCCEEDED` is reachable only from `RUNNING` and only with a trusted correlated
+firmware terminal. A command that was never transmitted cannot have produced
+one, so no admission or dispatch failure can present itself as success.
+
+`cs71d.journal` owns `machine.db` — the only module that imports `sqlite3`. It
+uses WAL, owner-only permissions, `synchronous = FULL`, and forward-only
+checksummed migrations; a newer or diverged schema refuses to open rather than
+downgrading in place. Admission writes the operation, its first transition and
+its idempotency binding in one transaction, so a deduplication key can never
+outlive the operation it points at. Two invariants are enforced by the storage
+engine itself: `operation_transitions` rejects update and delete, and an
+operation row cannot enter `succeeded` without a trusted terminal.
+
+The protocol `request_id` is recorded only as diagnostic, session-scoped
+metadata for transcript correlation. It wraps, it is not unique across
+sessions, and it is never used to find, match or deduplicate an operation.
 
 ## Device policy and the DTR gate
 
