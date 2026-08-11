@@ -18,8 +18,9 @@ waiting on the worker.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from cs71_protocol import Completion, ParseError, ResponseKind
@@ -96,6 +97,12 @@ class DeadlineExpiredError(DomainError):
     """The finite deadline passed before the command could be transmitted."""
 
     code = "DEADLINE_EXPIRED"
+
+
+class JournalUnavailableError(DomainError):
+    """The daemon cannot durably record what it is being asked to do."""
+
+    code = "JOURNAL_UNAVAILABLE"
 
 
 type WorkerFactory = Callable[[Callable[[SessionSnapshot], None]], SerialWorker]
@@ -181,43 +188,29 @@ class OperationDomain:
         now = self._now()
 
         with self._machine.admission() as view:
-            replayed = self._replay(key, fingerprint, at=now)
-            if replayed is not None:
-                return replayed
-            if expected_generation != view.generation:
-                raise StaleGenerationError(
-                    f"request observed generation {expected_generation};"
-                    f" the machine is at {view.generation}"
-                )
-            if not view.admits_work:
-                raise NotReadyError(f"machine does not admit work: {view.connection}")
+            self._require_durable(view)
+            with self._durable("admitting an operation"):
+                replayed = self._replay(key, fingerprint, at=now)
+                if replayed is not None:
+                    return replayed
+                if expected_generation != view.generation:
+                    raise StaleGenerationError(
+                        f"request observed generation {expected_generation};"
+                        f" the machine is at {view.generation}"
+                    )
+                if not view.admits_work:
+                    raise NotReadyError(f"machine does not admit work: {view.connection}")
 
-            operation = OperationRecord(
-                operation_id=new_operation_id(),
-                action=action,
-                fingerprint=fingerprint,
-                state=OperationState.QUEUED,
-                generation=view.generation,
-                created_at=now,
-                deadline_at=now + window,
-                actor=actor,
-            )
-            self._journal.record_admission(
-                operation,
-                reason=f"admitted against generation {view.generation}",
-                idempotency=IdempotencyRecord(
+                accepted = self._admit(
+                    action,
+                    fingerprint,
+                    actor=actor,
                     key=key,
-                    fingerprint=fingerprint,
-                    operation_id=operation.operation_id,
-                    created_at=now,
-                    expires_at=now + self._idempotency_ttl,
-                ),
-            )
-            accepted = self._transition(
-                operation.operation_id,
-                OperationState.ACCEPTED,
-                "admitted to the serial lane",
-            )
+                    view=view,
+                    now=now,
+                    window=window,
+                    reason="admitted to the serial lane",
+                )
 
         # Outside the machine lock on purpose: the worker thread enters that
         # lock to publish its own transitions, so holding it across an enqueue
@@ -230,6 +223,121 @@ class OperationDomain:
             raise _translate(exc, accepted.operation_id) from exc
         future.add_done_callback(lambda done: self._settle(accepted.operation_id, done))
         return accepted
+
+    def stop(
+        self,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int | None,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        """Admit an attributable priority software stop.
+
+        Stop is admitted whether or not the machine admits ordinary work: a
+        session that is recovering or uncertain is exactly when an operator
+        needs it. ``expected_generation`` may be ``None``, the API's ``*``,
+        to request the attempt despite a stale or uncertain view; the outcome
+        is still trusted, failed or `UNCERTAIN` and never assumed.
+
+        This is a **software stop, not an emergency stop**. It is refused when
+        it cannot be recorded, because an unattributable stop is exactly the
+        kind of claim this daemon must not make; the physical E-stop is the
+        safety device and is independent of this path.
+        """
+        fingerprint = request_fingerprint(OperationAction.STOP, {}, actor)
+        key = require_idempotency_key(idempotency_key)
+        window = self._require_deadline(deadline_ms)
+        now = self._now()
+
+        with self._machine.admission() as view:
+            self._require_durable(view)
+            with self._durable("admitting a priority stop"):
+                replayed = self._replay(key, fingerprint, at=now)
+                if replayed is not None:
+                    return replayed
+                if expected_generation is not None and expected_generation != view.generation:
+                    raise StaleGenerationError(
+                        f"stop observed generation {expected_generation};"
+                        f" the machine is at {view.generation}"
+                    )
+                accepted = self._admit(
+                    OperationAction.STOP,
+                    fingerprint,
+                    actor=actor,
+                    key=key,
+                    view=view,
+                    now=now,
+                    window=window,
+                    reason="admitted to the priority stop lane",
+                )
+                # The priority lane is not queued, so admission and dispatch
+                # coincide; recording RUNNING before handing it over also keeps
+                # the terminal callback from racing this transition.
+                running = self._transition(
+                    accepted.operation_id,
+                    OperationState.RUNNING,
+                    "handed to the priority stop lane",
+                )
+
+        try:
+            future = self._worker.submit_priority_stop()
+        except SerialWorkerError as exc:
+            self._resolve(running.operation_id, exc)
+            raise _translate(exc, running.operation_id) from exc
+        future.add_done_callback(lambda done: self._settle_stop(running.operation_id, done))
+        return running
+
+    def _admit(
+        self,
+        action: OperationAction,
+        fingerprint: str,
+        *,
+        actor: Actor,
+        key: str,
+        view: MachineSnapshot,
+        now: datetime,
+        window: timedelta,
+        reason: str,
+    ) -> OperationRecord:
+        operation = OperationRecord(
+            operation_id=new_operation_id(),
+            action=action,
+            fingerprint=fingerprint,
+            state=OperationState.QUEUED,
+            generation=view.generation,
+            created_at=now,
+            deadline_at=now + window,
+            actor=actor,
+        )
+        self._journal.record_admission(
+            operation,
+            reason=f"admitted against generation {view.generation}",
+            idempotency=IdempotencyRecord(
+                key=key,
+                fingerprint=fingerprint,
+                operation_id=operation.operation_id,
+                created_at=now,
+                expires_at=now + self._idempotency_ttl,
+            ),
+        )
+        return self._transition(operation.operation_id, OperationState.ACCEPTED, reason)
+
+    def _require_durable(self, view: MachineSnapshot) -> None:
+        if not view.journal_available:
+            raise JournalUnavailableError(
+                "the operation journal is unavailable; new work is blocked until"
+                " durability is restored"
+            )
+
+    @contextmanager
+    def _durable(self, activity: str) -> Iterator[None]:
+        """Turn a failed journal write into a latched, visible daemon fault."""
+        try:
+            yield
+        except JournalError as exc:
+            self._machine.record_journal_fault(f"journal failure while {activity}: {exc}")
+            raise JournalUnavailableError(f"could not record while {activity}: {exc}") from exc
 
     def _replay(self, key: str, fingerprint: str, *, at: datetime) -> OperationRecord | None:
         existing = self._journal.idempotency_record(key, at=at)
@@ -270,12 +378,33 @@ class OperationDomain:
             return
         self._complete(operation_id, result)
 
+    def _settle_stop(self, operation_id: str, future: Future[None]) -> None:
+        """Resolve the stop operation from the worker's stop lane.
+
+        The trusted terminal for a stop is the exact ID-less ``stopped`` line
+        the protocol library waits for. Anything else — timeout, transport
+        loss, failed recovery — leaves the stop `UNCERTAIN`. It is never
+        reported as stopped-successful on the strength of having asked.
+        """
+        try:
+            future.result()
+        except Exception as exc:
+            self._resolve(operation_id, exc)
+            return
+        self._safe_transition(
+            operation_id,
+            OperationState.SUCCEEDED,
+            "trusted exact stopped terminal",
+            trusted_terminal=True,
+            outcome="stopped",
+        )
+
     def _complete(self, operation_id: str, result: WorkerResult) -> None:
-        record = self._journal.operation(operation_id)
+        record = self._current(operation_id)
         if record is None or record.is_terminal:
             return
         if not isinstance(result, Completion):  # pragma: no cover - queries own no operation
-            self._transition(
+            self._safe_transition(
                 operation_id,
                 OperationState.UNCERTAIN,
                 f"worker returned a non-command result: {type(result).__name__}",
@@ -283,7 +412,7 @@ class OperationDomain:
             )
             return
         if _is_trusted_terminal(result):
-            self._transition(
+            self._safe_transition(
                 operation_id,
                 OperationState.SUCCEEDED,
                 "trusted correlated firmware terminal",
@@ -293,7 +422,7 @@ class OperationDomain:
             )
             return
         fault = result.error
-        self._transition(
+        self._safe_transition(
             operation_id,
             OperationState.FAILED,
             "firmware reported a correlated error terminal",
@@ -302,11 +431,47 @@ class OperationDomain:
         )
 
     def _resolve(self, operation_id: str, error: Exception) -> None:
-        record = self._journal.operation(operation_id)
+        record = self._current(operation_id)
         if record is None or record.is_terminal:
             return
         state, reason = _classify(record.state, error)
-        self._transition(operation_id, state, reason, outcome=_outcome_of(error))
+        self._safe_transition(operation_id, state, reason, outcome=_outcome_of(error))
+
+    def _current(self, operation_id: str) -> OperationRecord | None:
+        try:
+            return self._journal.operation(operation_id)
+        except JournalError as exc:
+            self._machine.record_journal_fault(f"journal read failed: {exc}")
+            return None
+
+    def _safe_transition(
+        self,
+        operation_id: str,
+        state: OperationState,
+        reason: str,
+        *,
+        trusted_terminal: bool = False,
+        outcome: str | None = None,
+        protocol_request_id: int | None = None,
+    ) -> None:
+        """Record an outcome that has nowhere else to go.
+
+        These run on the worker thread, after the command already happened, so
+        there is no caller left to reject. A journal failure here latches the
+        machine as undurable and the outcome stays unrecorded; the daemon never
+        substitutes an in-memory claim of success for a durable record.
+        """
+        try:
+            self._transition(
+                operation_id,
+                state,
+                reason,
+                trusted_terminal=trusted_terminal,
+                outcome=outcome,
+                protocol_request_id=protocol_request_id,
+            )
+        except JournalError:
+            return
 
     def _transition(
         self,
@@ -325,6 +490,36 @@ class OperationDomain:
         journal: if the write fails, the generation does not move either.
         """
         active = None if state in _SETTLED else operation_id
+        try:
+            record = self._write_transition(
+                operation_id,
+                state,
+                reason,
+                active=active,
+                trusted_terminal=trusted_terminal,
+                outcome=outcome,
+                protocol_request_id=protocol_request_id,
+            )
+        except JournalError as exc:
+            self._machine.record_journal_fault(
+                f"journal failure recording {state} for operation {operation_id}: {exc}"
+            )
+            raise
+        if self._operation_observer is not None:
+            self._operation_observer(record)
+        return record
+
+    def _write_transition(
+        self,
+        operation_id: str,
+        state: OperationState,
+        reason: str,
+        *,
+        active: str | None,
+        trusted_terminal: bool,
+        outcome: str | None,
+        protocol_request_id: int | None,
+    ) -> OperationRecord:
         with self._machine.transition(active, f"operation {state}: {reason}") as generation:
             record = self._journal.record_transition(
                 operation_id,
@@ -336,8 +531,6 @@ class OperationDomain:
                 outcome=outcome,
                 protocol_request_id=protocol_request_id,
             )
-        if self._operation_observer is not None:
-            self._operation_observer(record)
         return record
 
     def _require_deadline(self, deadline_ms: int) -> timedelta:
@@ -376,6 +569,8 @@ def _intent_for(action: OperationAction, body: RequestBody) -> WorkerIntent:
     Capability and advertised-range validation belong to the typed operation
     adapters in PI-DOMAIN-003.
     """
+    if action is OperationAction.STOP:
+        raise ValidationError("a priority stop is admitted through OperationDomain.stop")
     if action is OperationAction.HOME:
         if set(body) != {"axis"}:
             raise ValidationError("home takes exactly an axis")

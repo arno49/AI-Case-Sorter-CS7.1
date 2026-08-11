@@ -12,13 +12,21 @@ import pytest
 from cs71d.domain import (
     DeadlineInvalidError,
     IdempotencyConflictError,
+    JournalUnavailableError,
     NotReadyError,
     OperationDomain,
     OperationQueueFullError,
     StaleGenerationError,
 )
-from cs71d.journal import IN_MEMORY, Journal
-from cs71d.operations import Actor, OperationAction, OperationRecord, OperationState
+from cs71d.journal import IN_MEMORY, Journal, JournalError
+from cs71d.machine import FaultState
+from cs71d.operations import (
+    Actor,
+    IdempotencyRecord,
+    OperationAction,
+    OperationRecord,
+    OperationState,
+)
 from cs71d.serial_worker import SerialWorker
 from cs71d.session import SessionSnapshot
 from cs71d.simulator import AdverseScenario, SimulatorConfig, SimulatorTransport
@@ -118,6 +126,25 @@ class Harness:
             deadline_ms=deadline_ms,
         )
 
+    def stop(
+        self,
+        *,
+        key: str = "stop-1",
+        generation: int | None = None,
+        deadline_ms: int = 5_000,
+    ) -> OperationRecord:
+        return self.domain.stop(
+            actor=OPERATOR,
+            idempotency_key=key,
+            expected_generation=generation,
+            deadline_ms=deadline_ms,
+        )
+
+    def break_journal(self) -> BreakableJournal:
+        assert isinstance(self.journal, BreakableJournal)
+        self.journal.broken = True
+        return self.journal
+
     def home(self, *, key: str = "home") -> OperationRecord:
         """Complete a home operation; the firmware refuses to sort before one."""
         record = self.submit(OperationAction.HOME, HOME_BODY, key=key)
@@ -133,6 +160,92 @@ class Harness:
         )
 
 
+class BreakableJournal(Journal):
+    """A journal whose writes can be broken the way a failing disk would.
+
+    Reads keep working: a disk that cannot accept a write has usually not
+    stopped answering, and the interesting question is what the daemon does
+    when it cannot record what it is about to do.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.broken = False
+        self._refused = 0
+        self._refusals = threading.Condition()
+
+    def record_admission(
+        self,
+        operation: OperationRecord,
+        *,
+        reason: str,
+        idempotency: IdempotencyRecord | None = None,
+    ) -> None:
+        self._refuse_when_broken()
+        super().record_admission(operation, reason=reason, idempotency=idempotency)
+
+    def record_transition(
+        self,
+        operation_id: str,
+        *,
+        to_state: OperationState,
+        generation: int,
+        occurred_at: datetime,
+        reason: str,
+        trusted_terminal: bool = False,
+        outcome: str | None = None,
+        protocol_request_id: int | None = None,
+    ) -> OperationRecord:
+        self._refuse_when_broken()
+        return super().record_transition(
+            operation_id,
+            to_state=to_state,
+            generation=generation,
+            occurred_at=occurred_at,
+            reason=reason,
+            trusted_terminal=trusted_terminal,
+            outcome=outcome,
+            protocol_request_id=protocol_request_id,
+        )
+
+    def wait_for_refusals(self, count: int, *, timeout: float = 2.0) -> None:
+        """Await refused writes instead of polling for a fault to appear."""
+        with self._refusals:
+            if not self._refusals.wait_for(lambda: self._refused >= count, timeout):
+                raise AssertionError(f"only {self._refused} of {count} writes were refused")
+
+    def _refuse_when_broken(self) -> None:
+        if not self.broken:
+            return
+        with self._refusals:
+            self._refused += 1
+            self._refusals.notify_all()
+        raise JournalError("injected journal write failure")
+
+
+class StopSwallowingTransport:
+    """Drop the exact ID-less stop write, so no trusted terminal can arrive."""
+
+    dtr_suppression_guaranteed = False
+
+    def __init__(self, delegate: SimulatorTransport) -> None:
+        self.delegate = delegate
+
+    def read(self, size: int = 1, *, timeout: float | None = None) -> bytes:
+        return self.delegate.read(size, timeout=timeout)
+
+    def write(self, data: bytes) -> int:
+        if data == b"stop\n":
+            return len(data)
+        return self.delegate.write(data)
+
+    def reset(self) -> None:
+        self.delegate.reset()
+
+    def close(self) -> None:
+        self.delegate.close()
+
+
 @pytest.fixture
 def make_harness() -> Iterator[Callable[..., Harness]]:
     built: list[Harness] = []
@@ -142,16 +255,20 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
         scenario: AdverseScenario | None = None,
         normal_capacity: int = 4,
         start: bool = True,
+        breakable: bool = False,
+        swallow_stop: bool = False,
     ) -> Harness:
         clock = FakeClock(START)
         watcher = OperationWatcher()
         config = SimulatorConfig() if scenario is None else SimulatorConfig(scenario=scenario)
         simulator = SimulatorTransport(config)
-        journal = Journal.open(IN_MEMORY, now=clock)
+        opener = BreakableJournal.open if breakable else Journal.open
+        journal = opener(IN_MEMORY, now=clock)
+        transport = StopSwallowingTransport(simulator) if swallow_stop else simulator
 
         def worker_factory(observer: Callable[[SessionSnapshot], None]) -> SerialWorker:
             return SerialWorker(
-                lambda: simulator,
+                lambda: transport,
                 normal_capacity=normal_capacity,
                 protocol_timeout=0.1,
                 interrupt_poll_interval=0.005,
@@ -460,3 +577,148 @@ def test_only_one_command_can_be_admitted_against_one_observed_generation(
     assert harness.simulator.wait_until_scheduled(timeout=1.0)
     harness.simulator.advance(10_000)
     harness.watcher.wait_for(admitted[0].operation_id, OperationState.SUCCEEDED, timeout=5.0)
+
+
+def test_a_priority_stop_creates_an_attributable_operation_and_clears_queued_work(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+    active = harness.submit(OperationAction.HOME, HOME_BODY, key="active")
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    queued = harness.submit(OperationAction.HOME, HOME_BODY, key="queued")
+
+    stop = harness.stop()
+
+    assert stop.action is OperationAction.STOP
+    assert stop.actor == OPERATOR
+    assert stop.state is OperationState.RUNNING
+    settled = harness.watcher.wait_for(stop.operation_id, OperationState.SUCCEEDED)
+    assert settled.trusted_terminal
+    assert settled.outcome == "stopped"
+    cancelled = harness.watcher.wait_for(queued.operation_id, OperationState.CANCELLED)
+    assert cancelled.outcome == "PreemptedByStopError"
+    harness.watcher.wait_for(active.operation_id, OperationState.CANCELLED)
+
+
+def test_a_stop_without_a_trusted_terminal_leaves_affected_work_uncertain(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness(swallow_stop=True)
+    active = harness.submit(OperationAction.HOME, HOME_BODY, key="active")
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+
+    stop = harness.stop()
+
+    stopped = harness.watcher.wait_for(stop.operation_id, OperationState.UNCERTAIN, timeout=5.0)
+    affected = harness.watcher.wait_for(active.operation_id, OperationState.UNCERTAIN, timeout=5.0)
+    assert not stopped.trusted_terminal
+    assert not affected.trusted_terminal
+    assert OperationState.SUCCEEDED not in harness.watcher.states(stop.operation_id)
+    assert OperationState.SUCCEEDED not in harness.watcher.states(active.operation_id)
+
+
+def test_a_replayed_stop_key_returns_the_original_stop(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness()
+    first = harness.stop(key="stop-retry")
+
+    replayed = harness.stop(key="stop-retry")
+
+    assert replayed.operation_id == first.operation_id
+
+
+def test_a_stop_is_recorded_even_when_the_worker_cannot_carry_it_out(
+    make_harness: Callable[..., Harness],
+) -> None:
+    """Stop skips the readiness check that ordinary motion must pass."""
+    harness = make_harness(start=False)
+
+    with pytest.raises(NotReadyError) as raised:
+        harness.stop()
+
+    operation_id = raised.value.operation_id
+    assert operation_id is not None
+    recorded = harness.domain.operation(operation_id)
+    assert recorded is not None
+    assert recorded.action is OperationAction.STOP
+    assert recorded.state is OperationState.CANCELLED
+
+
+def test_a_journal_failure_blocks_new_motion_and_latches_the_machine(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness(breakable=True)
+    harness.home()
+    harness.break_journal()
+
+    with pytest.raises(JournalUnavailableError) as raised:
+        harness.submit(key="blocked")
+
+    assert raised.value.code == "JOURNAL_UNAVAILABLE"
+    view = harness.domain.snapshot
+    assert not view.journal_available
+    assert view.fault is FaultState.LATCHED
+    assert not view.admits_work
+    assert harness.sort_commands() == 0
+
+    # The latched machine keeps refusing without touching the journal again.
+    with pytest.raises(JournalUnavailableError):
+        harness.submit(key="blocked-again")
+    assert harness.sort_commands() == 0
+
+
+def test_a_journal_failure_cannot_yield_an_unrecorded_success(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness(breakable=True)
+    harness.home()
+    admitted = harness.submit(key="in-flight")
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    journal = harness.break_journal()
+
+    harness.simulator.advance(10_000)
+    journal.wait_for_refusals(1)
+
+    recorded = harness.domain.operation(admitted.operation_id)
+    assert recorded is not None
+    assert recorded.state is OperationState.RUNNING
+    assert not recorded.trusted_terminal
+    assert OperationState.SUCCEEDED not in harness.watcher.states(admitted.operation_id)
+    assert not harness.domain.snapshot.admits_work
+
+
+def test_a_lifecycle_write_that_fails_stops_the_command_before_transmission(
+    make_harness: Callable[..., Harness],
+) -> None:
+    harness = make_harness(breakable=True)
+    harness.home()
+    harness.submit(OperationAction.HOME, HOME_BODY, key="blocker")
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    queued = harness.submit(key="queued")
+    journal = harness.break_journal()
+
+    harness.simulator.advance(10_000)
+    # The blocker's terminal is refused first, then the queued command's
+    # dispatch gate; after that the command can no longer be transmitted.
+    journal.wait_for_refusals(2)
+
+    assert harness.sort_commands() == 0
+    recorded = harness.domain.operation(queued.operation_id)
+    assert recorded is not None
+    assert recorded.state is OperationState.ACCEPTED
+    assert not harness.domain.snapshot.journal_available
+
+
+def test_a_stop_that_cannot_be_recorded_is_refused(
+    make_harness: Callable[..., Harness],
+) -> None:
+    """A software stop the daemon cannot attribute is not a stop it may claim."""
+    harness = make_harness(breakable=True)
+    harness.break_journal()
+
+    with pytest.raises(JournalUnavailableError) as raised:
+        harness.stop()
+
+    assert raised.value.code == "JOURNAL_UNAVAILABLE"
+    assert not harness.domain.snapshot.journal_available

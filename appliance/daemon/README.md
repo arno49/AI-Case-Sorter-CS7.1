@@ -2,9 +2,9 @@
 
 `cs71d` is the private machine-control daemon for the Raspberry Pi appliance.
 This workspace currently provides the package boundary, strict configuration
-validation, sole serial ownership, published session state, and durable
-operations with idempotent admission. Journal-failure handling, priority-stop
-operations, and the Unix-socket API arrive in later roadmap tasks.
+validation, sole serial ownership, published session state, durable operations
+with idempotent admission, and an attributable priority stop. Typed operation
+adapters and the Unix-socket API arrive in later roadmap tasks.
 
 The package depends on the repository's `cs71_protocol` implementation and does
 not duplicate framing or recovery logic.
@@ -114,6 +114,32 @@ does not know whether the machine moved.
 Locks are taken as `MachineState` → `Journal` → `SerialWorker` and never the
 reverse. An admitting thread releases the machine lock before it enqueues,
 because the worker thread enters that lock holding nothing.
+
+## Durability and priority stop
+
+A journal write that is refused latches the machine view as undurable with a
+`LATCHED` fault. It stops admitting work, rejects new motion with
+`JOURNAL_UNAVAILABLE`, and does not clear on its own — durability loss needs
+operator or service intervention, so the daemon stays not-ready rather than
+quietly resuming control on an unrecorded path.
+
+Because the dispatch gate runs immediately before the first byte, a lifecycle
+write that cannot be recorded stops the command from reaching the controller. A
+terminal that cannot be recorded leaves the operation non-successful: the
+daemon never substitutes an in-memory claim of success for a durable record.
+
+`OperationDomain.stop` admits a durable, attributable priority stop. It skips
+the readiness check ordinary motion must pass — a recovering or uncertain
+session is exactly when an operator needs it — and accepts `None` for the
+observed generation, the API's `*`, to request the attempt despite a stale
+view. The worker clears queued work and preempts the active request through the
+protocol library's exact universal stop.
+
+Its trusted terminal is the exact ID-less `stopped` line. Without it, the stop
+operation *and* the work it affected are `UNCERTAIN`, never stopped-successful.
+A stop that cannot be recorded is refused: an unattributable software stop is a
+claim this daemon does not make, and the physical E-stop is the independent
+safety device. This is a software stop, not an emergency stop.
 
 ## Device policy and the DTR gate
 

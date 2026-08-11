@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from cs71d.machine import MachineSnapshot, MachineState
+from cs71d.machine import FaultState, MachineSnapshot, MachineState
 from cs71d.session import ConnectionState, SessionSnapshot
 
 
@@ -124,3 +124,30 @@ def test_an_admission_decision_excludes_a_concurrent_publisher() -> None:
 
     assert published.is_set()
     assert machine.snapshot.connection is ConnectionState.READY
+
+
+def test_a_journal_fault_latches_the_machine_out_of_admitting_work() -> None:
+    machine = MachineState()
+    machine.observe_connection(_session(ConnectionState.READY))
+    assert machine.snapshot.admits_work
+
+    faulted = machine.record_journal_fault("disk is full")
+
+    assert not faulted.journal_available
+    assert faulted.fault is FaultState.LATCHED
+    assert faulted.reason == "disk is full"
+    assert not faulted.admits_work
+    # A verified session does not clear it: durability loss needs intervention.
+    machine.observe_connection(_session(ConnectionState.RECOVERING))
+    machine.observe_connection(_session(ConnectionState.READY))
+    assert not machine.snapshot.admits_work
+
+
+def test_repeating_a_journal_fault_is_not_material() -> None:
+    machine = MachineState()
+    machine.record_journal_fault("first failure")
+
+    unchanged = machine.record_journal_fault("second failure")
+
+    assert unchanged.generation == 2
+    assert unchanged.reason == "first failure"

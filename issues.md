@@ -8,7 +8,7 @@ the Arduino IDE workflow, or the serial contract used by AI Sorter software
 
 **Implementation status:** the software work is implemented through firmware
 `7.1.260714.6`. Current software evidence includes 89 native tests, 49 native-v2
-tests, 116 host tests, and 141 daemon/simulator tests. Unchecked criteria below
+tests, 116 host tests, and 151 daemon/simulator tests. Unchecked criteria below
 require an Arduino IDE run, physical hardware, long-duration testing, a logic
 analyzer, or the Windows application; they are not being represented as
 complete.
@@ -32,7 +32,12 @@ is maintained in [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md).
       snapshot generation. The deferred terminal-mismatch daemon-result
       assertion is closed: an unverified terminal makes the operation
       `UNCERTAIN`.
-- [ ] PI-DOMAIN-002: make journal failure and priority stop fail closed.
+- [x] PI-DOMAIN-002: make journal failure and priority stop fail closed. A
+      refused journal write latches the machine undurable and blocks new
+      motion with `JOURNAL_UNAVAILABLE`; a stop without its trusted terminal
+      leaves affected work `UNCERTAIN`.
+- [ ] PI-DOMAIN-003: typed home, sort and feed operation adapters with
+      capability and firmware-gate checks before dispatch.
 
 ## Constraints that apply to every phase
 
