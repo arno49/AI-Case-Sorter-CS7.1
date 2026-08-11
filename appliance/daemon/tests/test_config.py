@@ -4,11 +4,10 @@ import pytest
 
 from cs71d import Backend, ConfigError, DaemonConfig, Profile, load_config
 
-
 CONFIG_DIR = Path(__file__).parents[1] / "config"
 
 
-def test_default_configuration_is_simulator_without_device():
+def test_default_configuration_is_simulator_without_device() -> None:
     config = load_config()
 
     assert config.profile is Profile.DEVELOPMENT
@@ -16,13 +15,13 @@ def test_default_configuration_is_simulator_without_device():
     assert config.device_path is None
 
 
-def test_development_example_is_safe():
+def test_development_example_is_safe() -> None:
     config = load_config(CONFIG_DIR / "development.toml")
 
     assert config == DaemonConfig.development()
 
 
-def test_production_example_uses_fixed_device_identity():
+def test_production_example_uses_fixed_device_identity() -> None:
     config = load_config(CONFIG_DIR / "production.example.toml")
 
     assert config.profile is Profile.PRODUCTION
@@ -30,7 +29,7 @@ def test_production_example_uses_fixed_device_identity():
     assert config.device_path == "/dev/cs71"
 
 
-def test_production_rejects_simulator():
+def test_production_rejects_simulator() -> None:
     with pytest.raises(ConfigError, match="requires serial backend"):
         DaemonConfig.from_mapping(
             {
@@ -42,7 +41,7 @@ def test_production_rejects_simulator():
         )
 
 
-def test_production_rejects_arbitrary_device_path():
+def test_production_rejects_arbitrary_device_path() -> None:
     with pytest.raises(ConfigError, match="must be /dev/cs71"):
         DaemonConfig.from_mapping(
             {
@@ -55,7 +54,7 @@ def test_production_rejects_arbitrary_device_path():
         )
 
 
-def test_development_rejects_real_serial_backend():
+def test_development_rejects_real_serial_backend() -> None:
     with pytest.raises(ConfigError, match="reserved for the production"):
         DaemonConfig.from_mapping(
             {
@@ -68,7 +67,7 @@ def test_development_rejects_real_serial_backend():
         )
 
 
-def test_unknown_configuration_is_rejected():
+def test_unknown_configuration_is_rejected() -> None:
     with pytest.raises(ConfigError, match="unknown daemon"):
         DaemonConfig.from_mapping(
             {

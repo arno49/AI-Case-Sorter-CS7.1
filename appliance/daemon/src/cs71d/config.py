@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 
 class ConfigError(ValueError):
@@ -46,7 +47,7 @@ class DaemonConfig:
     database_path: str
 
     @classmethod
-    def development(cls) -> "DaemonConfig":
+    def development(cls) -> DaemonConfig:
         return cls(
             profile=Profile.DEVELOPMENT,
             backend=Backend.SIMULATOR,
@@ -56,7 +57,7 @@ class DaemonConfig:
         )
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "DaemonConfig":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> DaemonConfig:
         unknown = set(raw) - _ALLOWED_FIELDS
         if unknown:
             names = ", ".join(sorted(unknown))
@@ -79,22 +80,13 @@ class DaemonConfig:
             if backend is not Backend.SERIAL:
                 raise ConfigError("production profile requires serial backend")
             if device_path != PRODUCTION_DEVICE_PATH:
-                raise ConfigError(
-                    f"production device_path must be {PRODUCTION_DEVICE_PATH}"
-                )
+                raise ConfigError(f"production device_path must be {PRODUCTION_DEVICE_PATH}")
             if socket_path != PRODUCTION_SOCKET_PATH:
-                raise ConfigError(
-                    f"production socket_path must be {PRODUCTION_SOCKET_PATH}"
-                )
+                raise ConfigError(f"production socket_path must be {PRODUCTION_SOCKET_PATH}")
             if database_path != PRODUCTION_DATABASE_PATH:
-                raise ConfigError(
-                    "production database_path must be "
-                    f"{PRODUCTION_DATABASE_PATH}"
-                )
+                raise ConfigError(f"production database_path must be {PRODUCTION_DATABASE_PATH}")
         elif backend is Backend.SERIAL:
-            raise ConfigError(
-                "serial backend is reserved for the production profile"
-            )
+            raise ConfigError("serial backend is reserved for the production profile")
 
         return cls(
             profile=profile,

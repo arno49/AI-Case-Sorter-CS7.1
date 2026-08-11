@@ -47,6 +47,10 @@ defaults.
 
 **Goal:** automate scoped formatting, lint, type, test and generated-client checks. **Implementation notes:** use existing ecosystem tools; cache is optional optimization only. **Dependencies:** PI-FOUNDATION-001. **Hardware required:** No. **Size:** M.
 
+**Status:** Implemented with separate daemon/web CI jobs, generated OpenAPI
+TypeScript drift detection, revision/dependency metadata, audit artifacts, and
+explicit `SOFTWARE_SIMULATOR_ONLY` evidence labels.
+
 - CI fails on daemon/web test, type or generated contract drift in changed scopes.
 - Build metadata records source revision and dependency lock/manifests where supported.
 - CI labels simulator evidence separately from any hardware evidence.

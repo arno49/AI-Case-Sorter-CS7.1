@@ -11,8 +11,9 @@ not duplicate framing or recovery logic.
 From the repository root:
 
 ```sh
-python -m pip install -e ./host -e "./appliance/daemon[dev]"
-python -m pytest appliance/daemon/tests
+python -m pip install --require-hashes -r appliance/daemon/requirements-dev.txt
+python -m pip install --no-build-isolation -e ./host -e ./appliance/daemon
+(cd appliance/daemon && ruff format --check . && ruff check . && mypy && pytest)
 cs71d --check-config appliance/daemon/config/development.toml
 ```
 
