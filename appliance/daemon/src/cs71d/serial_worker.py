@@ -43,10 +43,22 @@ class QueryKind(StrEnum):
     QUEUE = "queue"
 
 
+class SessionAction(StrEnum):
+    CONNECT = "connect"
+    RECOVER = "recover"
+
+
 class HomeAxis(StrEnum):
     FEEDER = "feeder"
     SORTER = "sorter"
     BOTH = "both"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionIntent:
+    """Establish or replace the session itself, rather than command the machine."""
+
+    action: SessionAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +80,7 @@ class SortIntent:
             raise ValueError("slot must be an integer in range 0..102")
 
 
-type WorkerIntent = QueryIntent | HomeIntent | SortIntent
+type WorkerIntent = SessionIntent | QueryIntent | HomeIntent | SortIntent
 type WorkerResult = Status | Capabilities | QueueSnapshot | Completion
 _FutureValue = TypeVar("_FutureValue")
 
@@ -247,7 +259,7 @@ class SerialWorker:
         a caller whose own preconditions expired can stop the command from
         reaching the controller. It must not call back into this worker.
         """
-        if not isinstance(intent, QueryIntent | HomeIntent | SortIntent):
+        if not isinstance(intent, SessionIntent | QueryIntent | HomeIntent | SortIntent):
             raise TypeError("intent must be a closed serial worker intent")
         future: Future[WorkerResult] = Future()
         with self._condition:
@@ -258,7 +270,9 @@ class SerialWorker:
             # refused, or lands in the queue in time to be drained. It can
             # never survive unnoticed across a session break.
             snapshot = self._session.snapshot
-            if not snapshot.admits_work:
+            if not snapshot.admits_work and not isinstance(intent, SessionIntent):
+                # A session intent exists to repair exactly this state, so it
+                # is the one thing an unready session still admits.
                 raise SessionNotReadyError(f"session is not ready: {snapshot.state}")
             if self._stop_requested:
                 raise StopInProgressError("priority stop is in progress")
@@ -334,6 +348,11 @@ class SerialWorker:
                     self._execute_stop(link.client)
                     continue
                 assert isinstance(action, _WorkItem)
+                if isinstance(action.intent, SessionIntent):
+                    link = self._execute_session_intent(link, action)
+                    if link is None:
+                        return
+                    continue
                 fault = self._execute_item(link.client, action)
                 if fault is None:
                     continue
@@ -458,6 +477,42 @@ class SerialWorker:
                 return None
             return self._normal.popleft()
 
+    def _execute_session_intent(self, link: _Link, item: _WorkItem) -> _Link | None:
+        """Establish or replace the session, returning the link to keep using.
+
+        Connect is satisfied by an already verified session; recover always
+        starts again from a fresh transport, because the point of asking is
+        that the current one is not trusted. Either way the operation is only
+        successful once the session is READY and its snapshots exist.
+        """
+        if not item.future.set_running_or_notify_cancel():
+            return link
+        if item.on_dispatch is not None:
+            try:
+                item.on_dispatch()
+            except Exception as exc:
+                item.future.set_exception(exc)
+                return link
+
+        assert isinstance(item.intent, SessionIntent)
+        replacement = link
+        try:
+            if item.intent.action is SessionAction.RECOVER or not self._is_ready():
+                self._close_transport(link.transport)
+                self._session.transition(
+                    ConnectionState.DISCONNECTED, f"{item.intent.action} requested by an operator"
+                )
+                replacement = self._connect()
+            item.future.set_result(replacement.client.get_status())
+        except Exception as exc:
+            item.future.set_exception(exc)
+            self._fail_session(exc, f"{item.intent.action} could not verify the session")
+            return None
+        return replacement
+
+    def _is_ready(self) -> bool:
+        return self._session.state is ConnectionState.READY
+
     def _execute_item(self, client: ProtocolClient, item: _WorkItem) -> Exception | None:
         """Run one intent; return the fault that broke the session, if any."""
         if not item.future.set_running_or_notify_cancel():
@@ -521,6 +576,8 @@ class SerialWorker:
             if intent.kind is QueryKind.CAPABILITIES:
                 return client.get_capabilities()
             return client.get_queue()
+        if isinstance(intent, SessionIntent):  # pragma: no cover - the run loop owns these
+            raise WorkerNotRunningError("a session intent is executed by the worker's run loop")
         interrupt = self._is_stop_requested
         if isinstance(intent, HomeIntent):
             command = {

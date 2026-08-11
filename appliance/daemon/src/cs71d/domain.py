@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from cs71_protocol import Completion, ParseError, ResponseKind
+from cs71_protocol import Completion, ParseError, ResponseKind, Status
 
 from .adapters import intent_for, require_supported
 from .journal import Journal, JournalError
@@ -48,6 +48,8 @@ from .serial_worker import (
     QueueFullError,
     SerialWorker,
     SerialWorkerError,
+    SessionAction,
+    SessionIntent,
     SessionNotReadyError,
     SessionProfile,
     StopInProgressError,
@@ -318,6 +320,97 @@ class OperationDomain:
         future.add_done_callback(lambda done: self._settle_stop(running.operation_id, done))
         return running
 
+    def connect(
+        self,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        """Admit a durable operation that establishes a verified session."""
+        return self._session_operation(
+            OperationAction.CONNECT,
+            SessionAction.CONNECT,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            expected_generation=expected_generation,
+            deadline_ms=deadline_ms,
+        )
+
+    def recover(
+        self,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        """Admit a durable operation that replaces the session from scratch.
+
+        Recovery is never implicit at this level: the caller has confirmed that
+        it wants the current session torn down, which is why it always starts
+        again from a fresh transport rather than trusting what it has.
+        """
+        return self._session_operation(
+            OperationAction.RECOVER,
+            SessionAction.RECOVER,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            expected_generation=expected_generation,
+            deadline_ms=deadline_ms,
+        )
+
+    def _session_operation(
+        self,
+        action: OperationAction,
+        session_action: SessionAction,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        fingerprint = request_fingerprint(action, {}, actor)
+        key = require_idempotency_key(idempotency_key)
+        window = self._require_deadline(deadline_ms)
+        now = self._now()
+
+        with self._machine.admission() as view:
+            self._require_durable(view)
+            with self._durable(f"admitting a {action} operation"):
+                replayed = self._replay(key, fingerprint, at=now)
+                if replayed is not None:
+                    return replayed
+                if expected_generation != view.generation:
+                    raise StaleGenerationError(
+                        f"request observed generation {expected_generation};"
+                        f" the machine is at {view.generation}"
+                    )
+                # Readiness is deliberately not required: repairing an unready
+                # session is the whole purpose of these two operations.
+                accepted = self._admit(
+                    action,
+                    fingerprint,
+                    actor=actor,
+                    key=key,
+                    view=view,
+                    now=now,
+                    window=window,
+                    reason=f"admitted to the serial lane as a {action} operation",
+                )
+
+        try:
+            future = self._worker.submit(
+                SessionIntent(session_action),
+                on_dispatch=lambda: self._dispatch(accepted),
+            )
+        except SerialWorkerError as exc:
+            self._resolve(accepted.operation_id, exc)
+            raise _translate(exc, accepted.operation_id) from exc
+        future.add_done_callback(lambda done: self._settle(accepted.operation_id, done))
+        return accepted
+
     def _admit(
         self,
         action: OperationAction,
@@ -440,6 +533,19 @@ class OperationDomain:
     def _complete(self, operation_id: str, result: WorkerResult) -> None:
         record = self._current(operation_id)
         if record is None or record.is_terminal:
+            return
+        if isinstance(result, Status) and record.action in _SESSION_ACTIONS:
+            # A session operation has no command terminal of its own. It is
+            # successful once the session is verified and its required
+            # snapshots exist, which this status is read from.
+            self._safe_transition(
+                operation_id,
+                OperationState.SUCCEEDED,
+                "session verified and required snapshots gathered",
+                trusted_terminal=True,
+                outcome="ready",
+                terminal_fields={"mode": result.mode, "phase": result.phase},
+            )
             return
         if not isinstance(result, Completion):  # pragma: no cover - queries own no operation
             self._safe_transition(
@@ -598,6 +704,8 @@ _SETTLED = frozenset(
         OperationState.UNCERTAIN,
     }
 )
+
+_SESSION_ACTIONS = frozenset({OperationAction.CONNECT, OperationAction.RECOVER})
 
 _NEVER_DISPATCHED = (
     WorkerNotRunningError,

@@ -48,6 +48,8 @@ def intent_for(action: OperationAction, body: RequestBody) -> WorkerIntent:
     """Translate an allow-listed request body into a closed worker intent."""
     if action is OperationAction.STOP:
         raise ValidationError("a priority stop is admitted through OperationDomain.stop")
+    if action in {OperationAction.CONNECT, OperationAction.RECOVER}:
+        raise ValidationError(f"a {action} operation is admitted through its own entry point")
     if action is OperationAction.HOME:
         return _home_intent(body)
     if action is OperationAction.FEED:
