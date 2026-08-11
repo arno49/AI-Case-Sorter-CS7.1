@@ -68,9 +68,10 @@ graph LR
   domain socket only, with owner/group-only permissions and a bearer service
   credential on every request; responses are checked against the frozen
   contract, and the home, sort, feed and priority-stop commands are served
-  with their required idempotency, generation and deadline headers. The
-  session and configuration resources, which need domain capabilities that do
-  not exist yet, and the daemon entry-point wiring are outstanding.
+  with their required idempotency, generation and deadline headers, and
+  `cs71d --serve` runs the assembled daemon behind a protected service
+  credential. Only the session and configuration resources are outstanding,
+  and they need domain capabilities that do not exist yet.
   PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.

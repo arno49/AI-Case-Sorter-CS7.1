@@ -246,4 +246,17 @@ cs71d --check-config appliance/daemon/config/development.toml
 
 With no config argument, `--check-config` validates a development profile using
 the simulator backend and no device path. The production example accepts only
-the stable `/dev/cs71` identity; the scaffold never opens it.
+the stable `/dev/cs71` identity, and opening it stays blocked by the DTR gate.
+
+`cs71d --serve [PATH]` runs the assembled daemon: the journal opens first
+because nothing may be admitted that cannot be recorded, then the domain and
+its serial worker, and only then the socket that lets anyone ask for work.
+Shutdown unwinds in reverse on `SIGINT` or `SIGTERM`, so no new request is
+admitted while the worker is still finishing the one it holds.
+
+The service credential is read from the file named by `service_token_path`;
+it is never a configuration value or a command-line argument, because both are
+readable by any local user, and it is refused if the file is reachable by
+others. Taking the socket path refuses to displace a daemon that is already
+serving it — a second instance must not steal the path while the first still
+owns the serial port.
