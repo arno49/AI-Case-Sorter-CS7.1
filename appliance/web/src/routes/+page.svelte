@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { resolve } from '$app/paths';
 
 	import MachineStatus from '$lib/components/MachineStatus.svelte';
 	import ManualControls from '$lib/components/ManualControls.svelte';
@@ -114,6 +115,8 @@
 		keys={data.commandKeys ?? null}
 		feedback={commandFeedback}
 	/>
+
+	<p><a href={resolve('/operations')}>Operation history</a></p>
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>

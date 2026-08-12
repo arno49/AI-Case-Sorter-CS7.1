@@ -110,9 +110,9 @@ graph LR
   dashboard reads the snapshot and submits the software stop, authorizing in the
   action before the daemon call, showing an `operation_id` and a pending state
   rather than a completion, and writing a `web_audit` row in `web.db` for every
-  attempt without a transaction across the two databases. Connect, home, sort,
-  feed, recovery and configuration have clients but no screens, which is
-  PI-UI-001.
+  attempt without a transaction across the two databases. Connect, home, sort
+  and feed now have screens, delivered in PI-UI-001; recovery and
+  configuration remain client-only, which is PI-UI-002.
 - PI-BFF-002 is complete for its software criteria. One reader of the daemon's
   event stream is fanned out to every open browser over SSE behind
   `machine.read`; it attaches on the first subscriber and lets go after the last.
@@ -125,8 +125,10 @@ graph LR
   behind, and that is resolved by reading a snapshot — and a restart of this
   service drops a database handle and a reader and nothing else, so it can
   neither cancel nor duplicate an operation the daemon is running. M5's exit
-  criteria are met apart from the operator screens, which are PI-UI-001.
-- PI-UI-001 is in progress: the dashboard and manual controls are delivered.
+  criteria are met apart from the fault and recovery screens, which are
+  PI-UI-002, and the installer command, which is PI-OPS-001.
+- PI-UI-001 is complete: the dashboard, manual controls and operation history
+  are delivered.
   What a screen may say about the machine is decided in one tested module —
   acceptance is never worded as completion, a terminal the controller did not
   confirm is presented as an outcome that is not known, an unobserved axis
@@ -137,7 +139,11 @@ graph LR
   operator is looking at, every command form carries that snapshot's generation
   and a render-minted idempotency key, and the feed control follows the
   firmware capability — disabled today with the daemon's reason for the
-  unqualified gate shown verbatim. Operation history remains.
+  unqualified gate shown verbatim. The operation history screen at
+  `/operations` reuses the dashboard's own per-operation wording for every
+  row — an unsettled row is never worded as a completion and an unconfirmed
+  terminal still reads as not known — filters on exactly the state and type
+  values the contract defines, and pages forward on the daemon's own cursor.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

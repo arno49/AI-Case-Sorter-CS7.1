@@ -17,6 +17,7 @@ type Schemas = components['schemas'];
 
 export type MachineSnapshot = Schemas['MachineSnapshot'];
 export type Operation = Schemas['Operation'];
+export type OperationPage = Schemas['OperationPage'];
 export type OperationState = Schemas['OperationState'];
 export type OperationType = Schemas['OperationType'];
 export type ConnectionState = Schemas['ConnectionState'];

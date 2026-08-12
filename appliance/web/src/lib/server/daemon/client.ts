@@ -32,6 +32,9 @@ export type Actor = Schemas['Actor'];
 export type MachineSnapshot = Schemas['MachineSnapshot'];
 export type Operation = Schemas['Operation'];
 export type OperationAccepted = Schemas['OperationAccepted'];
+export type OperationPage = Schemas['OperationPage'];
+export type OperationState = Schemas['OperationState'];
+export type OperationType = Schemas['OperationType'];
 export type Configuration = Schemas['Configuration'];
 export type ConfigurationPatch = Schemas['ConfigurationPatch'];
 export type HomeTarget = Schemas['HomeRequest']['target'];
@@ -80,6 +83,14 @@ export interface DaemonClientOptions {
 	readonly serviceTokenPath: string;
 }
 
+/** A bounded, already-validated request for the durable operation history. */
+export interface OperationHistoryQuery {
+	readonly state?: OperationState;
+	readonly type?: OperationType;
+	readonly limit?: number;
+	readonly cursor?: string;
+}
+
 /** What every state-changing command needs from its caller. */
 export interface CommandContext {
 	readonly actor: Actor;
@@ -103,6 +114,32 @@ export class DaemonClient {
 			throw new InvalidCommandError('an operation id must be a UUID');
 		}
 		return this.#read<Operation>(`/v1/operations/${operationId}`);
+	}
+
+	/**
+	 * A bounded page of the durable history, newest first.
+	 *
+	 * The query a caller passes here is already a `state`/`type` this contract
+	 * knows and a `limit`/`cursor` within its bounds — validating a raw filter
+	 * string is the caller's job, same as a slot or a home target, because the
+	 * caller is the one holding the untrusted input.
+	 */
+	async operations(query: OperationHistoryQuery = {}): Promise<OperationPage> {
+		const params = new URLSearchParams();
+		if (query.state !== undefined) {
+			params.set('state', query.state);
+		}
+		if (query.type !== undefined) {
+			params.set('type', query.type);
+		}
+		if (query.limit !== undefined) {
+			params.set('limit', String(query.limit));
+		}
+		if (query.cursor !== undefined) {
+			params.set('cursor', query.cursor);
+		}
+		const search = params.toString();
+		return this.#read<OperationPage>(`/v1/operations${search ? `?${search}` : ''}`);
 	}
 
 	async configuration(): Promise<Configuration> {

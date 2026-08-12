@@ -103,7 +103,9 @@ const FAULT_TONES: Readonly<Record<FaultState, Tone>> = Object.freeze({
 	UNCERTAIN: 'uncertain'
 });
 
-const OPERATION_TITLES: Readonly<Record<OperationType, string>> = Object.freeze({
+/** What each operation type is called. Shared with the history screen, so the
+ *  two never drift into naming the same type two different ways. */
+export const OPERATION_TITLES: Readonly<Record<OperationType, string>> = Object.freeze({
 	CONNECT: 'Connect',
 	RECOVER: 'Recover',
 	STOP: 'Stop',
