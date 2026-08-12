@@ -1289,6 +1289,13 @@
             "type": "boolean",
             "description": "True only after a trusted correlated firmware terminal. SUCCEEDED requires true."
           },
+          "terminal_fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Protocol fields carried by the trusted terminal response, if any (e.g. the sorted slot for a SUCCEEDED sort operation). Bounded by the daemon; never raw unbounded serial content."
+          },
           "started_at": {
             "$ref": "#/components/schemas/Timestamp"
           },

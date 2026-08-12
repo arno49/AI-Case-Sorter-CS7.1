@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from cs71vision.config import (
+    PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+    PRODUCTION_DAEMON_SOCKET_PATH,
+    PRODUCTION_DATASET_PATH,
     PRODUCTION_DEVICE_PATH,
     Backend,
     ConfigError,
@@ -22,6 +25,9 @@ def test_development_defaults_are_a_fixture_backend() -> None:
     assert config.device_path is None
     assert config.capture_interval_ms > 0
     assert config.frame_width > 0 and config.frame_height > 0
+    assert config.daemon_socket_path
+    assert config.dataset_path
+    assert config.daemon_service_token_path is None
 
 
 def test_load_config_with_no_path_returns_development_defaults() -> None:
@@ -68,13 +74,64 @@ def test_production_requires_the_fixed_device_path() -> None:
         )
 
 
+def test_production_requires_the_fixed_daemon_socket_path() -> None:
+    with pytest.raises(ConfigError, match="daemon_socket_path must be"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "production",
+                "backend": "v4l2",
+                "device_path": PRODUCTION_DEVICE_PATH,
+                "daemon_socket_path": "/tmp/wrong.sock",
+                "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+            }
+        )
+
+
+def test_production_requires_the_fixed_dataset_path() -> None:
+    with pytest.raises(ConfigError, match="dataset_path must be"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "production",
+                "backend": "v4l2",
+                "device_path": PRODUCTION_DEVICE_PATH,
+                "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+                "dataset_path": "/var/lib/wrong/vision.db",
+                "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+            }
+        )
+
+
+def test_production_requires_the_fixed_daemon_service_token_path() -> None:
+    with pytest.raises(ConfigError, match="daemon_service_token_path must be"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "production",
+                "backend": "v4l2",
+                "device_path": PRODUCTION_DEVICE_PATH,
+                "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+                "dataset_path": PRODUCTION_DATASET_PATH,
+                "daemon_service_token_path": "/etc/wrong/service-token",
+            }
+        )
+
+
 def test_a_valid_production_configuration_is_accepted() -> None:
     config = VisionConfig.from_mapping(
-        {"profile": "production", "backend": "v4l2", "device_path": PRODUCTION_DEVICE_PATH}
+        {
+            "profile": "production",
+            "backend": "v4l2",
+            "device_path": PRODUCTION_DEVICE_PATH,
+            "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+            "dataset_path": PRODUCTION_DATASET_PATH,
+            "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+        }
     )
 
     assert config.profile is Profile.PRODUCTION
     assert config.device_path == PRODUCTION_DEVICE_PATH
+    assert config.daemon_socket_path == PRODUCTION_DAEMON_SOCKET_PATH
+    assert config.dataset_path == PRODUCTION_DATASET_PATH
+    assert config.daemon_service_token_path == PRODUCTION_DAEMON_SERVICE_TOKEN_PATH
 
 
 def test_capture_interval_and_frame_size_must_be_positive() -> None:

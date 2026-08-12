@@ -52,6 +52,12 @@ require_root
 	log "no existing installation at /opt/cs71; run install.sh first"
 	exit 1
 }
+# cs71-vision is newer than web/daemon; an appliance installed before
+# PI-VISION-001 may not have /opt/cs71/vision yet. Upgrading it is still
+# attempted below - build_vision_venv creates it fresh if absent - but its
+# own rollback save/restore only applies when there is something to save.
+HAD_VISION=false
+[ -d /opt/cs71/vision ] && HAD_VISION=true
 
 log "== checking free disk space =="
 require_free_disk /var 500
@@ -67,9 +73,12 @@ LATEST_BACKUP="$(find /var/lib/cs71-backups -mindepth 1 -maxdepth 1 -type d | so
 log "pre-upgrade backup: $LATEST_BACKUP"
 
 log "== saving the current release, in case this upgrade must roll back =="
-rm -rf /opt/cs71/web.previous /opt/cs71/daemon.previous
+rm -rf /opt/cs71/web.previous /opt/cs71/daemon.previous /opt/cs71/vision.previous
 cp -a /opt/cs71/web /opt/cs71/web.previous
 cp -a /opt/cs71/daemon /opt/cs71/daemon.previous
+if [ "$HAD_VISION" = true ]; then
+	cp -a /opt/cs71/vision /opt/cs71/vision.previous
+fi
 
 ROLLED_BACK=false
 rollback() {
@@ -78,10 +87,14 @@ rollback() {
 	fi
 	ROLLED_BACK=true
 	log "== rolling back to the pre-upgrade release and data =="
-	systemctl stop cs71-web.service cs71d.service || true
+	systemctl stop cs71-web.service cs71-vision.service cs71d.service || true
 	rm -rf /opt/cs71/web /opt/cs71/daemon
 	mv /opt/cs71/web.previous /opt/cs71/web
 	mv /opt/cs71/daemon.previous /opt/cs71/daemon
+	if [ "$HAD_VISION" = true ]; then
+		rm -rf /opt/cs71/vision
+		mv /opt/cs71/vision.previous /opt/cs71/vision
+	fi
 	# restore.sh stops services (already stopped, harmless), restores the
 	# pre-upgrade database/config snapshot, verifies integrity, then starts
 	# daemon then web with its own smoke test - exactly what a rollback needs.
@@ -93,8 +106,8 @@ rollback() {
 	fi
 }
 
-log "== stopping services (web, then daemon) =="
-systemctl stop cs71-web.service cs71d.service || true
+log "== stopping services (web and vision, then daemon) =="
+systemctl stop cs71-web.service cs71-vision.service cs71d.service || true
 
 log "== building the new release =="
 if ! build_web_workspace "$SOURCE_ROOT"; then
@@ -104,6 +117,11 @@ if ! build_web_workspace "$SOURCE_ROOT"; then
 fi
 if ! build_daemon_venv "$SOURCE_ROOT"; then
 	log "daemon venv build failed"
+	rollback
+	exit 1
+fi
+if ! build_vision_venv "$SOURCE_ROOT"; then
+	log "vision venv build failed"
 	rollback
 	exit 1
 fi
@@ -127,5 +145,11 @@ if ! web_smoke_test 30 "$WEB_PORT"; then
 	exit 1
 fi
 
-rm -rf /opt/cs71/web.previous /opt/cs71/daemon.previous
+# cs71-vision has no smoke-testable answer of its own yet (PI-VISION-002);
+# starting it is best-effort, the same no-op-until-camera-present behavior
+# install.sh already relies on, and never blocks the upgrade from completing.
+log "== starting the vision service on the new release =="
+systemctl start cs71-vision.service || true
+
+rm -rf /opt/cs71/web.previous /opt/cs71/daemon.previous /opt/cs71/vision.previous
 log "UPGRADE COMPLETE"

@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import shutil
+import tempfile
 import threading
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from cs71vision.camera import CameraError, Frame
-from cs71vision.config import Backend, Profile, VisionConfig
-from cs71vision.runtime import CaptureLoop, build_camera
+from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
+from cs71vision.correlator import FrameBuffer
+from cs71vision.dataset import IN_MEMORY, DatasetStore
+from cs71vision.runtime import (
+    CaptureLoop,
+    CorrelationLoop,
+    build_camera,
+    build_correlation_loop,
+    read_service_token,
+)
 
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
 
@@ -136,6 +148,8 @@ def test_build_camera_returns_a_fixture_camera_for_the_fixture_backend() -> None
         capture_interval_ms=1000,
         frame_width=4,
         frame_height=4,
+        daemon_socket_path="/tmp/cs71/cs71d.sock",
+        dataset_path="/tmp/cs71-vision/vision.db",
     )
 
     camera = build_camera(config)
@@ -154,7 +168,133 @@ def test_build_camera_refuses_a_v4l2_backend_without_a_device_path() -> None:
         capture_interval_ms=1000,
         frame_width=4,
         frame_height=4,
+        daemon_socket_path="/tmp/cs71/cs71d.sock",
+        dataset_path="/tmp/cs71-vision/vision.db",
     )
 
     with pytest.raises(ValueError, match="device_path"):
         build_camera(config)
+
+
+class CountingCorrelator:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def poll_once(self) -> int:
+        self.calls += 1
+        return 0
+
+
+class ExplodingCorrelator:
+    def poll_once(self) -> int:
+        raise RuntimeError("poll exploded")
+
+
+def test_correlation_loop_polls_repeatedly() -> None:
+    correlator = CountingCorrelator()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = CorrelationLoop(correlator, store, interval_ms=1)
+
+    loop.start()
+    try:
+        deadline = threading.Event()
+        deadline.wait(0.05)
+    finally:
+        loop.close()
+
+    assert correlator.calls >= 1
+
+
+def test_correlation_loop_survives_a_poll_that_raises() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    loop = CorrelationLoop(ExplodingCorrelator(), store, interval_ms=1)
+
+    loop.start()
+    deadline = threading.Event()
+    deadline.wait(0.05)
+    loop.close()  # must not raise or hang
+
+
+def test_correlation_loop_closes_its_store() -> None:
+    correlator = CountingCorrelator()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = CorrelationLoop(correlator, store, interval_ms=1000)
+
+    loop.start()
+    loop.close()
+
+    with pytest.raises(Exception, match="closed"):
+        store.total_examples()
+
+
+def test_correlation_loop_refuses_a_nonpositive_interval() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        CorrelationLoop(CountingCorrelator(), DatasetStore.open(IN_MEMORY), interval_ms=0)
+
+
+@pytest.fixture
+def token_workspace() -> Iterator[Path]:
+    directory = Path(tempfile.mkdtemp(prefix="cs71vision-token"))
+    yield directory
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def _token_file(directory: Path, *, mode: int = 0o600, content: str = "a-real-token") -> Path:
+    path = directory / "service-token"
+    path.write_text(content, encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def test_read_service_token_requires_an_existing_readable_file(token_workspace: Path) -> None:
+    with pytest.raises(ConfigError, match="cannot read"):
+        read_service_token(token_workspace / "absent")
+
+
+def test_read_service_token_refuses_a_world_readable_file(token_workspace: Path) -> None:
+    world_readable = _token_file(token_workspace, mode=0o644)
+
+    with pytest.raises(ConfigError, match="readable by other users"):
+        read_service_token(world_readable)
+
+
+def test_read_service_token_refuses_an_empty_file(token_workspace: Path) -> None:
+    empty = _token_file(token_workspace, content="   ")
+
+    with pytest.raises(ConfigError, match="is empty"):
+        read_service_token(empty)
+
+
+def test_read_service_token_returns_the_stripped_content(token_workspace: Path) -> None:
+    path = _token_file(token_workspace, content="a-real-token\n")
+
+    assert read_service_token(path) == "a-real-token"
+
+
+def test_build_correlation_loop_is_none_without_a_token_path() -> None:
+    config = VisionConfig.development()
+
+    assert build_correlation_loop(config, FrameBuffer()) is None
+
+
+def test_build_correlation_loop_builds_a_working_loop_given_a_token_path(
+    token_workspace: Path,
+) -> None:
+    token_path = _token_file(token_workspace)
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=IN_MEMORY,
+        daemon_service_token_path=str(token_path),
+    )
+
+    loop = build_correlation_loop(config, FrameBuffer())
+
+    assert loop is not None
+    assert isinstance(loop, CorrelationLoop)
+    loop.close()

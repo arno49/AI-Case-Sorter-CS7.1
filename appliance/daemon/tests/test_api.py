@@ -722,6 +722,35 @@ def test_a_sort_before_homing_is_a_precondition_conflict(
     assert response.body["code"] == "NOT_READY"
 
 
+def test_a_succeeded_sort_exposes_the_slot_it_reached_as_a_terminal_field(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    """External readers (PI-VISION-002) learn which slot a sort reached only
+    through this field; there is no other API-visible record of it."""
+    harness = make_api()
+    home = harness.home()
+    harness.terminals.await_terminal(home.operation_id)
+
+    admitted = _command(
+        harness,
+        "/v1/operations/sort",
+        {"api_version": "v1", "actor": {"user_id": "u", "role": "operator"}, "slot": 3},
+        generation=harness.domain.snapshot.generation,
+    )
+    assert admitted.status == 202
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    harness.simulator.advance(10_000)
+    operation_id = admitted.body["operation_id"]
+    terminal = harness.terminals.await_terminal(operation_id)
+    assert terminal.state is OperationState.SUCCEEDED
+
+    fetched = harness.client.request("GET", f"/v1/operations/{operation_id}")
+
+    assert fetched.status == 200
+    assert_conforms(fetched.body, "Operation")
+    assert fetched.body["terminal_fields"] == {"slot": "3"}
+
+
 def test_feed_is_reported_as_unavailable_rather_than_attempted(
     make_api: Callable[..., ApiHarness],
 ) -> None:

@@ -101,14 +101,14 @@ ensure_group cs71-api
 ensure_group cs71-vision
 ensure_system_user cs71d cs71d /var/lib/cs71d
 ensure_system_user cs71-web cs71-web /var/lib/cs71-web
-# No state directory of its own yet: PI-VISION-001 captures frames and logs
-# them, nothing durable exists here until PI-VISION-002's dataset store.
 ensure_system_user cs71-vision cs71-vision /var/lib/cs71-vision
 # Real OS-level membership, in addition to (not instead of) cs71-web.service's
-# own SupplementaryGroups=cs71-api: that directive is systemd's own grant and
-# needs no /etc/group entry, but anything reaching this identity a different
-# way - su, runuser, a technician's shell - only sees real group membership.
+# and cs71-vision.service's own SupplementaryGroups=cs71-api: that directive
+# is systemd's own grant and needs no /etc/group entry, but anything reaching
+# these identities a different way - su, runuser, a technician's shell - only
+# sees real group membership.
 ensure_group_member cs71-api cs71-web
+ensure_group_member cs71-api cs71-vision
 
 log "== directories =="
 ensure_dir /opt/cs71/web root:root 0755
@@ -120,8 +120,13 @@ ensure_dir /opt/cs71/vision root:root 0755
 ensure_dir /etc/cs71 root:root 0755
 ensure_dir /etc/cs71d cs71d:cs71d 0700
 ensure_dir /etc/cs71-web cs71-web:cs71-web 0700
+ensure_dir /etc/cs71-vision cs71-vision:cs71-vision 0700
 ensure_dir /var/lib/cs71d cs71d:cs71d 0700
 ensure_dir /var/lib/cs71-web cs71-web:cs71-web 0700
+# Where PI-VISION-002's self-labeled dataset (vision.db) lives; also created
+# by cs71-vision.service's own StateDirectory=, this just makes it exist
+# before the service first starts too.
+ensure_dir /var/lib/cs71-vision cs71-vision:cs71-vision 0700
 # Owned by root, not either service identity: appliance/ops/backup.sh and
 # restore.sh run as root and are the only things that ever touch it.
 ensure_dir /var/lib/cs71-backups root:root 0700
@@ -151,7 +156,7 @@ install -o root -g root -m 0644 /dev/null /etc/cs71/web.env
 
 log "== service credential =="
 if [ ! -s /etc/cs71d/service-token ]; then
-	write_service_token_pair "$(generate_token)"
+	write_service_tokens "$(generate_token)"
 else
 	log "a service credential already exists; leaving it in place"
 fi

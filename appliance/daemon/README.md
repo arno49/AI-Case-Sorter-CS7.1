@@ -154,6 +154,14 @@ conformance checker that fails closed on any keyword it does not implement,
 including the contract's conditional safety rules: a terminal operation must
 carry an outcome, and only a trusted terminal may be `SUCCEEDED`.
 
+An operation's `terminal_fields` (additive, optional) exposes whatever
+protocol fields its trusted terminal carried — `{"slot": "3"}` for a
+`SUCCEEDED` sort, from the firmware's own `done:slot=` response
+(`ArduinoCode/PROTOCOL_V2.md`). This is the only externally readable trace
+of "which slot" a sort reached; `cs71-vision`'s self-labeled dataset
+(PI-VISION-002) is what first needed it, reading `/v1/operations` to
+correlate a captured frame with a confirmed outcome.
+
 ## Operation adapters and firmware gates
 
 The worker gathers the required snapshots — advertised capabilities and

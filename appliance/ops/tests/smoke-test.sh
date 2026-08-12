@@ -191,12 +191,19 @@ restored_status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/
 	exit 1
 }
 
-log "== a test-only vision config: fixture backend, no real camera needed =="
+log "== a test-only vision config: fixture backend, real socket to cs71d-smoke =="
+# daemon_socket_path/daemon_service_token_path point at the real cs71d-smoke
+# already running above - proof cs71-vision's AF_UNIX sandbox and its
+# SupplementaryGroups=cs71-api grant actually let it reach the daemon, not
+# just that the fixture camera works in isolation.
 cat >/etc/cs71/cs71vision-smoke.toml <<'EOF'
 [vision]
 profile = "test"
 backend = "fixture"
 capture_interval_ms = 200
+daemon_socket_path = "/run/cs71/cs71d.sock"
+daemon_service_token_path = "/etc/cs71-vision/service-token"
+dataset_path = "/var/lib/cs71-vision/vision.db"
 EOF
 chmod 0644 /etc/cs71/cs71vision-smoke.toml
 
@@ -228,6 +235,27 @@ done
 journalctl -u cs71-vision-smoke.service --no-pager | grep -q "captured a" || {
 	journalctl -u cs71-vision-smoke.service --no-pager
 	log "FAIL: cs71-vision never logged a captured frame"
+	exit 1
+}
+
+log "== cs71-vision actually reaches cs71d-smoke through the shared cs71-api group =="
+if journalctl -u cs71-vision-smoke.service --no-pager | grep -q "could not reach cs71d"; then
+	journalctl -u cs71-vision-smoke.service --no-pager
+	log "FAIL: cs71-vision logged a daemon-unreachable error; the socket/group wiring is broken"
+	exit 1
+fi
+for _ in $(seq 1 20); do
+	[ -f /var/lib/cs71-vision/vision.db ] && break
+	sleep 0.5
+done
+[ -f /var/lib/cs71-vision/vision.db ] || {
+	journalctl -u cs71-vision-smoke.service --no-pager
+	log "FAIL: cs71-vision never created its dataset store, so the correlation loop never started"
+	exit 1
+}
+owner="$(stat -c '%U:%G' /var/lib/cs71-vision/vision.db)"
+[ "$owner" = "cs71-vision:cs71-vision" ] || {
+	log "FAIL: vision.db owner is $owner, expected cs71-vision:cs71-vision"
 	exit 1
 }
 

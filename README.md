@@ -18,8 +18,8 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 317 pytest tests pass |
-| `cs71-vision` package | 31 pytest tests pass |
+| Python daemon/simulator | 318 pytest tests pass |
+| `cs71-vision` package | 73 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
@@ -112,10 +112,13 @@ healthy. The daemon's production profile now blocks new work the same way a
 failed journal write already does when free disk space runs low or its own
 backup has not succeeded recently enough. A third appliance service,
 `cs71-vision` ([ADR-0013](docs/architecture/adr/0013-vision-classifier-service-and-hybrid-autonomy.md)),
-now exists for its first slice: a camera capture abstraction, packaged the
-same least-privilege way, with a deterministic fixture backend for
-development/CI and a real V4L2 backend for production that is not yet
-evidenced against real camera hardware.
+now exists: a camera capture abstraction, packaged the same least-privilege
+way, with a deterministic fixture backend for development/CI and a real
+V4L2 backend for production that is not yet evidenced against real camera
+hardware; and a self-labeling dataset that asks the daemon which slot each
+completed sort actually reached and pairs that with the frame captured
+nearest it, storing a labeled example only once the daemon has confirmed
+the outcome — never guessed at from a frame alone.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

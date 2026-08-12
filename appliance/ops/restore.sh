@@ -61,9 +61,12 @@ python3 "$OPS_DIR/lib/manifest.py" verify "$FROM"
 log "== verifying SQLite integrity of the backup copies, before touching anything live =="
 verify_sqlite_integrity "$FROM/machine.db"
 verify_sqlite_integrity "$FROM/web.db"
+if [ -f "$FROM/vision.db" ]; then
+	verify_sqlite_integrity "$FROM/vision.db"
+fi
 
-log "== stopping services (web, then daemon) =="
-systemctl stop cs71-web.service cs71d.service || true
+log "== stopping services (web and vision, then daemon) =="
+systemctl stop cs71-web.service cs71-vision.service cs71d.service || true
 
 log "== restoring the databases =="
 install -o cs71d -g cs71d -m 0600 "$FROM/machine.db" /var/lib/cs71d/machine.db
@@ -72,6 +75,10 @@ install -o cs71-web -g cs71-web -m 0600 "$FROM/web.db" /var/lib/cs71-web/web.db
 # restored file's own write-ahead log.
 rm -f /var/lib/cs71d/machine.db-wal /var/lib/cs71d/machine.db-shm
 rm -f /var/lib/cs71-web/web.db-wal /var/lib/cs71-web/web.db-shm
+if [ -f "$FROM/vision.db" ]; then
+	install -o cs71-vision -g cs71-vision -m 0600 "$FROM/vision.db" /var/lib/cs71-vision/vision.db
+	rm -f /var/lib/cs71-vision/vision.db-wal /var/lib/cs71-vision/vision.db-shm
+fi
 
 if [ -f "$FROM/cs71d.toml" ]; then
 	log "== restoring the daemon configuration =="
@@ -97,5 +104,10 @@ if ! web_smoke_test 30 "$WEB_PORT"; then
 	log "FAIL: cs71-web did not answer after restore; see the journal above"
 	exit 1
 fi
+
+# cs71-vision has no socket or HTTP endpoint of its own yet to smoke-test
+# through (PI-VISION-002); starting it is best-effort, the same no-op-until-
+# camera-present behavior install.sh already relies on, not a verified answer.
+systemctl start cs71-vision.service || true
 
 log "restore complete from $FROM"

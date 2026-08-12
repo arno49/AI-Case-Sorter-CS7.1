@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Consistent SQLite backup of machine.db and web.db, plus configuration, into
-# a checksummed, versioned manifest under /var/lib/cs71-backups.
+# Consistent SQLite backup of machine.db, web.db and (when it exists)
+# vision.db, plus configuration, into a checksummed, versioned manifest
+# under /var/lib/cs71-backups.
 #
 # Safe to run while cs71d/cs71-web are serving: `sqlite3 ... .backup` is
 # SQLite's own online-backup method (docs/architecture/data-and-persistence.md's
@@ -23,6 +24,7 @@ BACKUP_ROOT=/var/lib/cs71-backups
 MARKER=/var/lib/cs71d/backup-status.json
 MACHINE_DB=/var/lib/cs71d/machine.db
 WEB_DB=/var/lib/cs71-web/web.db
+VISION_DB=/var/lib/cs71-vision/vision.db
 DAEMON_CONFIG=/etc/cs71/cs71d.toml
 WEB_CONFIG=/etc/cs71/web.env
 RELEASE_INFO=/opt/cs71/ops/release-info.json
@@ -81,15 +83,24 @@ log "== backing up machine.db =="
 sqlite3 "$MACHINE_DB" ".backup '$DEST/machine.db'"
 log "== backing up web.db =="
 sqlite3 "$WEB_DB" ".backup '$DEST/web.db'"
+if [ -f "$VISION_DB" ]; then
+	log "== backing up vision.db =="
+	sqlite3 "$VISION_DB" ".backup '$DEST/vision.db'"
+else
+	log "no dataset store at $VISION_DB yet; nothing to back up for cs71-vision"
+fi
 
 log "== verifying the backup copies are not corrupt =="
 verify_sqlite_integrity "$DEST/machine.db"
 verify_sqlite_integrity "$DEST/web.db"
+if [ -f "$DEST/vision.db" ]; then
+	verify_sqlite_integrity "$DEST/vision.db"
+fi
 
 log "== copying configuration (no secrets: service-token files are excluded) =="
 install -o root -g root -m 0600 "$DAEMON_CONFIG" "$DEST/cs71d.toml"
 install -o root -g root -m 0600 "$WEB_CONFIG" "$DEST/web.env"
-chmod 0600 "$DEST/machine.db" "$DEST/web.db"
+chmod 0600 "$DEST"/*.db
 chown root:root "$DEST"/*.db
 
 log "== writing the manifest =="

@@ -64,17 +64,20 @@ generate_token() {
 	fi
 }
 
-# Write the same credential to both service identities' own copies. Two
-# files, not one, because cs71d and cs71-web are separate identities that
-# happen to need to agree on one shared secret - see appliance/ops/README.md.
-# The file is created with its final owner and mode *before* any content is
-# written to it, so the secret is never briefly sitting under a wrong mode.
-write_service_token_pair() {
+# Write the same credential to every service identity's own copy. Three
+# files, not one, because cs71d, cs71-web and cs71-vision are separate
+# identities that happen to need to agree on one shared secret - see
+# appliance/ops/README.md. Each file is created with its final owner and
+# mode *before* any content is written to it, so the secret is never briefly
+# sitting under a wrong mode.
+write_service_tokens() {
 	local token="$1"
 	install -o cs71d -g cs71d -m 0600 /dev/null /etc/cs71d/service-token
 	printf '%s\n' "$token" >/etc/cs71d/service-token
 	install -o cs71-web -g cs71-web -m 0600 /dev/null /etc/cs71-web/service-token
 	printf '%s\n' "$token" >/etc/cs71-web/service-token
+	install -o cs71-vision -g cs71-vision -m 0600 /dev/null /etc/cs71-vision/service-token
+	printf '%s\n' "$token" >/etc/cs71-vision/service-token
 }
 
 # $1 source template  $2 destination  remaining args are NAME=value, replacing
