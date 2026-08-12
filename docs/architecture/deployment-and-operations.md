@@ -9,6 +9,7 @@ MVP deploys natively on supported 64-bit Raspberry Pi OS for Raspberry Pi 5; con
 /opt/cs71/daemon/              Python environment and cs71d
 /etc/cs71/cs71d.toml           daemon config, root-owned
 /etc/cs71/web.env              web secrets/config, root-owned
+/etc/cs71-web/service-token    daemon credential the web service presents, owner-only
 /var/lib/cs71d/machine.db      daemon-owned SQLite
 /var/lib/cs71-web/web.db       web-owned SQLite
 /run/cs71/cs71d.sock           runtime Unix domain socket

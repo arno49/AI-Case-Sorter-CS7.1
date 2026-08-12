@@ -446,6 +446,33 @@ having to remember them.
 
 **Goal:** call `cs71d` from SvelteKit server actions. **Implementation notes:** pass authenticated actor attribution, idempotency, generation and deadline; never forward browser raw commands. **Dependencies:** PI-API-002, PI-WEB-002. **Hardware required:** No. **Size:** M.
 
+The client exists; no route calls it yet, so none of the criteria below are
+claimed. `appliance/web/src/lib/server/daemon/` holds named commands with typed
+arguments over the Unix domain socket. There is no host, no port and no URL in
+it: the socket path comes from configuration and the request path is a literal
+the client builds, and there is no method that takes a path, a device or a
+protocol string. Arguments are validated before anything is sent, and the
+response types come from the generated contract, so contract drift fails the
+build rather than a machine.
+
+Every command carries an idempotency key, a generation to match and a deadline.
+The software stop matches any generation, which the contract allows there and
+nowhere else: a stop refused because the page was a few seconds old would be a
+stop that did not happen. An accepted command returns an `operation_id` and a
+pending state and is never a claim that the machine acted.
+
+Daemon errors are translated rather than forwarded: the server keeps the code,
+request id and daemon words for correlation, and the browser gets wording this
+workspace wrote. A daemon `401`/`403` means the service credential is wrong, so
+the operator is told the service is unavailable rather than that their account
+was refused. The credential is read from a protected file named by
+`CS71_WEB_SERVICE_TOKEN_PATH`, never from an environment value, and a file other
+users can read is refused rather than repaired.
+
+Remaining: server actions that call it, the `web_audit` entries that correlate
+actor, request and `operation_id` in `web.db`, and the operator-facing responses
+built from the mapped errors.
+
 - Browser requests cannot select daemon URL, serial path or arbitrary protocol command.
 - BFF supplies required command headers and maps daemon errors to safe user responses.
 - Accepted response displays `operation_id`/pending state, not completion.
