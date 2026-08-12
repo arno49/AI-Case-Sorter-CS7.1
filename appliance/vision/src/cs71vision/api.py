@@ -166,6 +166,10 @@ class VisionApiServer:
                 return HTTPStatus.OK, self._dataset_body()
             if path == "/v1/models":
                 return HTTPStatus.OK, self._models_body()
+            if path == "/v1/suggestion":
+                return HTTPStatus.OK, self._suggestion_body()
+            if path == "/v1/suggestion-accuracy":
+                return HTTPStatus.OK, self._suggestion_accuracy_body()
             raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
         if method == "POST":
             if path == "/v1/train":
@@ -217,6 +221,36 @@ class VisionApiServer:
                 }
                 for candidate in self._store.candidates()
             ],
+        }
+
+    def _suggestion_body(self) -> dict[str, Any]:
+        """The most recently recorded suggestion, or `null` when there is none yet.
+
+        A pure read: this never classifies on demand and never issues a
+        `cs71d` command, under any configuration. `runtime.SuggestionLoop`
+        is the only thing that ever writes a suggestion.
+        """
+        suggestion = self._store.latest_suggestion()
+        if suggestion is None:
+            return {"api_version": "v1", "suggestion": None}
+        return {
+            "api_version": "v1",
+            "suggestion": {
+                "slot": suggestion.suggested_slot,
+                "confidence": suggestion.confidence,
+                "model_version": suggestion.model_version,
+                "suggested_at": suggestion.suggested_at,
+            },
+        }
+
+    def _suggestion_accuracy_body(self) -> dict[str, Any]:
+        """Live suggestion accuracy - separate evidence from training-time held-out accuracy."""
+        accuracy = self._store.suggestion_accuracy()
+        return {
+            "api_version": "v1",
+            "total": accuracy.total,
+            "correct": accuracy.correct,
+            "accuracy": accuracy.fraction,
         }
 
     def _train_body(self) -> dict[str, Any]:

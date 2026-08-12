@@ -278,6 +278,91 @@ describe('rolling back', () => {
 	});
 });
 
+describe('reading the current suggestion', () => {
+	it('parses a recorded suggestion', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				suggestion: {
+					slot: 3,
+					confidence: 0.87,
+					model_version: 2,
+					suggested_at: '2026-08-12T12:00:00.000Z'
+				}
+			})
+		);
+
+		const result = await client.suggestion();
+
+		expect(result.suggestion).toEqual({
+			slot: 3,
+			confidence: 0.87,
+			modelVersion: 2,
+			suggestedAt: '2026-08-12T12:00:00.000Z'
+		});
+	});
+
+	it('requests /v1/suggestion', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', suggestion: null }));
+
+		await client.suggestion();
+
+		expect(vision.lastRequest().path).toBe('/v1/suggestion');
+	});
+
+	it('reports null when nothing has been classified yet, not an error', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', suggestion: null }));
+
+		const result = await client.suggestion();
+
+		expect(result.suggestion).toBeNull();
+	});
+
+	it('is malformed when a suggestion entry is missing a usable field', async () => {
+		vision.answerWith(
+			replying(200, { api_version: 'v1', suggestion: { slot: 3, confidence: 'not-a-number' } })
+		);
+
+		const error = await raised(() => client.suggestion());
+
+		expect(error.kind).toBe('malformed');
+	});
+});
+
+describe('reading suggestion accuracy', () => {
+	it('parses the total, correct and fraction', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', total: 10, correct: 8, accuracy: 0.8 }));
+
+		const result = await client.suggestionAccuracy();
+
+		expect(result).toEqual({ total: 10, correct: 8, accuracy: 0.8 });
+	});
+
+	it('requests /v1/suggestion-accuracy', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', total: 0, correct: 0, accuracy: null }));
+
+		await client.suggestionAccuracy();
+
+		expect(vision.lastRequest().path).toBe('/v1/suggestion-accuracy');
+	});
+
+	it('reports a null fraction before anything is matched, not zero', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', total: 0, correct: 0, accuracy: null }));
+
+		const result = await client.suggestionAccuracy();
+
+		expect(result.accuracy).toBeNull();
+	});
+
+	it('is malformed when the total is missing', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', correct: 0, accuracy: null }));
+
+		const error = await raised(() => client.suggestionAccuracy());
+
+		expect(error.kind).toBe('malformed');
+	});
+});
+
 describe('what goes wrong', () => {
 	it('is unreachable when nothing is listening', async () => {
 		await vision.close();

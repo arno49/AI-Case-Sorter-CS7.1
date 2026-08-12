@@ -13,6 +13,7 @@ from typing import Protocol
 
 from .api import VisionApiServer
 from .camera import Camera, CameraError, FixtureCamera, Frame, V4L2Camera
+from .classifier import FrameSuggester
 from .config import Backend, ConfigError, VisionConfig
 from .correlator import Correlator, FrameBuffer
 from .daemon_client import DaemonClient
@@ -196,6 +197,93 @@ def read_service_token(path: str | Path) -> str:
     if not token:
         raise ConfigError(f"the service token at {token_path} is empty")
     return token
+
+
+#: How often the suggestion loop re-classifies the latest captured frame.
+#: Independent of both the capture and correlation intervals - a fresh
+#: suggestion does not need to be recomputed on every new frame, only often
+#: enough that an operator looking at the dashboard sees a current one.
+_DEFAULT_SUGGESTION_INTERVAL_MS = 2_000
+
+
+class Suggester(Protocol):
+    """What the suggestion loop needs - `FrameSuggester` today, a fake in tests."""
+
+    def suggest_once(self) -> int: ...
+
+
+class SuggestionLoop:
+    """Call `FrameSuggester.suggest_once` on a fixed interval, on its own thread.
+
+    Same shape as `CorrelationLoop` deliberately. Never issues a `cs71d`
+    command, under any configuration (ADR-0013, PI-VISION-006's own backlog
+    entry) - this loop only ever writes a suggestion row to `vision.db`; the
+    operator still submits the sort themselves through the existing
+    dashboard form.
+    """
+
+    def __init__(
+        self,
+        suggester: Suggester,
+        store: DatasetStore,
+        *,
+        interval_ms: int = _DEFAULT_SUGGESTION_INTERVAL_MS,
+    ) -> None:
+        if interval_ms <= 0:
+            raise ValueError("interval_ms must be positive")
+        self._suggester = suggester
+        self._store = store
+        self._interval = interval_ms / 1000.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="cs71vision-suggest", daemon=True)
+        self._thread.start()
+
+    def close(self, *, timeout: float = 5.0) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout)
+        self._store.close()
+
+    def __enter__(self) -> SuggestionLoop:
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._suggester.suggest_once()
+            except Exception:  # noqa: BLE001 - one bad tick must not kill the loop
+                _LOGGER.exception("cs71-vision's suggestion tick raised")
+            self._stop.wait(self._interval)
+
+
+def build_suggestion_loop(config: VisionConfig, buffer: FrameBuffer) -> SuggestionLoop | None:
+    """Build the suggestion loop, or None if this config never talks to cs71d.
+
+    Same gate every other `vision.db`-backed component uses: without a
+    token, correlation never runs, so no example is ever recorded and no
+    model is ever trained - there is structurally never an active model
+    this loop could suggest from.
+    """
+    if config.daemon_service_token_path is None:
+        return None
+    store = DatasetStore.open(config.dataset_path)
+    suggester = FrameSuggester(store, buffer)
+    return SuggestionLoop(suggester, store)
 
 
 def build_correlation_loop(config: VisionConfig, buffer: FrameBuffer) -> CorrelationLoop | None:

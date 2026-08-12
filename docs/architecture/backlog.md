@@ -1167,9 +1167,64 @@ concurrency model at all.
 
 **Goal:** surface a suggested class and confidence to the operator without ever acting on it. **Implementation notes:** the operator's actual choice, whether or not they follow the suggestion, keeps feeding PI-VISION-002's dataset loop. **Dependencies:** PI-VISION-004. **Hardware required:** Pi and camera; controller optional via the simulator. **Size:** M.
 
-- A suggested class and confidence is shown before the operator picks a slot.
-- `cs71-vision` never issues a `cs71d` command at this stage, under any configuration.
-- Live suggestion accuracy (suggestion versus the operator's actual choice) is tracked as its own evidence stream, separate from training-time held-out accuracy.
+Delivered for the evidence class achievable without a Pi or real camera.
+`cs71vision.classifier.classify_frame` is the primitive: unpickle the active
+model, run PI-VISION-004's own `extract_features` on one frame, and read
+`predict_proba` for the top class and its confidence - the same trust
+boundary `training.py` already accepts for `pickle` (this process's own
+output, never anything else). `cs71vision.classifier.FrameSuggester` is the
+one thing `cs71vision.runtime.SuggestionLoop` calls each tick: no active
+model or no captured frame yet both mean "nothing to suggest", not an error.
+The loop is a fourth independent `DatasetStore` connection (same reasoning
+PI-VISION-003 established for the api server's own), on the same
+`build_*(config)`-returns-`None`-without-a-token gate every other
+`vision.db`-backed component already uses - without a token, correlation
+never runs, so no example is ever recorded and no model is ever trained,
+meaning there is structurally never an active model to suggest from.
+
+**Storage: two more append-only tables, not a mutation of an existing
+one.** Schema version 4 adds `suggestions` (one row per classification) and
+`suggestion_outcomes` (`suggestion_id`/`operation_id` both `UNIQUE`, so a
+suggestion is matched at most once). `cs71vision.correlator.Correlator`
+gained exactly one more step in its existing per-success loop: after
+recording a new example, it also asks
+`DatasetStore.unmatched_suggestion_at_or_before(created_at)` - the same
+"newest evidence at or before this moment, `None` means discard, never
+guess" contract `FrameBuffer.closest_at_or_before` already uses for frames -
+and if one exists, records whether it matched. This is the same correlation
+pass PI-VISION-002 already runs on the same cadence; nothing new polls
+`cs71d`.
+
+`cs71vision.api.VisionApiServer` gained two pure-read routes:
+`GET /v1/suggestion` (the most recently recorded suggestion, or `null`) and
+`GET /v1/suggestion-accuracy` (`total`/`correct`/`accuracy`, the last
+`null` rather than a fabricated zero before anything is matched). Neither
+route ever classifies on demand or writes anything - `SuggestionLoop` is
+the only writer, keeping "cs71-vision never issues a `cs71d` command at
+this stage, under any configuration" true by construction: nothing in this
+request path calls the daemon client at all.
+
+**Web side:** the dashboard (`/`) shows the current suggestion informationally,
+directly above the existing manual sort form - the same page, not a new
+one, since "before the operator picks a slot" means where they are already
+looking. A `cs71-vision` outage is caught and logged, never surfaced as a
+page error: sorting does not depend on `cs71-vision` (ADR-0013), and the
+dashboard's own daemon-read failure handling is untouched by it, proven by
+an end-to-end test that closes the fake vision socket and checks the
+machine state renders normally regardless. `/dataset` gained a third,
+visibly distinct accuracy figure - live suggestion accuracy - next to the
+per-candidate held-out accuracy table PI-VISION-005 already renders, since
+the two answer different questions ("does this model work in practice" is
+not "how did it score on a held-out split of its own training data").
+
+What remains genuinely hardware-gated: same as PI-VISION-001/004 before it,
+nothing here runs against a real camera or a real trained-on-real-frames
+model. Every suggestion in this test suite is a classification of small,
+fast synthetic solid-color images, on ordinary CI hardware.
+
+- [x] A suggested class and confidence is shown before the operator picks a slot.
+- [x] `cs71-vision` never issues a `cs71d` command at this stage, under any configuration.
+- [x] Live suggestion accuracy (suggestion versus the operator's actual choice) is tracked as its own evidence stream, separate from training-time held-out accuracy.
 
 ### PI-VISION-007 — New `cs71d` machine actor kind for autonomous sort
 

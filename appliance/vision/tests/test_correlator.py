@@ -7,7 +7,7 @@ import pytest
 from cs71vision.camera import Frame
 from cs71vision.correlator import Correlator, FrameBuffer
 from cs71vision.daemon_client import DaemonClientError, SortSuccess
-from cs71vision.dataset import IN_MEMORY, DatasetStore
+from cs71vision.dataset import IN_MEMORY, DatasetStore, TrainedCandidate
 
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
 
@@ -151,3 +151,91 @@ def test_poll_once_survives_an_unreachable_daemon() -> None:
     correlator = Correlator(FailingDaemonClient(), store, FrameBuffer())
 
     assert correlator.poll_once() == 0
+
+
+def _candidate() -> TrainedCandidate:
+    return TrainedCandidate(
+        model_blob=b"model",
+        included_classes=(3, 5),
+        excluded_classes=(),
+        accuracy_by_class={3: 1.0, 5: 1.0},
+        minimum_examples_per_class=5,
+        training_example_count=10,
+        holdout_example_count=2,
+    )
+
+
+def test_poll_once_matches_a_newly_recorded_example_to_its_live_suggestion() -> None:
+    store = DatasetStore.open(IN_MEMORY, now=lambda: START)
+    version = store.record_candidate(_candidate(), trained_at=START)
+    suggestion_id = store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.8,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    buffer = FrameBuffer()
+    buffer.add(_frame(seconds=0))
+    client = FakeDaemonClient(
+        (
+            SortSuccess(
+                operation_id="op-1", slot=3, created_at=(START + timedelta(seconds=1)).isoformat()
+            ),
+        )
+    )
+    correlator = Correlator(client, store, buffer)
+
+    correlator.poll_once()
+
+    accuracy = store.suggestion_accuracy()
+    assert accuracy.total == 1
+    assert accuracy.correct == 1
+    assert store.unmatched_suggestion_at_or_before(START + timedelta(minutes=1)) is None
+    assert suggestion_id is not None  # sanity: the id above was real
+
+
+def test_poll_once_records_an_incorrect_outcome_when_the_operator_chose_differently() -> None:
+    store = DatasetStore.open(IN_MEMORY, now=lambda: START)
+    version = store.record_candidate(_candidate(), trained_at=START)
+    store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.8,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    buffer = FrameBuffer()
+    buffer.add(_frame(seconds=0))
+    client = FakeDaemonClient(
+        (
+            SortSuccess(
+                operation_id="op-1", slot=5, created_at=(START + timedelta(seconds=1)).isoformat()
+            ),
+        )
+    )
+    correlator = Correlator(client, store, buffer)
+
+    correlator.poll_once()
+
+    accuracy = store.suggestion_accuracy()
+    assert accuracy.total == 1
+    assert accuracy.correct == 0
+
+
+def test_poll_once_leaves_suggestion_accuracy_untouched_with_no_suggestion_to_match() -> None:
+    store = DatasetStore.open(IN_MEMORY, now=lambda: START)
+    buffer = FrameBuffer()
+    buffer.add(_frame(seconds=0))
+    client = FakeDaemonClient(
+        (
+            SortSuccess(
+                operation_id="op-1", slot=3, created_at=(START + timedelta(seconds=1)).isoformat()
+            ),
+        )
+    )
+    correlator = Correlator(client, store, buffer)
+
+    correlator.poll_once()
+
+    assert store.suggestion_accuracy().total == 0

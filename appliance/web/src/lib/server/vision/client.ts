@@ -74,6 +74,25 @@ export interface ActivationResult {
 	readonly activatedAt: string;
 }
 
+export interface Suggestion {
+	readonly slot: number;
+	readonly confidence: number;
+	readonly modelVersion: number;
+	readonly suggestedAt: string;
+}
+
+export interface SuggestionResult {
+	/** Null when nothing has been classified yet - no active model, or no frame captured. */
+	readonly suggestion: Suggestion | null;
+}
+
+export interface SuggestionAccuracy {
+	readonly total: number;
+	readonly correct: number;
+	/** Null when nothing has been matched to an operator's choice yet. */
+	readonly accuracy: number | null;
+}
+
 export interface VisionClientOptions {
 	readonly socketPath: string;
 	readonly serviceTokenPath: string;
@@ -127,6 +146,30 @@ export class VisionClient {
 			throw rejection(reply.status, reply.body);
 		}
 		return parseActivationResult(reply.body, reply.status);
+	}
+
+	/**
+	 * The most recently classified suggestion, if any.
+	 *
+	 * A pure read - this never classifies on demand and never issues a
+	 * `cs71d` command, under any configuration. `cs71-vision`'s own
+	 * background loop is the only thing that ever produces one.
+	 */
+	async suggestion(): Promise<SuggestionResult> {
+		const reply = await this.#get('/v1/suggestion');
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseSuggestionResult(reply.body, reply.status);
+	}
+
+	/** Live suggestion accuracy - separate evidence from training-time held-out accuracy. */
+	async suggestionAccuracy(): Promise<SuggestionAccuracy> {
+		const reply = await this.#get('/v1/suggestion-accuracy');
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseSuggestionAccuracy(reply.body, reply.status);
 	}
 
 	async #get(path: string): Promise<DaemonReply> {
@@ -333,6 +376,62 @@ function parseActivationResult(body: unknown, status: number): ActivationResult 
 		});
 	}
 	return { activeVersion, activatedAt };
+}
+
+function parseSuggestionResult(body: unknown, status: number): SuggestionResult {
+	const record = asRecord(body);
+	if (record?.api_version !== API_VERSION || !('suggestion' in record)) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered without the expected suggestion shape'
+		});
+	}
+	if (record.suggestion === null) {
+		return { suggestion: null };
+	}
+	return { suggestion: parseSuggestion(record.suggestion, status) };
+}
+
+function parseSuggestion(item: unknown, status: number): Suggestion {
+	const record = asRecord(item);
+	const slot = record?.slot;
+	const confidence = record?.confidence;
+	const modelVersion = record?.model_version;
+	const suggestedAt = record?.suggested_at;
+	if (
+		typeof slot !== 'number' ||
+		typeof confidence !== 'number' ||
+		typeof modelVersion !== 'number' ||
+		typeof suggestedAt !== 'string'
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered with an unusable suggestion'
+		});
+	}
+	return { slot, confidence, modelVersion, suggestedAt };
+}
+
+function parseSuggestionAccuracy(body: unknown, status: number): SuggestionAccuracy {
+	const record = asRecord(body);
+	const total = record?.total;
+	const correct = record?.correct;
+	const accuracy = record?.accuracy;
+	if (
+		record?.api_version !== API_VERSION ||
+		typeof total !== 'number' ||
+		typeof correct !== 'number' ||
+		(accuracy !== null && typeof accuracy !== 'number')
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered without a usable suggestion accuracy'
+		});
+	}
+	return { total, correct, accuracy };
 }
 
 function asRecord(body: unknown): Record<string, unknown> | undefined {
