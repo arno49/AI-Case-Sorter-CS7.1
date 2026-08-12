@@ -84,7 +84,15 @@ if ! systemctl is-active --quiet cs71-web-smoke.service; then
 fi
 
 log "== the socket has the owner and mode the daemon sets, not a systemd default =="
+# systemd's "active (running)" fires the moment the process forks, not once
+# it has opened its journal and bound its socket - wait for the socket
+# itself rather than assuming service-active already means socket-ready.
+for _ in $(seq 1 20); do
+	[ -S /run/cs71/cs71d.sock ] && break
+	sleep 0.5
+done
 [ -S /run/cs71/cs71d.sock ] || {
+	journalctl -u cs71d-smoke.service --no-pager
 	log "FAIL: no socket at /run/cs71/cs71d.sock"
 	exit 1
 }
