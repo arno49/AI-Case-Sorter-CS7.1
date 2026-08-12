@@ -16,3 +16,4 @@ ADRs record durable architecture decisions for the Raspberry Pi 5 appliance. The
 | [0010](0010-deterministic-simulator-evidence-boundary.md) | Accepted | Deterministic simulator and hardware evidence boundary |
 | [0011](0011-local-auth-rbac-sessions.md) | Accepted | Local authentication/RBAC/session model |
 | [0012](0012-versioned-operations-events-idempotency.md) | Accepted | Versioned operations/events and idempotency |
+| [0013](0013-vision-classifier-service-and-hybrid-autonomy.md) | Proposed | Vision classifier as a third appliance service with configurable routing and hybrid autonomy |

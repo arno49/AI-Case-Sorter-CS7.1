@@ -15,6 +15,7 @@ graph LR
  G --> H
  H --> I[Hardware qualification]
  I --> J[Pilot and release]
+ G --> K[Vision classifier]
 ```
 
 | Milestone | Deliverables | Entry criteria | Exit criteria | Gate / rough size / parallelism |
@@ -29,6 +30,7 @@ graph LR
 | M7 Software qualification | Contract, stress, NFR-01/NFR-02 Pi profile, security and a11y evidence | M5 and M6 | All software gates green; no unresolved critical safety defects | Raspberry Pi 5 required; controller not required; L |
 | M8 Hardware qualification | DTR, parity, stop, fault, USB/reboot HIL evidence | M7 and approved rig/procedure | DTR decision closed; hardware gates passed or appliance restricted accordingly | Required controller/rig; XL, serialize safety-critical rig work |
 | M9 Controlled pilot/release | operator pilot, runbook/rollback drill, release record | M8 | Pilot exit criteria and approvals met | Required qualified hardware; L |
+| M10 Vision classifier | `cs71-vision` service, self-labeled dataset, operator-trained/activated model, confidence-gated hybrid autonomy, primer-presence confirmation gate | M6 | Self-labeled data collection and a read-only classifier run with recorded per-class accuracy on real Pi + camera; autonomy and primer gate wired and simulator-evidenced | Pi and camera required; controller only for autonomous-sort acceptance (also needs M8's closed DTR gate); XL; can overlap M7–M9 |
 
 ## Current implementation status
 
@@ -198,6 +200,18 @@ graph LR
   Pi-hardware drill alone.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
+- M10 (PI-VISION) is newly planned, not started: ten PR-sized tasks
+  decomposed from [ADR-0013](adr/0013-vision-classifier-service-and-hybrid-autonomy.md)
+  bring manufacturer headstamp classification onto Uno + Pi 5 with no
+  separate Windows PC, replacing today's external "AI Sorter". It adds a
+  third appliance service, `cs71-vision`, self-labels its own training data
+  from ordinary manual sorting, and only earns autonomy behind a per-class
+  confidence threshold with rollback. Primer presence is a permanent,
+  non-bypassable confirmation gate, never an autonomy candidate. M10 depends
+  only on M6 and can run in parallel with M7–M9; the one piece that cannot
+  close without M8 is a real autonomous sort actually moving the machine,
+  since that still needs the DTR gate closed first like any other real
+  motion on this appliance.
 
 ## Risks and mitigations
 
@@ -208,5 +222,7 @@ graph LR
 | SQLite/disk fault loses audit durability | Fault-inject, monitor thresholds, block new motion and restore-test. |
 | BFF outage is mistaken for machine stop | Keep `cs71d` independent; test Node restart and show current daemon state after reconnect. |
 | Scope expands into cloud/multi-machine system | Enforce MVP non-goals and ADR revisit process. |
+| Primer-presence misclassification enables autonomous action on a physical-risk case | Primer axis is a permanent, code-enforced confirmation gate with no bypass (PI-VISION-010); never closed on software evidence alone, reviewed like DTR/HIL. |
+| Thin/biased self-labeled dataset yields a confidently wrong model | Hard per-class minimum-example floor before training (PI-VISION-004); candidate accuracy shown before activation, with rollback (PI-VISION-005). |
 
 Detailed task dependency and acceptance criteria are canonical in [backlog.md](backlog.md).
