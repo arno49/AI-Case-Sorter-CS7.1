@@ -23,6 +23,7 @@ const MATRIX: readonly MatrixRow[] = [
 	{ capability: 'machine.read', viewer: true, operator: true, administrator: true },
 	{ capability: 'machine.stop', viewer: true, operator: true, administrator: true },
 	{ capability: 'machine.operate', viewer: false, operator: true, administrator: true },
+	{ capability: 'vision.train', viewer: false, operator: true, administrator: true },
 	{ capability: 'machine.recover', viewer: false, operator: false, administrator: true },
 	{ capability: 'config.write', viewer: false, operator: false, administrator: true },
 	{ capability: 'users.manage', viewer: false, operator: false, administrator: true },
@@ -70,7 +71,8 @@ describe('what a page may be told', () => {
 		expect(capabilitiesFor('operator')).toEqual([
 			'machine.read',
 			'machine.stop',
-			'machine.operate'
+			'machine.operate',
+			'vision.train'
 		]);
 	});
 

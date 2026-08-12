@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import pytest
 
-from cs71vision.api import DatasetApiServer
+from cs71vision.api import VisionApiServer
 from cs71vision.camera import CameraError, Frame
 from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
@@ -356,7 +356,7 @@ def test_build_api_server_builds_a_working_server_given_a_token_path(
     server = build_api_server(config)
 
     assert server is not None
-    assert isinstance(server, DatasetApiServer)
+    assert isinstance(server, VisionApiServer)
     server.close()
 
 

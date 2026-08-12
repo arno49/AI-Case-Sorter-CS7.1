@@ -290,3 +290,77 @@ def test_candidates_is_empty_before_anything_is_trained(workspace: Path) -> None
         assert store.candidates() == ()
     finally:
         store.close()
+
+
+def test_active_version_is_none_before_anything_is_activated(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        assert store.active_version() is None
+        assert store.activations() == ()
+    finally:
+        store.close()
+
+
+def test_activate_records_an_activation_and_becomes_the_active_version(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        activation_id = store.activate(version, activated_at=START + timedelta(minutes=1))
+
+        assert store.active_version() == version
+        [activation] = store.activations()
+        assert activation.activation_id == activation_id
+        assert activation.version == version
+        assert activation.activated_at == (START + timedelta(minutes=1)).isoformat()
+    finally:
+        store.close()
+
+
+def test_activating_an_unknown_version_is_refused(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        with pytest.raises(DatasetError, match="no candidate model at version 999"):
+            store.activate(999, activated_at=START)
+        assert store.active_version() is None
+    finally:
+        store.close()
+
+
+def test_activating_a_second_version_does_not_edit_the_first_activation(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        first = store.record_candidate(_candidate(model_blob=b"v1"), trained_at=START)
+        second = store.record_candidate(_candidate(model_blob=b"v2"), trained_at=START)
+
+        store.activate(first, activated_at=START)
+        store.activate(second, activated_at=START + timedelta(minutes=1))
+
+        assert store.active_version() == second
+        assert [activation.version for activation in store.activations()] == [first, second]
+    finally:
+        store.close()
+
+
+def test_rolling_back_is_just_another_activation_pointing_at_the_earlier_version(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        first = store.record_candidate(_candidate(model_blob=b"v1"), trained_at=START)
+        second = store.record_candidate(_candidate(model_blob=b"v2"), trained_at=START)
+        store.activate(first, activated_at=START)
+        store.activate(second, activated_at=START + timedelta(minutes=1))
+
+        # A "rollback" is not a distinct operation on the store: it is the
+        # caller activating whatever version was previously active.
+        store.activate(first, activated_at=START + timedelta(minutes=2))
+
+        assert store.active_version() == first
+        assert [activation.version for activation in store.activations()] == [
+            first,
+            second,
+            first,
+        ]
+    finally:
+        store.close()

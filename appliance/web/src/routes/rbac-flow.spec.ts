@@ -120,6 +120,7 @@ describe('what the dashboard tells the browser', () => {
 			'machine.read',
 			'machine.stop',
 			'machine.operate',
+			'vision.train',
 			'machine.recover',
 			'config.write',
 			'users.manage'

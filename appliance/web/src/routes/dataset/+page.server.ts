@@ -1,18 +1,29 @@
 /**
  * The dataset review screen: per-class example counts against the training
- * floor (PI-VISION-003).
+ * floor (PI-VISION-003), and the recorded model versions with train/
+ * activate/rollback controls (PI-VISION-004/005).
  *
- * A read, same shape as `/system`'s own load - there is nothing here to
- * submit, so there is no idempotency key, no generation to match and nothing
- * for the web audit to record. The only difference from `/system` is which
- * service answers: this reads `cs71-vision`'s dataset api, not `cs71d`.
+ * The read half is the same shape as `/system`'s own load: nothing to
+ * submit, so both `cs71-vision` reads share one `unavailable` message the
+ * way `/system` unifies its own two reads into one. The write half mirrors
+ * `/` dashboard's manual-command actions - `requireCapability` next to the
+ * effect, `recordAudit` on every outcome, a form's own field validated
+ * before anything is sent - except there is no generation or idempotency
+ * key here: `cs71-vision` has no optimistic-concurrency model to match,
+ * because none of these actions touch machine state.
  */
 
-import type { ServerLoad } from '@sveltejs/kit';
+import { fail, type Actions, type ServerLoad } from '@sveltejs/kit';
 
-import type { DatasetSummary } from '$lib/dataset';
+import type { DatasetSummary, ModelsSummary } from '$lib/dataset';
+import { recordAudit } from '$lib/server/audit';
+import { requireCapability } from '$lib/server/auth/authorization';
+import { can } from '$lib/server/auth/capabilities';
+import type { UserRecord } from '$lib/server/auth/users';
 import { webRuntime } from '$lib/server/runtime';
-import { safeResponseFor } from '$lib/server/vision';
+import { InvalidCommandError, VisionError, safeResponseFor } from '$lib/server/vision';
+
+const INVALID_MESSAGE = 'That request was rejected as invalid.';
 
 export const load: ServerLoad = async ({ locals }) => {
 	// The hook has already refused an unauthenticated request and checked that
@@ -20,9 +31,10 @@ export const load: ServerLoad = async ({ locals }) => {
 	const { vision } = webRuntime();
 
 	let dataset: DatasetSummary | null = null;
+	let models: ModelsSummary | null = null;
 	let unavailable: string | null = null;
 	try {
-		dataset = await vision.datasetSummary();
+		[dataset, models] = await Promise.all([vision.datasetSummary(), vision.models()]);
 	} catch (error) {
 		unavailable = safeResponseFor(error).message;
 		reportToServerLog(error, locals.requestId);
@@ -31,10 +43,134 @@ export const load: ServerLoad = async ({ locals }) => {
 	return {
 		username: locals.user?.username ?? null,
 		role: locals.user?.role ?? null,
+		csrfToken: locals.csrfToken,
+		canTrain: locals.user !== null && can(locals.user.role, 'vision.train'),
 		dataset,
+		models,
 		unavailable
 	};
 };
+
+export const actions: Actions = {
+	train: async ({ locals }) => {
+		const user = requireCapability(locals.user, 'vision.train');
+		const { vision, database } = webRuntime();
+		const now = new Date();
+
+		try {
+			const result = await vision.train();
+			recordAudit(
+				database,
+				{
+					userId: user.userId,
+					role: user.role,
+					action: 'vision.train',
+					outcome: 'accepted',
+					requestId: locals.requestId
+				},
+				now
+			);
+			return { control: 'train', started: result.started };
+		} catch (error) {
+			return failVisionAction('train', user, error, locals.requestId, now);
+		}
+	},
+
+	activate: async (event) => {
+		const user = requireCapability(event.locals.user, 'vision.train');
+		const { vision, database } = webRuntime();
+		const now = new Date();
+
+		try {
+			const form = await event.request.formData();
+			const version = integerField(form, 'version');
+			const result = await vision.activate(version);
+			recordAudit(
+				database,
+				{
+					userId: user.userId,
+					role: user.role,
+					action: 'vision.activate',
+					outcome: 'accepted',
+					requestId: event.locals.requestId
+				},
+				now
+			);
+			return { control: 'activate', activeVersion: result.activeVersion };
+		} catch (error) {
+			return failVisionAction('activate', user, error, event.locals.requestId, now);
+		}
+	},
+
+	rollback: async ({ locals }) => {
+		const user = requireCapability(locals.user, 'vision.train');
+		const { vision, database } = webRuntime();
+		const now = new Date();
+
+		try {
+			const result = await vision.rollback();
+			recordAudit(
+				database,
+				{
+					userId: user.userId,
+					role: user.role,
+					action: 'vision.rollback',
+					outcome: 'accepted',
+					requestId: locals.requestId
+				},
+				now
+			);
+			return { control: 'rollback', activeVersion: result.activeVersion };
+		} catch (error) {
+			return failVisionAction('rollback', user, error, locals.requestId, now);
+		}
+	}
+};
+
+/**
+ * One vision action's failure, from catch to audit to a page-safe answer.
+ *
+ * A refusal is audited too, the same reasoning `/` dashboard's own actions
+ * use: an attempt the operator made is an attempt on the record, whether
+ * cs71-vision accepted it or not.
+ */
+function failVisionAction(
+	control: string,
+	user: UserRecord,
+	error: unknown,
+	requestId: string,
+	now: Date
+) {
+	const { database } = webRuntime();
+	const invalid = error instanceof InvalidCommandError;
+	const visionError = error instanceof VisionError ? error : undefined;
+	recordAudit(
+		database,
+		{
+			userId: user.userId,
+			role: user.role,
+			action: `vision.${control}`,
+			outcome: invalid || visionError?.kind === 'rejected' ? 'refused' : 'failed',
+			requestId
+		},
+		now
+	);
+	reportToServerLog(error, requestId);
+
+	if (invalid) {
+		return fail(400, { control, error: INVALID_MESSAGE });
+	}
+	const { status, message } = safeResponseFor(error);
+	return fail(status, { control, error: message });
+}
+
+function integerField(form: FormData, name: string): number {
+	const value = form.get(name);
+	if (typeof value !== 'string' || !/^\d{1,15}$/.test(value)) {
+		throw new InvalidCommandError(`the ${name} field must be a non-negative integer`);
+	}
+	return Number(value);
+}
 
 /**
  * cs71-vision's own words, kept where an engineer can find them.

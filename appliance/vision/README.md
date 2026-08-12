@@ -53,12 +53,14 @@ runs exactly like PI-VISION-001's plain capture-only mode. Set it, and
 ## Dataset api (PI-VISION-003)
 
 Lets an operator see training readiness before training is offered, not
-after (ADR-0013). `cs71vision.api.DatasetApiServer` serves one resource,
-`GET /v1/dataset`, on its own Unix domain socket — mirroring `cs71d.api`'s
-shape (bearer auth against the same shared service credential, stale-socket
-reclaim on start, `AF_UNIX`-only) at a fraction of its surface: one route, no
-commands, no event stream. The response is per-class counts against the
-configured floor:
+after (ADR-0013). `cs71vision.api.VisionApiServer` (renamed from
+`DatasetApiServer` in PI-VISION-005, once it grew routes beyond the
+dataset) serves `GET /v1/dataset` on its own Unix domain socket — mirroring
+`cs71d.api`'s shape (bearer auth against the same shared service
+credential, stale-socket reclaim on start, `AF_UNIX`-only) at a fraction of
+its surface: no event stream, and (still, even after PI-VISION-005) no
+concept of an authenticated *operator* — see below. The response is
+per-class counts against the configured floor:
 
 ```json
 {
@@ -145,16 +147,77 @@ trigger, no activation, no live suggestion. Those are PI-VISION-005/006.
   `vision.db` never receives an example in the first place and there is
   structurally nothing to ever train from.
 
-Nothing in this codebase calls `TrainingJob.trigger()` yet. PI-VISION-005 is
-what decides *when* to (an operator-facing `vision.train` capability) -
-wiring a trigger before the capability that is supposed to gate it exists
-would let any caller train before RBAC does.
-
 What remains genuinely hardware-gated: `RandomForestClassifier`'s wall-clock
 training time on real captured frames, at real dataset sizes, on a real
 Pi 5 CPU is unmeasured here - every test runs against small, fast synthetic
 images on ordinary CI hardware. The same class of gap `V4L2Camera`'s
 real-hardware behavior and the DTR gate already are for this workspace.
+
+## Training, activation and rollback api (PI-VISION-005)
+
+`VisionApiServer` gained four more routes, all on the socket above, once
+there was an operator-facing surface (`vision.train`, below) to gate them
+with:
+
+- `GET /v1/models` — every recorded candidate's metadata, the active
+  version (`null` before anything has ever been activated), and
+  `can_roll_back` — computed from the same activation history
+  `POST /v1/rollback` itself checks, not left for a caller to approximate
+  from candidate count (a model trained several times but only ever
+  activated once has nothing to roll back to, despite several candidates
+  existing).
+- `POST /v1/train` — calls `TrainingJob.trigger()`, PI-VISION-004's own
+  trigger-not-scheduler design; `{"started": false}` means a run was
+  already in flight, not an error.
+- `POST /v1/models/{version}/activate` — records a new activation event for
+  that version. `404` if this store never recorded a candidate at that
+  version.
+- `POST /v1/rollback` — activates whatever version was active immediately
+  before the current one. `400 VALIDATION_FAILED` if fewer than two
+  activations have ever happened.
+
+None of the four carry an actor, an idempotency key or a generation:
+`cs71-vision` has no concept of "which operator" and never will for this
+surface - attribution is entirely `cs71-web`'s job (`recordAudit`), the same
+way `cs71d` never learns a browser identity either, only a service identity.
+
+**Storage: an append-only `activations` table, not a mutable "current
+model" pointer.** Schema version 3 adds `activations` (`version INTEGER NOT
+NULL REFERENCES models(version)`), the same append-only discipline
+`web_audit` already uses on the web side: `DatasetStore.activate(version)`
+is a plain `INSERT`, never an `UPDATE`. "Roll back" is not a distinct
+storage operation - it is a caller activating whatever version
+`DatasetStore.activations()`'s second-to-last row names.
+`DatasetStore.active_version()` is simply the latest row's version. This
+means "the previously active version is retained, never overwritten in
+place" (this task's own backlog requirement) holds structurally, the exact
+way it already does for the `models` table itself.
+
+Constructing a `VisionApiServer` now also constructs a `TrainingJob` (its
+own independent `DatasetStore` connection, the same reasoning PI-VISION-003
+already established for why an independent connection is safe under WAL
+mode) and closes it in `close()`. `api.py` describes what it needs from that
+job as a small `Trainable` `Protocol` (`trigger()`, `close()`) rather than
+importing `TrainingJob` concretely - `runtime.py` builds a `VisionApiServer`
+(`build_api_server`), so a concrete import the other way would be circular.
+
+**Web side:** `appliance/web/src/lib/server/vision/client.ts` gained
+`models()`/`train()`/`activate()`/`rollback()` on the same hand-typed
+client PI-VISION-003 chose, reusing the same transport/credential
+infrastructure. `vision/errors.ts` grew a real per-code error mapping here
+- PI-VISION-003's dataset read had nothing worth distinguishing (every
+failure meant "the numbers could not be shown"), but these are real actions
+with distinct, actionable refusal reasons, the same shape `daemon/errors.ts`
+already uses. `/dataset` (`appliance/web/src/routes/dataset/`) gained a
+models section: every candidate's accuracy shown in a table next to the
+active model's own, directly above that candidate's own activate control -
+the page structure itself is what satisfies "activation is refused unless
+the operator has been shown the candidate's accuracy alongside the
+currently active model's" (ADR-0013), not a separate confirmation step.
+`vision.train` is a new RBAC capability, granted at the `operator` row
+(`security-and-safety.md`) - a deliberate departure from this project's own
+pattern of reserving impactful actions to `administrator`, since none of
+these actions touch machine motion or `cs71d` at all.
 
 ## Camera
 

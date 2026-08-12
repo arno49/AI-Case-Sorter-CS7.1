@@ -20,12 +20,15 @@ Attack surfaces are HTTPS forms/SSE, Caddy configuration, Node dependency tree, 
 | Read snapshot/history/faults | yes | yes | yes |
 | Software stop | yes | yes | yes |
 | Connect, home, sort, feed | no | yes | yes |
+| Retrain/activate/roll back classifier model (`vision.train`) | no | yes | yes |
 | Recovery/reset | no | no | yes, explicit confirmation |
 | Change permitted configuration | no | no | yes |
 | Manage users/provisioning | no | no | yes |
 | Direct protocol command/device path | no | no | no |
 
 SvelteKit enforces these rules server-side before calling `cs71d`; browser components are not an authority. The daemon accepts only its BFF service identity and restricted actor attribution—not arbitrary browser credentials or roles.
+
+`vision.train` (PI-VISION-005, ADR-0013) is a deliberate departure from this table's own pattern of reserving impactful/irreversible actions to `administrator`: retraining, activating and rolling back a classifier candidate never touches machine motion, `cs71d`'s command surface, or either database `cs71d`/`cs71-web` own, so it is granted at the `operator` row instead. It gates `cs71-vision`'s own HTTP surface (`appliance/vision/src/cs71vision/api.py`, PI-VISION-003/004/005) the same way every other capability gates `cs71d`'s.
 
 ## Authentication and session protections
 

@@ -1096,10 +1096,72 @@ DTR gate already are for this workspace, not a new kind of one.
 
 **Goal:** give `operator` a bounded, auditable way to retrain and activate a model, with rollback. **Implementation notes:** new `vision.train` capability, granted to `operator` and `administrator`, refused to `viewer` — a deliberate departure from reserving impactful actions to `administrator`, recorded as such in ADR-0013. **Dependencies:** PI-VISION-004, PI-WEB-002. **Hardware required:** No. **Size:** M.
 
-- `vision.train` is a new row in the capability matrix (`security-and-safety.md`, `appliance/web/src/lib/server/auth/capabilities.ts`), not inferred from an existing capability.
-- Activation is refused unless the operator has been shown the candidate's accuracy alongside the currently active model's.
-- Rollback to the previously active version is a supported, tested action, independent of retraining.
-- Every train/activate/rollback action is durably recorded in its own audit trail, mirroring `web_audit`'s pattern.
+Delivered for the evidence class achievable without a Pi or real camera.
+`cs71vision.dataset` gained a third table (schema version 3, `activations`,
+`version INTEGER NOT NULL REFERENCES models(version)`): an append-only
+event log, the same discipline `web_audit` already uses for the web side.
+`DatasetStore.activate(version)` inserts a row rather than mutating one -
+"the previously active version is retained, never overwritten in place"
+holds structurally, since there is no `UPDATE`/`DELETE` path onto that
+table anywhere in this codebase, the same as `models`. "Roll back" is not a
+distinct storage operation: it is a caller activating whatever version
+`DatasetStore.activations()`'s second-to-last row names, and
+`DatasetStore.active_version()` is simply the latest row's version - three
+tiny reads and one insert cover the whole feature.
+
+`cs71vision.api.VisionApiServer` (renamed from `DatasetApiServer`, since it
+now serves more than the dataset) gained four routes on the same socket:
+`GET /v1/models` (every candidate's metadata plus the active version and
+whether a rollback currently has anything to go back to - computed
+server-side from the same `activations()` history `_rollback_body` itself
+checks, rather than left for a caller to approximate from candidate count,
+which a model trained several times but only ever activated once would get
+wrong), `POST /v1/train` (triggers `TrainingJob.trigger()`, PI-VISION-004's
+own trigger-not-scheduler design - this is the first caller it ever gets),
+`POST /v1/models/{version}/activate`, and `POST /v1/rollback`. None of the
+four carry an actor or attribution: `cs71-vision` has no concept of "which
+operator" and never will for this surface - that lives entirely on the
+`cs71-web` side (`recordAudit`), the same way `cs71d` never learns a
+browser identity either. Constructing a `VisionApiServer` now also
+constructs a `TrainingJob` (its own independent `DatasetStore` connection,
+per PI-VISION-003's own reasoning for why that is safe); a `Trainable`
+`Protocol` inside `api.py` describes what it needs from that job rather than
+importing `TrainingJob` concretely, since `runtime.py` builds a
+`VisionApiServer` and a concrete import would have been circular.
+
+**Web-side scope stayed proportionate to what PI-VISION-003 already
+decided**, not re-litigated per action: `appliance/web/src/lib/server/vision/client.ts`
+gained `models()`/`train()`/`activate()`/`rollback()` methods on the same
+hand-typed client, reusing the same transport/credential infrastructure. Its
+error mapping did grow, though - PI-VISION-003's dataset read had no
+per-code distinction worth making (every failure meant the same thing,
+"the numbers could not be shown"), but training/activating/rolling back are
+real actions with distinct, actionable refusal reasons (a version not on
+record, a rollback with nothing to roll back to), so `vision/errors.ts`
+grew a per-code `SAFE_RESPONSES` map the same shape `daemon/errors.ts`
+already uses, once there was something meaningful to say per code.
+
+The `/dataset` page (`routes/dataset/`) gained a models section: every
+candidate, newest first, each one's per-class accuracy shown in a table
+next to the currently active model's own - the rendering itself is what
+satisfies "activation is refused unless the operator has been shown the
+candidate's accuracy alongside the currently active model's" (ADR-0013),
+not a separate confirmation step bolted on afterward, since the activate
+control for a candidate sits directly below that same comparison on the
+same page. Training stays disabled until `data.dataset.trainingReady` (the
+same floor PI-VISION-003 already computes); a rollback control appears only
+when `cs71-vision`'s own `can_roll_back` says there is something to roll
+back to. Three new form actions (`?/train`, `?/activate`, `?/rollback`)
+mirror the dashboard's own `operate()` shape - `requireCapability` next to
+the effect, `recordAudit` on every outcome including a refusal, a form
+field validated before anything is sent - with no generation or idempotency
+key, since none of these touch machine state or `cs71d`'s optimistic-
+concurrency model at all.
+
+- [x] `vision.train` is a new row in the capability matrix (`security-and-safety.md`, `appliance/web/src/lib/server/auth/capabilities.ts`), not inferred from an existing capability.
+- [x] Activation is refused unless the operator has been shown the candidate's accuracy alongside the currently active model's.
+- [x] Rollback to the previously active version is a supported, tested action, independent of retraining.
+- [x] Every train/activate/rollback action is durably recorded in its own audit trail, mirroring `web_audit`'s pattern.
 
 ### PI-VISION-006 — Read-only classification suggestion (Phase 1)
 
