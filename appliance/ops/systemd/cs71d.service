@@ -4,6 +4,8 @@ Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance
 After=local-fs.target dev-cs71.device
 BindsTo=dev-cs71.device
 ConditionPathExists=/dev/cs71
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,8 +15,6 @@ UMask=0077
 ExecStart=/opt/cs71/daemon/venv/bin/cs71d --serve /etc/cs71/cs71d.toml
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # /run/cs71 is created fresh by systemd on every start, owned cs71d:cs71-api.
 # The socket cs71d binds there ends up with that same ownership and its own

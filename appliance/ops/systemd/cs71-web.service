@@ -7,6 +7,8 @@ Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance
 # reverse).
 After=network.target cs71d.service
 Wants=cs71d.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -24,8 +26,6 @@ Environment=CS71_WEB_PROFILE=production
 ExecStart=/usr/bin/node build/index.js
 Restart=on-failure
 RestartSec=2
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 StateDirectory=cs71-web
 StateDirectoryMode=0700

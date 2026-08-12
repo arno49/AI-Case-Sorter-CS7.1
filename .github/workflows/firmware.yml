@@ -196,6 +196,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.23.2"
+      - name: Make node reachable at the path the systemd unit hardcodes
+        # cs71-web.service's ExecStart is /usr/bin/node, matching how Node
+        # lands on a real Debian/Raspberry Pi OS install (e.g. NodeSource).
+        # actions/setup-node instead installs into the runner's toolcache;
+        # this symlink makes the runner match production without pretending
+        # the runner did an apt install it did not.
+        run: sudo ln -sf "$(command -v node)" /usr/bin/node
       - name: Record evidence class
         run: |
           printf '### Appliance ops evidence\n\n`%s`: real systemd/users/sockets on this runner; no Pi, udev or real controller.\n' \

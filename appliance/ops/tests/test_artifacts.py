@@ -120,6 +120,16 @@ class SystemdUnitsShareOneDesign(unittest.TestCase):
         self.assertIn("/opt/cs71/daemon/venv/bin/cs71d", exec_start)
         self.assertIn(DAEMON_CONFIG_PATH, exec_start)
 
+    def test_start_limit_directives_are_in_the_unit_section_not_service(self) -> None:
+        # systemd silently ignores these two under [Service] rather than
+        # refusing the unit - a real, easy-to-miss placement bug that leaves
+        # the restart-storm limit not actually configured.
+        for unit in (self.daemon, self.web):
+            self.assertIn("Unit/StartLimitIntervalSec", unit)
+            self.assertIn("Unit/StartLimitBurst", unit)
+            self.assertNotIn("Service/StartLimitIntervalSec", unit)
+            self.assertNotIn("Service/StartLimitBurst", unit)
+
     def test_the_web_service_starts_after_the_daemon_but_only_wants_it(self) -> None:
         self.assertIn("cs71d.service", directive_words(self.web, "Unit", "After"))
         self.assertIn("cs71d.service", directive_words(self.web, "Unit", "Wants"))
