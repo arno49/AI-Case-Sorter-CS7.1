@@ -68,10 +68,30 @@ The Argon2id parameters were measured at roughly 100 ms per hash on an arm64
 development machine. That is **not** Raspberry Pi evidence; the cost on the
 appliance is unmeasured until it is timed on representative hardware.
 
-The browser-facing boundary — the session cookie, the request hook and the
-login and logout routes — is not implemented yet, and neither is role
-enforcement. There is no operator-facing command to print a bootstrap token
-until the installer provides one.
+### The request boundary
+
+`src/hooks.server.ts` resolves the session on every request and **denies by
+default**: a route is reachable without a session only by appearing in its
+public list, so a page added later is protected by omission rather than exposed
+by it. A request presenting a token the server will not honour always leaves
+without that cookie.
+
+The session cookie carries an opaque token and nothing else — no role, no user
+id, no signed claims. It is `HttpOnly`, `SameSite=Strict` and root-scoped in
+every profile, and `Secure` with the `__Host-` prefix in production, which
+browsers accept only for a cookie that is secure, root-scoped and carries no
+`Domain`.
+
+The login redirect carries a fixed reason code and never a caller-supplied
+return path, so the login page cannot be turned into an open redirect. Signing
+out is a POST; a `GET /logout` would let any page on the network sign an
+operator out of a running machine.
+
+Role enforcement, per-session CSRF tokens and login rate limiting are
+PI-WEB-002 and are **not** implemented; SvelteKit's own rejection of
+cross-origin form posts is the only CSRF control in place. There is no
+operator-facing command to print a bootstrap token until the installer provides
+one, so a fresh appliance cannot yet be provisioned without writing code.
 
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.

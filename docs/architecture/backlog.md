@@ -336,9 +336,8 @@ single segment, which keeps every previously valid value valid.
 
 **Goal:** secure local user lifecycle and server sessions. **Implementation notes:** Argon2id hashes, opaque server-side sessions, one-time bootstrap admin. **Dependencies:** PI-FOUNDATION-002. **Hardware required:** No. **Size:** L.
 
-**Status:** In progress. The server-side core is implemented; the browser-facing
-request boundary is not. The runtime dependencies were chosen and verified
-first, which the web workspace previously had none of.
+**Status:** Complete for the software criteria below. The runtime dependencies
+were chosen and verified first, which the web workspace previously had none of.
 
 `@node-rs/argon2` provides the Argon2id hashes. It ships prebuilt arm64 and x64
 binaries, so nothing compiles on the appliance; the alternative `argon2`
@@ -357,7 +356,8 @@ The server-side authentication core is now implemented in
 `appliance/web/src/lib/server/auth/`: `web.db` with forward-only checksummed
 migrations, the Argon2id policy, opaque server-side sessions, local accounts
 and one-time expiry-bound bootstrap provisioning. Evidence class is software
-only; 98 vitest tests pass, alongside `check:api`, `lint`, `check` and `build`.
+only; 124 vitest tests pass, alongside `check:api`, `lint`, `check` and
+`build`.
 
 Several invariants are enforced by SQLite itself rather than by application
 convention, so a future bug cannot quietly violate them: a stored password must
@@ -365,16 +365,24 @@ be an Argon2id encoding, a revoked session cannot be restored, a session cannot
 be rebound to another account or token, a bootstrap token can be claimed once,
 and provisioning cannot be re-opened in place.
 
-The browser-facing request boundary — the session cookie, the request hook and
-the login and logout routes — is deliberately not in this change; RBAC and CSRF
-remain PI-WEB-002. The operator-facing command that prints a bootstrap token
-belongs with the installer in the PI-DEPLOY epic; until it exists, a bootstrap
-token can only be issued programmatically.
+The browser-facing boundary is `hooks.server.ts` with the login and logout
+routes. It denies by default: a route is reachable without a session only by
+appearing in the public list, so a page added later is protected by omission
+rather than exposed by it. The session cookie is `HttpOnly`, `SameSite=Strict`
+and root-scoped everywhere, and `Secure` with the `__Host-` prefix in
+production. The login redirect carries a fixed reason code and never a
+caller-supplied return path, so the login page cannot become an open redirect.
+
+Two things this task does not carry. Per-session CSRF tokens, role enforcement
+and login rate limiting are PI-WEB-002; SvelteKit's own cross-origin form
+rejection is the only CSRF control in place so far. The operator-facing command
+that prints a bootstrap token belongs with the installer in PI-OPS-001; until it
+exists a token can only be issued programmatically, so a fresh appliance is
+reachable only through that packaging work.
 
 - [x] Fresh installation has no usable default password and requires expiry-bound bootstrap provisioning.
 - [x] Password storage uses Argon2id; plaintext passwords/tokens never appear in database/log tests.
-- [ ] Cookies are Secure/HttpOnly/SameSite according to production origin policy and sessions rotate on login.
-      Rotation is implemented and tested; the cookie policy arrives with the request boundary.
+- [x] Cookies are Secure/HttpOnly/SameSite according to production origin policy and sessions rotate on login.
 - [x] Logout, expiry, disable and password-change revoke existing sessions.
 - [x] `web.db` access is exclusive to web service identity.
 

@@ -79,6 +79,23 @@ export {
 } from './sessions';
 
 export {
+	clearSessionCookie,
+	readSessionCookie,
+	sessionCookieName,
+	sessionCookieOptions,
+	setSessionCookie,
+	type SessionCookieOptions
+} from './cookies';
+
+export {
+	authenticateRequest,
+	endSession,
+	startSession,
+	type AuthenticatedRequest,
+	type RequestAuthentication
+} from './boundary';
+
+export {
 	BOOTSTRAP_TOKEN_LIFETIME_MS,
 	ProvisioningError,
 	claimBootstrapToken,
