@@ -336,6 +336,24 @@ single segment, which keeps every previously valid value valid.
 
 **Goal:** secure local user lifecycle and server sessions. **Implementation notes:** Argon2id hashes, opaque server-side sessions, one-time bootstrap admin. **Dependencies:** PI-FOUNDATION-002. **Hardware required:** No. **Size:** L.
 
+**Status:** In progress. The runtime dependencies are chosen and verified,
+which the web workspace previously had none of.
+
+`@node-rs/argon2` provides the Argon2id hashes. It ships prebuilt arm64 and x64
+binaries, so nothing compiles on the appliance; the alternative `argon2`
+package needs a node-gyp toolchain on the device, and a pure-WASM hash is too
+slow to run honest parameters on a Pi. `better-sqlite3` opens `web.db`: its API
+is synchronous, which suits SSR request handling, and it is stable rather than
+experimental — Node's built-in `node:sqlite` would have avoided a dependency
+but would have pinned the appliance to an experimental API across minor Node
+releases.
+
+Both were installed and exercised on a development machine: Argon2id hashes
+verify, SQLite reads and writes, and `npm audit --omit=dev` reports no
+vulnerabilities in the runtime tree. The remaining acceptance criteria —
+provisioning, hashing policy, cookies, revocation and `web.db` ownership — are
+not implemented yet.
+
 - Fresh installation has no usable default password and requires expiry-bound bootstrap provisioning.
 - Password storage uses Argon2id; plaintext passwords/tokens never appear in database/log tests.
 - Cookies are Secure/HttpOnly/SameSite according to production origin policy and sessions rotate on login.

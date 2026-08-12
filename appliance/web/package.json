@@ -42,5 +42,9 @@
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16",
 		"vitest": "^4.1.8"
+	},
+	"dependencies": {
+		"@node-rs/argon2": "^2.0.2",
+		"better-sqlite3": "^13.0.3"
 	}
 }
