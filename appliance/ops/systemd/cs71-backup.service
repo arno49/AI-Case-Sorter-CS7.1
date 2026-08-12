@@ -1,0 +1,39 @@
+[Unit]
+Description=cs71 backup - consistent SQLite backup of machine.db and web.db
+Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance/ops/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cs71/ops/backup.sh
+
+# Runs as root, unlike cs71d.service/cs71-web.service: it reads both service
+# identities' state directories and root-owned configuration, and writes the
+# backup-status.json marker cs71d's own durability monitor reads back
+# (appliance/daemon/src/cs71d/storage_health.py). ProtectSystem=strict still
+# applies to root - only the paths below are writable.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cs71d /var/lib/cs71-web /var/lib/cs71-backups
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Backup never opens a socket at all - not even AF_UNIX - unlike the daemon
+# and web services, which at least need one each.
+RestrictAddressFamilies=
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=32

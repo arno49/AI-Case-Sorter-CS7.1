@@ -14,14 +14,16 @@ import os
 import stat
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .api import ApiServer
-from .config import Backend, ConfigError, DaemonConfig
+from .config import Backend, ConfigError, DaemonConfig, Profile
 from .device import create_transport_factory
 from .domain import OperationDomain, WorkerObservers
 from .journal import Journal
 from .serial_worker import SerialWorker
+from .storage_health import DurabilityMonitor, production_durability_monitor
 
 _LOGGER = logging.getLogger("cs71d.runtime")
 
@@ -44,6 +46,21 @@ def read_service_token(path: str | Path) -> str:
     if not token:
         raise ConfigError(f"the service token at {token_path} is empty")
     return token
+
+
+def durability_monitor_for(config: DaemonConfig) -> DurabilityMonitor | None:
+    """Only the production profile monitors disk space and backup freshness.
+
+    Development and test configurations use throwaway paths with no
+    installed backup timer behind them, so there is nothing meaningful to
+    monitor there; production always has both by installation contract.
+    """
+    if config.profile is not Profile.PRODUCTION:
+        return None
+    return production_durability_monitor(
+        database_path=config.database_path,
+        now=lambda: datetime.now(UTC),
+    )
 
 
 class Daemon:
@@ -84,7 +101,11 @@ class Daemon:
                     profile_observer=observers.profile,
                 )
 
-            domain = OperationDomain(journal, worker_factory)
+            domain = OperationDomain(
+                journal,
+                worker_factory,
+                durability_monitor=durability_monitor_for(self._config),
+            )
             self._domain = domain
             domain.start(timeout=timeout)
             api = ApiServer(

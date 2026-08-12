@@ -26,6 +26,7 @@ PRODUCTION_DEVICE_PATH = "/dev/cs71"
 DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71d/service-token"
 WEB_SERVICE_TOKEN_PATH = "/etc/cs71-web/service-token"
 DAEMON_CONFIG_PATH = "/etc/cs71/cs71d.toml"
+BACKUP_MARKER_PATH = "/var/lib/cs71d/backup-status.json"
 
 
 def parse_unit(path: Path) -> dict[str, list[str]]:
@@ -209,9 +210,20 @@ class CaddyfileExposesOnlyTheWebPort(unittest.TestCase):
 class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
     def setUp(self) -> None:
         self.text = (OPS_DIR / "install.sh").read_text(encoding="utf-8")
+        # build_web_workspace/build_daemon_venv live here, not in install.sh
+        # itself, so upgrade.sh can call the exact same build without a
+        # second copy of the logic to drift out of sync.
+        self.common_text = (OPS_DIR / "lib/common.sh").read_text(encoding="utf-8")
 
     def test_is_valid_posix_shell(self) -> None:
-        for script in ("install.sh", "lib/common.sh", "tests/smoke-test.sh"):
+        for script in (
+            "install.sh",
+            "backup.sh",
+            "restore.sh",
+            "upgrade.sh",
+            "lib/common.sh",
+            "tests/smoke-test.sh",
+        ):
             with self.subTest(script=script):
                 result = subprocess.run(
                     ["bash", "-n", str(OPS_DIR / script)],
@@ -243,13 +255,13 @@ class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
             self.assertIn(flag, self.text)
 
     def test_prunes_dev_dependencies_but_keeps_tsx_for_the_bootstrap_cli(self) -> None:
-        self.assertIn("npm prune --omit=dev", self.text)
+        self.assertIn("npm prune --omit=dev", self.common_text)
         self.assertIn("issue-bootstrap-token.ts", self.text)
 
     def test_every_copied_web_entry_actually_exists(self) -> None:
         # A renamed or removed file in appliance/web must fail here, not as a
-        # `cp: cannot stat` in the middle of a real install.
-        match = re.search(r"for entry in ([^;]+); do", self.text)
+        # `cp: cannot stat` in the middle of a real install or upgrade.
+        match = re.search(r"for entry in ([^;]+); do", self.common_text)
         self.assertIsNotNone(match, "could not find the web-workspace copy loop")
         entries = match.group(1).split()
         self.assertGreaterEqual(len(entries), 5)
@@ -270,6 +282,102 @@ class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
             start_index,
             "the bootstrap CLI must run before the services start, not after",
         )
+
+
+class BackupTimerRunsTheInstalledCopy(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = parse_unit(OPS_DIR / "systemd/cs71-backup.service")
+        self.timer_text = (OPS_DIR / "systemd/cs71-backup.timer").read_text(encoding="utf-8")
+
+    def test_runs_the_copy_install_sh_places_at_a_fixed_path(self) -> None:
+        # Not the checkout's own appliance/ops/backup.sh: that path moves or
+        # disappears when the checkout is updated or deleted, but the timer
+        # still needs to fire.
+        self.assertEqual(directive(self.service, "Service", "ExecStart"), "/opt/cs71/ops/backup.sh")
+
+    def test_is_a_oneshot_that_can_write_only_where_backup_sh_needs_to(self) -> None:
+        self.assertEqual(directive(self.service, "Service", "Type"), "oneshot")
+        paths = directive(self.service, "Service", "ReadWritePaths").split()
+        for required in ("/var/lib/cs71d", "/var/lib/cs71-web", "/var/lib/cs71-backups"):
+            self.assertIn(required, paths)
+
+    def test_survives_a_missed_run_while_the_appliance_was_off(self) -> None:
+        self.assertIn("Persistent=true", self.timer_text)
+
+    def test_install_sh_enables_the_timer_and_installs_its_pinned_copy(self) -> None:
+        install_text = (OPS_DIR / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("cs71-backup.timer", install_text)
+        self.assertIn("/opt/cs71/ops/backup.sh", install_text)
+
+
+class BackupRestoreUpgradeScriptsAgreeWithTheDaemonsDurabilityMonitor(unittest.TestCase):
+    """cs71d's storage_health.py reads what these scripts write; a path or
+    shape drifting apart here would silently break that monitor in production
+    without any test on either side catching it alone."""
+
+    def setUp(self) -> None:
+        self.backup_text = (OPS_DIR / "backup.sh").read_text(encoding="utf-8")
+        self.restore_text = (OPS_DIR / "restore.sh").read_text(encoding="utf-8")
+        self.upgrade_text = (OPS_DIR / "upgrade.sh").read_text(encoding="utf-8")
+        self.storage_health_text = (
+            REPO_ROOT / "appliance/daemon/src/cs71d/storage_health.py"
+        ).read_text(encoding="utf-8")
+
+    def test_backup_sh_writes_the_marker_path_the_daemon_reads(self) -> None:
+        self.assertIn(BACKUP_MARKER_PATH, self.backup_text)
+        self.assertIn(f'"{BACKUP_MARKER_PATH}"', self.storage_health_text)
+
+    def test_backup_sh_marker_always_carries_ok_and_completed_at(self) -> None:
+        # BackupFreshnessMonitor.check() requires exactly these two fields.
+        self.assertIn('"ok"', self.backup_text)
+        self.assertIn('"completed_at"', self.backup_text)
+
+    def test_backup_sh_writes_the_marker_on_the_failure_path_too(self) -> None:
+        # A backup that silently never updates the marker on failure would
+        # leave the monitor reading a stale success forever.
+        self.assertIn("trap on_failure ERR", self.backup_text)
+
+    def test_backup_sh_never_includes_a_service_token_in_the_archive(self) -> None:
+        # The comment above the config copy step is allowed to say why the
+        # credential files are excluded; the script must never actually name
+        # either token's path, which is the only way it could touch one.
+        self.assertNotIn(DAEMON_SERVICE_TOKEN_PATH, self.backup_text)
+        self.assertNotIn(WEB_SERVICE_TOKEN_PATH, self.backup_text)
+
+    def test_restore_sh_stops_web_before_daemon_and_starts_daemon_before_web(self) -> None:
+        stop_index = self.restore_text.index("systemctl stop cs71-web.service cs71d.service")
+        start_daemon_index = self.restore_text.index("systemctl start cs71d.service")
+        start_web_index = self.restore_text.index("systemctl start cs71-web.service")
+        self.assertLess(stop_index, start_daemon_index)
+        self.assertLess(start_daemon_index, start_web_index)
+
+    def test_restore_sh_verifies_the_manifest_and_integrity_before_installing_anything(self) -> None:
+        verify_index = self.restore_text.index("manifest.py\" verify")
+        integrity_index = self.restore_text.index("verify_sqlite_integrity")
+        install_index = self.restore_text.index("install -o cs71d")
+        self.assertLess(verify_index, install_index)
+        self.assertLess(integrity_index, install_index)
+
+    def test_upgrade_sh_backs_up_before_touching_the_current_release(self) -> None:
+        backup_index = self.upgrade_text.index('"$OPS_DIR/backup.sh"')
+        save_index = self.upgrade_text.index("cp -a /opt/cs71/web /opt/cs71/web.previous")
+        self.assertLess(backup_index, save_index)
+
+    def test_upgrade_sh_rolls_back_through_restore_sh_on_every_failure_after_the_backup(
+        self,
+    ) -> None:
+        # Every failure once artifacts/data are actually being touched calls
+        # rollback() immediately before exiting; the two guard-clause exits
+        # before any backup is taken (missing install, failed backup) must
+        # not, since there is nothing yet to roll back.
+        paired = len(re.findall(r"\n\trollback\n\texit 1\n", self.upgrade_text))
+        self.assertEqual(paired, 4)
+        self.assertIn('"$OPS_DIR/restore.sh" --from', self.upgrade_text)
+
+    def test_upgrade_sh_starts_daemon_before_web_on_the_new_release(self) -> None:
+        daemon_index = self.upgrade_text.index("systemctl start cs71d.service")
+        web_index = self.upgrade_text.index("systemctl start cs71-web.service")
+        self.assertLess(daemon_index, web_index)
 
 
 class DaemonAndWebConfigAgreeOnTheProductionPaths(unittest.TestCase):

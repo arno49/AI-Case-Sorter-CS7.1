@@ -13,7 +13,8 @@ import pytest
 
 from cs71d.cli import main
 from cs71d.config import Backend, ConfigError, DaemonConfig, Profile
-from cs71d.runtime import Daemon, read_service_token
+from cs71d.runtime import Daemon, durability_monitor_for, read_service_token
+from cs71d.storage_health import DiskSpaceMonitor
 
 TOKEN = "installation-local-service-credential"  # noqa: S105 - test fixture, not a secret
 
@@ -154,6 +155,58 @@ def test_the_entry_point_requires_a_mode(capsys: pytest.CaptureFixture[str]) -> 
         main([])
 
     assert "required" in capsys.readouterr().err
+
+
+def test_durability_monitor_for_is_none_outside_production(workspace: Path) -> None:
+    config = _config(workspace, token_path=None)
+
+    assert durability_monitor_for(config) is None
+
+
+def test_durability_monitor_for_wires_disk_and_backup_checks_in_production(workspace: Path) -> None:
+    config = DaemonConfig(
+        profile=Profile.PRODUCTION,
+        backend=Backend.SIMULATOR,
+        device_path=None,
+        socket_path=str(workspace / "cs71d.sock"),
+        database_path=str(workspace / "machine.db"),
+        service_token_path=None,
+    )
+
+    monitor = durability_monitor_for(config)
+
+    assert monitor is not None
+    disk_monitor = monitor.checks[0].__self__  # type: ignore[attr-defined]
+    assert isinstance(disk_monitor, DiskSpaceMonitor)
+    assert disk_monitor.path == workspace
+
+
+def test_a_production_profile_daemon_blocks_on_its_own_durability_monitor(
+    workspace: Path,
+) -> None:
+    """An end-to-end proof, not just the builder: a production daemon really
+    refuses new work once its own durability monitor reports a threat. No
+    backup has ever run against this throwaway workspace, so the fixed
+    production backup marker is absent and the monitor reports exactly that -
+    the same way it would on a freshly imaged, never-backed-up Pi."""
+    config = DaemonConfig(
+        profile=Profile.PRODUCTION,
+        backend=Backend.SIMULATOR,
+        device_path=None,
+        socket_path=str(workspace / "cs71d.sock"),
+        database_path=str(workspace / "machine.db"),
+        service_token_path=str(_token_file(workspace)),
+    )
+    daemon = Daemon(config)
+    daemon.start(timeout=2.0)
+    try:
+        status, body = _get(config.socket_path, "/v1/health/ready")
+
+        assert status == 200
+        assert body["ready"] is False
+        assert "backup" in body["reason"]
+    finally:
+        daemon.close(timeout=2.0)
 
 
 def test_serving_an_invalid_configuration_reports_it(

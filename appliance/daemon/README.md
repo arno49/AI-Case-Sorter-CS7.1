@@ -257,6 +257,27 @@ A stop that cannot be recorded is refused: an unattributable software stop is a
 claim this daemon does not make, and the physical E-stop is the independent
 safety device. This is a software stop, not an emergency stop.
 
+## Storage and backup durability
+
+`cs71d.storage_health` detects two more durability threats a failed journal
+write does not cover: free disk space beside `machine.db` falling under a
+fixed floor, and `appliance/ops/backup.sh`'s own status marker
+(`/var/lib/cs71d/backup-status.json`) being absent, recording a failure, or
+older than its configured age. `production_durability_monitor` builds the
+fixed production checks — 500 MiB free, a 48-hour-old backup at most — and
+`runtime.py` wires it into `OperationDomain` only for `Profile.PRODUCTION`;
+development and test configurations carry no monitor, since their throwaway
+paths have no installed backup timer behind them.
+
+`OperationDomain.refresh_durability` runs whichever monitor is configured
+before every admission and on every `/v1/health/ready` poll, and latches a
+threat through the exact same `MachineState.record_journal_fault` a failed
+journal write already uses — same `LATCHED` fault, same `JOURNAL_UNAVAILABLE`
+refusal, same "does not clear on its own" posture. A storage or backup
+problem is therefore visible to a poller even with no traffic, not only once
+a write is attempted, and remediating it still needs a service restart the
+same way recovering from a journal fault does.
+
 ## Device policy and the DTR gate
 
 `cs71d.device.create_transport_factory` turns configuration into the factory

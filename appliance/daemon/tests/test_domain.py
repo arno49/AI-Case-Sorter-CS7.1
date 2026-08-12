@@ -34,6 +34,7 @@ from cs71d.operations import (
 from cs71d.serial_worker import SerialWorker
 from cs71d.simulator import AdverseScenario, SimulatorConfig, SimulatorTransport
 from cs71d.simulator.transport import TranscriptDirection
+from cs71d.storage_health import DurabilityMonitor, DurabilityThreatError
 
 START = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
 OPERATOR = Actor(user_id="opaque-bff-attribution", role="operator")
@@ -292,6 +293,7 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
         breakable: bool = False,
         swallow_stop: bool = False,
         slot_max: int = 102,
+        durability_monitor: DurabilityMonitor | None = None,
     ) -> Harness:
         clock = FakeClock(START)
         watcher = OperationWatcher()
@@ -322,6 +324,7 @@ def make_harness() -> Iterator[Callable[..., Harness]]:
             now=clock,
             operation_observer=watcher.observe,
             machine_observer=machine.observe,
+            durability_monitor=durability_monitor,
         )
         harness = Harness(domain, simulator, journal, watcher, machine, clock)
         built.append(harness)
@@ -776,6 +779,76 @@ def test_a_stop_that_cannot_be_recorded_is_refused(
 
     assert raised.value.code == "JOURNAL_UNAVAILABLE"
     assert not harness.domain.snapshot.journal_available
+
+
+class TogglableThreat:
+    """A durability check a test can flip on and off, and count calls to."""
+
+    def __init__(self) -> None:
+        self.threatened = False
+        self.calls = 0
+
+    def check(self) -> None:
+        self.calls += 1
+        if self.threatened:
+            raise DurabilityThreatError("injected durability threat")
+
+
+def test_a_durability_threat_blocks_new_motion_and_latches_the_machine(
+    make_harness: Callable[..., Harness],
+) -> None:
+    threat = TogglableThreat()
+    harness = make_harness(durability_monitor=DurabilityMonitor(checks=(threat.check,)))
+    harness.home()
+    threat.threatened = True
+
+    with pytest.raises(JournalUnavailableError) as raised:
+        harness.submit(key="blocked")
+
+    assert raised.value.code == "JOURNAL_UNAVAILABLE"
+    view = harness.domain.snapshot
+    assert not view.journal_available
+    assert view.fault is FaultState.LATCHED
+    assert "durability threat" in view.reason
+    assert not view.admits_work
+    assert harness.sort_commands() == 0
+
+    # Latched the same way a journal failure is: it does not clear on its
+    # own, and the monitor is not re-run once the machine is already down.
+    calls_when_latched = threat.calls
+    threat.threatened = False
+    with pytest.raises(JournalUnavailableError):
+        harness.submit(key="blocked-again")
+    assert threat.calls == calls_when_latched
+
+
+def test_a_clean_durability_monitor_does_not_block_admission(
+    make_harness: Callable[..., Harness],
+) -> None:
+    threat = TogglableThreat()
+    harness = make_harness(durability_monitor=DurabilityMonitor(checks=(threat.check,)))
+    harness.home()
+
+    admitted = harness.submit(key="unblocked")
+
+    assert admitted.state is OperationState.ACCEPTED
+    assert threat.calls > 0
+    assert harness.domain.snapshot.journal_available
+
+
+def test_refresh_durability_surfaces_a_threat_without_any_admission_attempt(
+    make_harness: Callable[..., Harness],
+) -> None:
+    """The readiness endpoint calls this directly, so a poller sees the fault
+    even when nothing is being submitted."""
+    threat = TogglableThreat()
+    harness = make_harness(durability_monitor=DurabilityMonitor(checks=(threat.check,)))
+    threat.threatened = True
+
+    view = harness.domain.refresh_durability()
+
+    assert not view.journal_available
+    assert "durability threat" in view.reason
 
 
 def test_the_machine_view_publishes_observed_capabilities_and_readiness(

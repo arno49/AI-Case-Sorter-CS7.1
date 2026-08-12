@@ -1,4 +1,4 @@
-# Appliance packaging: systemd, udev, Caddy
+# Appliance packaging and lifecycle: systemd, udev, Caddy, backup/upgrade/restore
 
 What `install.sh` builds on a Raspberry Pi (or any Debian-family Linux host,
 for the smoke test): two least-privilege systemd services, a udev rule that
@@ -7,19 +7,24 @@ site that fronts the other on the LAN. This mirrors
 [deployment-and-operations.md](../../docs/architecture/deployment-and-operations.md)
 and [ADR-0009](../../docs/architecture/adr/0009-native-systemd-udev-caddy.md);
 where this document and that one differ on a detail, this one is the one the
-installer actually does.
+installer actually does. `backup.sh`, `restore.sh` and `upgrade.sh` (PI-OPS-002)
+are the maintenance half of the same document's "Install, upgrade and rollback"
+and "Backups, observability and runbooks" sections.
 
 ## Layout
 
 ```text
 /opt/cs71/web/                 SvelteKit source + a fresh npm ci/build, pruned to dependencies
 /opt/cs71/daemon/venv/         a dedicated Python venv with cs71_protocol + cs71d installed into it
+/opt/cs71/ops/                 backup.sh's own installed copy, plus release-info.json (see below)
 /etc/cs71/cs71d.toml           daemon config — world-readable, nothing secret in it
 /etc/cs71/web.env              web PORT/HOST/ORIGIN — world-readable, nothing secret in it
 /etc/cs71d/service-token       the daemon's own copy of the shared credential, cs71d:cs71d 0600
 /etc/cs71-web/service-token    the web's own copy of the same credential, cs71-web:cs71-web 0600
 /var/lib/cs71d/machine.db      daemon-owned SQLite, cs71d:cs71d 0700 directory, 0600 file
+/var/lib/cs71d/backup-status.json  the daemon's own BackupFreshnessMonitor reads this, cs71d:cs71d 0600
 /var/lib/cs71-web/web.db       web-owned SQLite, cs71-web:cs71-web 0700 directory, 0600 file
+/var/lib/cs71-backups/<stamp>/ one backup.sh snapshot: both databases, config and a manifest, root:root 0700
 /run/cs71/cs71d.sock           systemd RuntimeDirectory=; recreated on every start, not persisted
 ```
 
@@ -141,6 +146,80 @@ and migrating the database itself — so the service that starts afterward
 just opens what is already there instead of racing a second process to
 migrate the same empty file.
 
+## Backup, restore and upgrade
+
+`backup.sh` takes a SQLite-consistent online backup of both databases
+(`sqlite3 ... .backup`, which needs neither service stopped) plus
+`cs71d.toml`/`web.env`, into a timestamped directory under
+`/var/lib/cs71-backups`, with a checksummed `manifest.json`
+(`lib/manifest.py`) recording the source commit and each workspace's own
+version — read from `/opt/cs71/ops/release-info.json`, which `install.sh` and
+`upgrade.sh` write once at build time rather than `backup.sh` introspecting a
+checkout that a periodic timer run has no guarantee is even still there.
+Neither service-token file is ever included: a restored backup should bring
+back data and configuration, never a credential, and a restore never needs
+one — the credential files already on the box are untouched by it. Every
+attempt, success or failure, writes exactly one
+`/var/lib/cs71d/backup-status.json` — `{"ok": bool, "completed_at": ...}` —
+which is the only thing `cs71d`'s own `BackupFreshnessMonitor`
+(`appliance/daemon/src/cs71d/storage_health.py`) ever reads; the daemon never
+runs a backup itself; it only refuses new work once that file says no
+successful one has happened recently enough (see the section below).
+`systemd/cs71-backup.timer` runs it daily; `install.sh` copies `backup.sh` and
+`lib/manifest.py` to `/opt/cs71/ops` specifically so the timer keeps working
+after the checkout that installed it moves, updates or is deleted —
+`restore.sh` and `upgrade.sh` are not copied there, and are meant to be run
+from an up-to-date checkout, the same way `install.sh` itself is.
+
+`restore.sh --from <backup dir>` verifies the manifest's checksums and each
+database's `PRAGMA integrity_check` *before* touching anything live, stops
+`cs71-web.service` then `cs71d.service`, installs the databases and
+configuration, then starts the daemon and proves it actually answers
+(`GET /v1/health/live` through its own socket, with its own credential)
+before starting the web service and proving the same
+(`GET /login` on its loopback port) — the "restore is validated by integrity
+check and application read-only smoke test" contract in
+[data-and-persistence.md](../../docs/architecture/data-and-persistence.md).
+Any failure stops the script rather than declaring success; the runbooks in
+`deployment-and-operations.md` take over from there.
+
+`upgrade.sh` backs up first, stops web then daemon, rebuilds the web
+workspace and the daemon venv from the current checkout (the same
+`build_web_workspace`/`build_daemon_venv` `install.sh` itself calls, in
+`lib/common.sh`, so the two never drift apart), then starts the daemon and
+the web service the same validated way `restore.sh` does. There is no
+separate migration-runner command: opening `machine.db`/`web.db` *is* the
+forward-only, checksummed migration, so "apply migrations" and "start the
+daemon"/"start the web service" are the same step here, not two. Any failure
+before the web service is confirmed healthy on the new build rolls back: the
+previous `/opt/cs71/web` and `/opt/cs71/daemon` are swapped back in, and
+`restore.sh` is called against the pre-upgrade backup to bring the data back
+too — reusing its own stop → verify → install → start → smoke-test sequence
+rather than a second copy of it. If the rollback itself fails, the script
+says so loudly and stops; that is a "call a human" situation the deployment
+runbook owns, not something a script should keep guessing at.
+
+## The daemon's own durability monitor
+
+`cs71d`'s production profile carries a `DurabilityMonitor`
+(`appliance/daemon/src/cs71d/storage_health.py`,
+`production_durability_monitor`) that two things beyond a failed journal
+write can trip: free space beside `machine.db` falling under a fixed 500 MiB
+floor, and `/var/lib/cs71d/backup-status.json` being absent, recording a
+failed backup, or older than 48 hours (`cs71-backup.timer` runs daily, so
+that is one missed run of slack). Either one latches the machine exactly the
+way a failed journal write already does —
+`journal_available` goes false, `/v1/health/ready` reports `ready: false`
+with the reason, and new operations are refused — because both threaten the
+same guarantee a journal write does: something admitted now might not be
+durably recoverable. The check re-runs on every readiness poll and before
+every admission, so the fault surfaces even when nothing is being submitted,
+not only once a write is attempted. Like a journal fault, it does not clear
+itself; remediating the disk or the backup and restarting `cs71d` is what a
+technician does next. Development and test profiles carry no monitor at all —
+their databases live in throwaway paths with no installed backup timer behind
+them, so there is nothing meaningful to watch there.
+
 ## What `tests/smoke-test.sh` does and does not prove
 
 It runs the real `install.sh`, then starts the real `cs71d`/`cs71-web`
@@ -154,6 +233,20 @@ serial-device stub; the Node process answers on its loopback port under
 sandbox properties is kernel-refused when it tries to open an `AF_INET`
 socket. This runs in CI on `ubuntu-latest` — a real Linux host, real systemd,
 real users — not a mock of any of it.
+
+It then runs a real `backup.sh` against the databases those services just
+wrote, verifies the manifest and marker for real, and runs a real
+`restore.sh` — through the daemon's actual, fixed unit names (`cs71d.service`,
+`cs71-web.service`), not the derived `-smoke` ones, by pointing those real
+names at the same simulator-backed unit content for the duration of the
+drill and putting the originals back afterward. That lets `restore.sh` run
+completely unmodified — the exact script and exact unit names a real restore
+uses — while still only ever starting the simulator backend, for the same
+DTR-gate reason the rest of this script does. `upgrade.sh`'s rebuild step is
+not run here (it would just repeat `install.sh`'s own build under a slower
+name); its ordering, its rollback path calling `restore.sh`, and its
+backup-before-anything-else sequencing are checked structurally instead, in
+`tests/test_artifacts.py`.
 
 What it cannot prove, and does not claim to: that the production profile
 (`backend = "serial"`) starts at all. It does not, on any Linux host,

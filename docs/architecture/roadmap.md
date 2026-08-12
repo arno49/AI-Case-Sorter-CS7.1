@@ -173,8 +173,29 @@ graph LR
   properties is kernel-refused when it tries to open a TCP socket. A real Pi
   install/reboot/backup drill, the approved adapter's actual identity and
   closing Linux DTR remain PI-HIL-001 and a future Pi drill, not software
-  work — M5's exit criteria are met by this evidence class; M6 stays open
-  behind PI-OPS-002 and that Pi-hardware drill.
+  work — M5's exit criteria are met by this evidence class.
+- PI-OPS-002 is delivered for the evidence class achievable without a Pi.
+  `appliance/ops/backup.sh` takes a SQLite-consistent online backup of both
+  databases plus configuration into a checksummed, versioned manifest, and
+  never includes a service-token file; `systemd/cs71-backup.timer` runs it
+  daily. `appliance/ops/restore.sh` verifies that manifest and each
+  database's integrity before touching anything live, then stops web then
+  daemon, installs the backup, and starts daemon then web with a read-only
+  smoke test after each. `appliance/ops/upgrade.sh` backs up first, rebuilds
+  both workspaces from the checkout the same way `install.sh` does, and rolls
+  the release artifacts and data back through `restore.sh` on any failure
+  before the web service is confirmed healthy on the new build — there is no
+  separate migration-runner command in this codebase, so starting the daemon
+  and the web service *is* applying their migrations. `cs71d`'s production
+  profile now also carries a `DurabilityMonitor` that latches the machine
+  exactly the way a failed journal write already does when free disk space or
+  backup freshness crosses a fixed floor, surfaced on every readiness poll
+  and checked before every admission. `appliance/ops/tests/smoke-test.sh`
+  runs `backup.sh` and `restore.sh` for real in CI, including through the
+  daemon's actual fixed unit names. A real Pi backup/restore/upgrade drill
+  against the production profile and a real controller remains PI-HIL-001 and
+  a pilot-gate drill, not software work — M6 stays open behind that
+  Pi-hardware drill alone.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

@@ -8,8 +8,8 @@ the Arduino IDE workflow, or the serial contract used by AI Sorter software
 
 **Implementation status:** the software work is implemented through firmware
 `7.1.260714.6`. Current software evidence includes 89 native tests, 49 native-v2
-tests, 116 host tests, 299 daemon/simulator tests, 508 appliance web tests,
-and 30 appliance ops artifact tests. Unchecked criteria below
+tests, 116 host tests, 317 daemon/simulator tests, 508 appliance web tests,
+and 59 appliance ops artifact tests. Unchecked criteria below
 require an Arduino IDE run, physical hardware, long-duration testing, a logic
 analyzer, or the Windows application; they are not being represented as
 complete.

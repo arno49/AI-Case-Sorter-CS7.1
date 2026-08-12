@@ -18,7 +18,7 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 299 pytest tests pass |
+| Python daemon/simulator | 317 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
@@ -101,6 +101,15 @@ separate least-privilege systemd units, a udev rule keyed to a specific
 adapter's vendor ID, product ID and serial number together, and a Caddy site
 that proxies only to loopback SvelteKit; its own smoke test proves the real
 sandbox for real on a Linux CI host, though not yet on a Raspberry Pi.
+`appliance/ops/backup.sh`, `restore.sh` and `upgrade.sh` take a
+SQLite-consistent, checksummed backup of both databases and configuration on
+a daily timer; restore verifies that checksum and each database's integrity
+before installing anything and proves the daemon and web service actually
+answer afterward; upgrade rebuilds from the checkout and rolls artifacts and
+data back through restore on any failure before the web service is confirmed
+healthy. The daemon's production profile now blocks new work the same way a
+failed journal write already does when free disk space runs low or its own
+backup has not succeeded recently enough.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

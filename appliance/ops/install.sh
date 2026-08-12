@@ -100,6 +100,9 @@ ensure_dir /etc/cs71d cs71d:cs71d 0700
 ensure_dir /etc/cs71-web cs71-web:cs71-web 0700
 ensure_dir /var/lib/cs71d cs71d:cs71d 0700
 ensure_dir /var/lib/cs71-web cs71-web:cs71-web 0700
+# Owned by root, not either service identity: appliance/ops/backup.sh and
+# restore.sh run as root and are the only things that ever touch it.
+ensure_dir /var/lib/cs71-backups root:root 0700
 # /run/cs71 is systemd's RuntimeDirectory=; it is recreated on every start of
 # cs71d.service and is not persisted here.
 
@@ -126,29 +129,30 @@ else
 fi
 
 log "== building the web workspace on this host =="
-for entry in src scripts static package.json package-lock.json vite.config.ts tsconfig.json; do
-	rm -rf "/opt/cs71/web/${entry:?}"
-	cp -a "$SOURCE_ROOT/appliance/web/$entry" "/opt/cs71/web/$entry"
-done
-(
-	cd /opt/cs71/web
-	npm ci
-	npm run build
-	# tsx is a runtime dependency (the bootstrap-token CLI needs it after this
-	# prune); the rest of devDependencies is not needed once build/ exists.
-	npm prune --omit=dev
-)
-chown -R root:root /opt/cs71/web
+build_web_workspace "$SOURCE_ROOT"
 
 log "== installing the daemon into a dedicated venv =="
-python3 -m venv /opt/cs71/daemon/venv
-/opt/cs71/daemon/venv/bin/pip install --no-cache-dir --disable-pip-version-check \
-	"$SOURCE_ROOT/host" "$SOURCE_ROOT/appliance/daemon"
-chown -R root:root /opt/cs71/daemon
+build_daemon_venv "$SOURCE_ROOT"
+
+log "== recording what was actually installed, for backup.sh's manifest =="
+write_release_info "$SOURCE_ROOT"
+
+log "== installing the backup script the timer runs =="
+# backup.sh has to keep working after this checkout moves or is updated, so
+# it - and the manifest helper it calls - are copied here rather than
+# referenced from the checkout. restore.sh and upgrade.sh are not: they
+# rebuild from source and are meant to be run from an up-to-date checkout,
+# the same way install.sh itself is.
+mkdir -p /opt/cs71/ops/lib
+install -m 0755 "$OPS_DIR/backup.sh" /opt/cs71/ops/backup.sh
+install -m 0644 "$OPS_DIR/lib/common.sh" /opt/cs71/ops/lib/common.sh
+install -m 0644 "$OPS_DIR/lib/manifest.py" /opt/cs71/ops/lib/manifest.py
 
 log "== systemd units =="
 install -m 0644 "$OPS_DIR/systemd/cs71d.service" /etc/systemd/system/cs71d.service
 install -m 0644 "$OPS_DIR/systemd/cs71-web.service" /etc/systemd/system/cs71-web.service
+install -m 0644 "$OPS_DIR/systemd/cs71-backup.service" /etc/systemd/system/cs71-backup.service
+install -m 0644 "$OPS_DIR/systemd/cs71-backup.timer" /etc/systemd/system/cs71-backup.timer
 mkdir -p /etc/systemd/system/caddy.service.d
 install -m 0644 "$OPS_DIR/systemd/caddy-cs71.conf" /etc/systemd/system/caddy.service.d/cs71.conf
 
@@ -172,7 +176,7 @@ if command -v udevadm >/dev/null 2>&1; then
 fi
 
 log "== enabling services =="
-systemctl enable cs71d.service cs71-web.service
+systemctl enable cs71d.service cs71-web.service cs71-backup.timer
 
 if [ "$START" = true ]; then
 	# The bootstrap CLI is deliberately the first thing to open web.db, as the
@@ -186,6 +190,7 @@ if [ "$START" = true ]; then
 	log "== starting services =="
 	systemctl restart cs71d.service
 	systemctl restart cs71-web.service
+	systemctl restart cs71-backup.timer
 	systemctl try-restart caddy.service || log "caddy.service is not active; start it once its TLS/DNS prerequisites are ready"
 else
 	log "services are installed and enabled but not started (pass --start to start them)"

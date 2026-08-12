@@ -60,6 +60,7 @@ from .serial_worker import (
     WorkerUncertainError,
 )
 from .session import SessionSnapshot
+from .storage_health import DurabilityMonitor, DurabilityThreatError
 
 MIN_DEADLINE_MS = 100
 MAX_DEADLINE_MS = 600_000
@@ -128,12 +129,14 @@ class OperationDomain:
         operation_observer: Callable[[OperationRecord], None] | None = None,
         machine_observer: Callable[[MachineSnapshot], None] | None = None,
         events: EventRing | None = None,
+        durability_monitor: DurabilityMonitor | None = None,
     ) -> None:
         if idempotency_ttl <= timedelta(0):
             raise ValueError("idempotency_ttl must be positive")
         if not 0 < min_deadline_ms <= max_deadline_ms:
             raise ValueError("deadline policy must be a positive ascending range")
         self._journal = journal
+        self._durability_monitor = durability_monitor
         self._events = events if events is not None else EventRing()
         self._machine_observer = machine_observer
         self._machine = MachineState(observer=self._publish_machine_event)
@@ -251,6 +254,7 @@ class OperationDomain:
         window = self._require_deadline(deadline_ms)
         now = self._now()
 
+        self.refresh_durability()
         with self._machine.admission() as view:
             self._require_durable(view)
             with self._durable("admitting an operation"):
@@ -317,6 +321,7 @@ class OperationDomain:
         window = self._require_deadline(deadline_ms)
         now = self._now()
 
+        self.refresh_durability()
         with self._machine.admission() as view:
             self._require_durable(view)
             with self._durable("admitting a priority stop"):
@@ -411,6 +416,7 @@ class OperationDomain:
         window = self._require_deadline(deadline_ms)
         now = self._now()
 
+        self.refresh_durability()
         with self._machine.admission() as view:
             self._require_durable(view)
             with self._durable(f"admitting a {action} operation"):
@@ -478,6 +484,7 @@ class OperationDomain:
             OperationAction.CONFIGURE, dict(sorted(changes.items())), actor
         )
 
+        self.refresh_durability()
         with self._machine.admission() as view:
             self._require_durable(view)
             with self._durable("applying a configuration change"):
@@ -577,6 +584,24 @@ class OperationDomain:
             ),
         )
         return self._transition(operation.operation_id, OperationState.ACCEPTED, reason)
+
+    def refresh_durability(self) -> MachineSnapshot:
+        """Re-check disk space and backup freshness, latching a fault if either failed.
+
+        Called from the readiness endpoint and before every admission, so a
+        storage or backup problem surfaces on ``/v1/health/ready`` even when
+        nothing is currently being submitted, and blocks new work the moment
+        it is detected rather than waiting for the next journal write to fail.
+        Skipped once the machine is already latched undurable: that state
+        does not clear on its own, and re-running the checks could not change
+        the outcome.
+        """
+        if self._durability_monitor is not None and self._machine.snapshot.journal_available:
+            try:
+                self._durability_monitor.check()
+            except DurabilityThreatError as exc:
+                self._record_journal_fault(f"durability threat: {exc}")
+        return self._machine.snapshot
 
     def _record_journal_fault(self, reason: str) -> None:
         """Latch durability loss with an identity the API can report."""
