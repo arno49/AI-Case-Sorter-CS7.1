@@ -131,8 +131,9 @@ error code, and no response body carries protocol internals or raw serial
 content.
 
 Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
-`/v1/operations`, `/v1/operations/{operation_id}`, and the commands
-`/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`.
+`/v1/operations`, `/v1/operations/{operation_id}`, the commands
+`/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`, and the session
+operations `/v1/session/connect` and `/v1/session/recover`.
 `/v1/snapshot` returns `ETag: "generation:<n>"`, and an unobserved controller
 advertises no v2 and no capability rather than a hopeful default. The session
 and configuration resources and the SSE stream arrive in later roadmap tasks.
@@ -178,6 +179,20 @@ The action selects the intent and the body must contain exactly that intent's
 own field, so no API or BFF input can smuggle a raw protocol payload. The
 trusted terminal's fields are recorded against the operation as evidence of
 what the controller actually reported.
+
+## Session operations
+
+`connect` and `recover` are durable attributable operations that are admitted
+even when the session is not ready — repairing an unready session is exactly
+what they are for. The serial worker owns them in its run loop rather than
+dispatching them like machine commands, because they replace the link itself.
+
+`connect` is satisfied by an already verified session. `recover` always starts
+again from a fresh transport, because the point of asking for it is that the
+current one is not trusted, and the API requires an explicit
+`confirm_uncertain_recovery` so it is never implied by the request having been
+sent. Either operation succeeds only once the session is `READY` and its
+required snapshots exist, and records the observed mode and phase as evidence.
 
 ## Durability and priority stop
 

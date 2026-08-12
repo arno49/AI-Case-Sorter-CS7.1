@@ -7,6 +7,7 @@ import shutil
 import socket
 import stat
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,13 +79,53 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock.connect(self._socket_path)
 
 
+class TerminalWatcher:
+    """Await published terminals instead of polling the durable record.
+
+    The domain records a terminal on the worker thread after the worker
+    resolves its own future, so anything else would race the transition.
+    """
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._records: list[OperationRecord] = []
+
+    def observe(self, record: OperationRecord) -> None:
+        with self._condition:
+            self._records.append(record)
+            self._condition.notify_all()
+
+    def await_terminal(self, operation_id: str, *, timeout: float = 3.0) -> OperationRecord:
+        def matched() -> OperationRecord | None:
+            return next(
+                (
+                    record
+                    for record in self._records
+                    if record.operation_id == operation_id and record.is_terminal
+                ),
+                None,
+            )
+
+        with self._condition:
+            found = self._condition.wait_for(matched, timeout)
+        if found is None:
+            raise AssertionError(f"operation {operation_id} never reached a terminal state")
+        return found
+
+
 @dataclass(slots=True)
 class ApiHarness:
     client: UnixClient
     domain: OperationDomain
     journal: Journal
     server: ApiServer
-    simulator: SimulatorTransport
+    simulators: list[SimulatorTransport]
+    terminals: TerminalWatcher
+
+    @property
+    def simulator(self) -> SimulatorTransport:
+        """The transport the worker is currently using."""
+        return self.simulators[-1]
 
     def home(self) -> OperationRecord:
         record = self.domain.submit(
@@ -108,18 +149,26 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
     built: list[ApiHarness] = []
 
     def make(*, start: bool = True) -> ApiHarness:
-        simulator = SimulatorTransport(SimulatorConfig())
+        simulators: list[SimulatorTransport] = []
         journal = Journal.open(IN_MEMORY, now=lambda: NOW)
+
+        def open_transport() -> SimulatorTransport:
+            # A reconnect must get a fresh transport; a closed one stays closed.
+            simulators.append(SimulatorTransport(SimulatorConfig()))
+            return simulators[-1]
 
         def worker_factory(observers: WorkerObservers) -> SerialWorker:
             return SerialWorker(
-                lambda: simulator,
+                open_transport,
                 protocol_timeout=0.1,
                 session_observer=observers.session,
                 profile_observer=observers.profile,
             )
 
-        domain = OperationDomain(journal, worker_factory, now=lambda: NOW)
+        terminals = TerminalWatcher()
+        domain = OperationDomain(
+            journal, worker_factory, now=lambda: NOW, operation_observer=terminals.observe
+        )
         if start:
             domain.start(timeout=1.0)
         server = ApiServer(
@@ -130,7 +179,9 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
             now=lambda: NOW,
         )
         server.start()
-        harness = ApiHarness(UnixClient(server.socket_path), domain, journal, server, simulator)
+        harness = ApiHarness(
+            UnixClient(server.socket_path), domain, journal, server, simulators, terminals
+        )
         built.append(harness)
         return harness
 
@@ -679,3 +730,92 @@ def test_an_unknown_command_resource_is_not_found(
 
     assert response.status == 404
     assert_conforms(response.body, "NotFoundError")
+
+
+def _session_payload(path: str, role: str = "operator") -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "api_version": "v1",
+        "actor": {"user_id": OPERATOR.user_id, "role": role},
+    }
+    if path.endswith("recover"):
+        payload["confirm_uncertain_recovery"] = True
+    return payload
+
+
+@pytest.mark.parametrize("path", ["/v1/session/connect", "/v1/session/recover"])
+def test_a_session_command_is_accepted_and_verifies_the_session(
+    make_api: Callable[..., ApiHarness],
+    path: str,
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        path,
+        _session_payload(path),
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 202
+    assert_conforms(response.body, "OperationAccepted")
+    recorded = harness.terminals.await_terminal(response.body["operation_id"])
+    assert recorded.state is OperationState.SUCCEEDED
+    assert recorded.trusted_terminal
+    assert recorded.outcome == "ready"
+    assert harness.domain.snapshot.connection.name == "READY"
+    expected = 1 if path.endswith("connect") else 2
+    assert len(harness.simulators) == expected
+
+
+def test_recovery_is_refused_without_an_explicit_confirmation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/session/recover",
+        {
+            "api_version": "v1",
+            "actor": {"user_id": OPERATOR.user_id, "role": "operator"},
+            "confirm_uncertain_recovery": False,
+        },
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+    assert "confirm_uncertain_recovery" in response.body["message"]
+
+
+def test_recovery_replaces_the_session_rather_than_trusting_it(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    assert len(harness.simulators) == 1
+
+    response = _command(
+        harness,
+        "/v1/session/recover",
+        _session_payload("/v1/session/recover"),
+        generation=harness.domain.snapshot.generation,
+    )
+    harness.terminals.await_terminal(response.body["operation_id"])
+
+    # A fresh transport is opened rather than the existing one reused.
+    assert len(harness.simulators) == 2
+    assert harness.simulators[0].closed
+
+
+def test_a_viewer_may_not_command_the_session(make_api: Callable[..., ApiHarness]) -> None:
+    harness = make_api()
+
+    response = _command(
+        harness,
+        "/v1/session/connect",
+        _session_payload("/v1/session/connect", role="viewer"),
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")

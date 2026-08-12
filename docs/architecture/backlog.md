@@ -213,6 +213,35 @@ that gate. Home and sort are covered for all six.
 - Simulator tests cover accepted, progress, trusted completion, fault, cancellation and `UNCERTAIN` for all three operation types.
 - No API or BFF input can provide an arbitrary protocol payload.
 
+### PI-DOMAIN-004 — Implement session and configuration operations
+
+**Goal:** give the contract's session and configuration resources a domain to answer for. **Implementation notes:** connect and recover are durable operations that ask the serial worker to establish or replace its session; recover requires explicit operator confirmation; configuration is daemon policy and never reaches the controller. **Dependencies:** PI-DOMAIN-003. **Hardware required:** No. **Size:** M.
+
+**Why this exists:** `/v1/session/connect`, `/v1/session/recover` and
+`/v1/configuration` are frozen in the executable contract and required by
+PI-API-001, but no domain capability answered for them: the worker connected
+only at start-up, recovery had no external trigger, and configuration had a
+`data-and-persistence.md` table with no task behind it. Filling those three
+endpoints at the API layer would have meant inventing behaviour at the
+boundary, so the gap was raised as its own task instead.
+
+**Status:** The session half is implemented. `OperationDomain.connect` and
+`OperationDomain.recover` admit durable attributable operations even when the
+session is not ready, because repairing an unready session is exactly what they
+are for. The serial worker owns them in its run loop rather than dispatching
+them like machine commands, since they replace the link itself: connect is
+satisfied by an already verified session, while recover always starts again
+from a fresh transport because the point of asking is that the current one is
+not trusted. A session operation succeeds only once the session is `READY` and
+its required snapshots exist, and it records the observed mode and phase as its
+terminal evidence. The configuration half is outstanding.
+
+- Connect and recover are durable attributable operations admitted even when the session is not ready.
+- Recover requires an explicit confirmation field and never runs implicitly.
+- A session operation succeeds only after the session is verified and its required snapshots exist.
+- Configuration changes are validated, journaled and versioned, and never reach the controller.
+- A configuration read reports the applied values and the generation that applied them.
+
 ## Epic PI-API — Internal API and SSE
 
 **Outcome:** SvelteKit has a versioned, testable local contract. **Dependencies:** PI-DOMAIN-003. **Out of scope:** public LAN daemon access and WebSockets. **Epic exit criteria:** OpenAPI/client, headers/errors, socket-only service and bounded resumable SSE pass integration tests.

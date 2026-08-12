@@ -41,7 +41,7 @@ deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 259 passing pytest tests.
+- `cs71d` daemon package: 264 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 

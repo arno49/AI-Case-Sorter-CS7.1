@@ -55,6 +55,8 @@ _OPERATION_PATH = re.compile(r"/v1/operations/(?P<operation_id>[0-9a-fA-F-]{36})
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9._~-]{16,128}\Z")
 _EXACT_GENERATION = re.compile(r"(0|[1-9][0-9]*)\Z")
 
+_SESSION_PATHS = frozenset({"/v1/session/connect", "/v1/session/recover"})
+
 _COMMAND_ACTIONS: Mapping[str, OperationAction] = {
     "/v1/operations/home": OperationAction.HOME,
     "/v1/operations/sort": OperationAction.SORT,
@@ -215,13 +217,27 @@ class ApiServer:
         still re-evaluates the ones that guard the machine.
         """
         action = _COMMAND_ACTIONS.get(path)
-        if action is None and path != "/v1/machine/stop":
+        if action is None and path not in _SESSION_PATHS and path != "/v1/machine/stop":
             raise ApiError("RESOURCE_NOT_FOUND", f"POST {path} is not a resource of this API")
         payload = _json_object(body)
         actor = _commanding_actor(payload)
         key = _idempotency_key(headers)
         deadline_ms = _deadline_ms(headers)
 
+        if path in _SESSION_PATHS:
+            return _Response(
+                HTTPStatus.ACCEPTED,
+                _accepted_body(
+                    self._session_command(
+                        path,
+                        payload,
+                        actor=actor,
+                        key=key,
+                        generation=_exact_generation(headers),
+                        deadline_ms=deadline_ms,
+                    )
+                ),
+            )
         if action is None:
             _require_exact_fields(payload, {"api_version", "actor"}, "stop")
             record = self._domain.stop(
@@ -240,6 +256,40 @@ class ApiServer:
                 deadline_ms=deadline_ms,
             )
         return _Response(HTTPStatus.ACCEPTED, _accepted_body(record))
+
+    def _session_command(
+        self,
+        path: str,
+        payload: Mapping[str, Any],
+        *,
+        actor: Actor,
+        key: str,
+        generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        if path == "/v1/session/connect":
+            _require_exact_fields(payload, {"api_version", "actor"}, "connect")
+            return self._domain.connect(
+                actor=actor,
+                idempotency_key=key,
+                expected_generation=generation,
+                deadline_ms=deadline_ms,
+            )
+        _require_exact_fields(
+            payload, {"api_version", "actor", "confirm_uncertain_recovery"}, "recover"
+        )
+        if payload["confirm_uncertain_recovery"] is not True:
+            # Recovery tears down a session the daemon may not understand, so
+            # it is never implied by the request having been sent.
+            raise ApiError(
+                "VALIDATION_FAILED", "recovery requires confirm_uncertain_recovery to be true"
+            )
+        return self._domain.recover(
+            actor=actor,
+            idempotency_key=key,
+            expected_generation=generation,
+            deadline_ms=deadline_ms,
+        )
 
     def _liveness(self) -> dict[str, Any]:
         # Liveness is process liveness only. It deliberately says nothing about

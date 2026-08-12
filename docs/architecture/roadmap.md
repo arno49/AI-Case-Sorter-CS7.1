@@ -70,8 +70,9 @@ graph LR
   contract, and the home, sort, feed and priority-stop commands are served
   with their required idempotency, generation and deadline headers, and
   `cs71d --serve` runs the assembled daemon behind a protected service
-  credential. Only the session and configuration resources are outstanding,
-  and they need domain capabilities that do not exist yet.
+  credential. `/v1/session/connect` and `/v1/session/recover` are served by
+  the new PI-DOMAIN-004 session operations; only `/v1/configuration` and its
+  domain remain.
   PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.

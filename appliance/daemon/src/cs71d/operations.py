@@ -75,6 +75,8 @@ class InvalidTransitionError(DomainError):
 class OperationAction(StrEnum):
     """The state-changing machine intents that own a durable operation."""
 
+    CONNECT = "connect"
+    RECOVER = "recover"
     HOME = "home"
     SORT = "sort"
     FEED = "feed"
