@@ -210,7 +210,8 @@ jobs:
       - name: Check installer scripts with shellcheck
         run: |
           shellcheck --severity=warning \
-            appliance/ops/install.sh appliance/ops/lib/common.sh appliance/ops/tests/smoke-test.sh
+            appliance/ops/install.sh appliance/ops/backup.sh appliance/ops/restore.sh \
+            appliance/ops/upgrade.sh appliance/ops/lib/common.sh appliance/ops/tests/smoke-test.sh
       - name: Run static artifact checks
         run: python3 -m unittest discover -s appliance/ops/tests -v
       - name: Run the functional simulated smoke test

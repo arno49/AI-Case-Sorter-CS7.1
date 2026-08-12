@@ -690,10 +690,68 @@ PI-HIL-001 and a future Pi-install drill, not software work.
 
 **Goal:** preserve durable state through maintenance. **Implementation notes:** use SQLite-consistent backup; restore in stopped service order. **Dependencies:** PI-OPS-001, PI-DOMAIN-002. **Hardware required:** Pi required; controller optional. **Size:** M.
 
-- Backup manifests include version/checksum and both databases/configuration without secrets in logs.
-- Restore passes SQLite integrity and application read-only smoke checks.
-- Upgrade applies migrations then starts daemon before web; failed pre-irreversible upgrade rolls back artifacts/data.
-- Low-disk, backup and journal failure produce health evidence and block new motion as designed.
+`appliance/ops/backup.sh` takes a SQLite-consistent online backup
+(`sqlite3 ... .backup`, no service stop needed) of both `machine.db` and
+`web.db` plus `cs71d.toml`/`web.env`, into a timestamped
+`/var/lib/cs71-backups` directory with a checksummed `manifest.json`
+(`appliance/ops/lib/manifest.py`) carrying the source commit and each
+workspace's own version — read from a `release-info.json` `install.sh`/
+`upgrade.sh` write at build time, not introspected live, since a periodic
+timer run has no checkout beside it. No service-token file is ever included.
+`systemd/cs71-backup.timer` runs it daily; `install.sh` copies `backup.sh`
+and the manifest helper to `/opt/cs71/ops` so the timer survives the
+checkout moving or updating.
+
+`appliance/ops/restore.sh --from <dir>` verifies the manifest's checksums and
+each database's `PRAGMA integrity_check` before touching anything live,
+stops web then daemon, installs the databases and configuration, then starts
+the daemon and proves it answers over its own socket before starting the web
+service and proving the same over its loopback port — the integrity-check-
+then-read-only-smoke-test contract in `data-and-persistence.md`.
+`appliance/ops/upgrade.sh` backs up first, stops web then daemon, rebuilds
+both workspaces from the current checkout (the same `build_web_workspace`/
+`build_daemon_venv` `install.sh` itself calls), then starts daemon then web
+the same validated way. There is no separate migration-runner command in
+this codebase — opening `machine.db`/`web.db` *is* the forward-only,
+checksummed migration — so "apply migrations" and "start daemon"/"start web"
+are the same step. Any failure before the web service is confirmed healthy
+rolls the release artifacts back and calls `restore.sh` against the
+pre-upgrade backup; a failed rollback stops and says so rather than guessing
+further, which is what the deployment runbook owns from there.
+
+`cs71d`'s production profile also carries a `DurabilityMonitor`
+(`appliance/daemon/src/cs71d/storage_health.py`) that latches the machine
+exactly the way a failed journal write already does — `journal_available`
+false, `/v1/health/ready` reporting `ready: false` with a reason, new
+operations refused — when free space beside `machine.db` falls under a fixed
+500 MiB floor, or `backup-status.json` (which `backup.sh` writes on every
+attempt, success or failure) is missing, records a failure, or is older than
+48 hours. The check runs on every readiness poll and before every admission,
+so the fault is visible even with no traffic, and does not clear itself —
+the same conservative, restart-to-clear posture the existing journal fault
+already has. Development and test profiles carry no monitor: their
+throwaway paths have no installed backup timer behind them.
+
+`appliance/ops/tests/smoke-test.sh` runs `backup.sh` and `restore.sh` for
+real on the CI Linux host, against the real databases its own install
+already wrote — including pointing the daemon's real, fixed unit names at
+the same simulator-backed content the rest of the smoke test already proved
+healthy, so `restore.sh` runs completely unmodified through the exact unit
+names a real restore would use. `upgrade.sh`'s ordering, backup-before-
+mutation sequencing and rollback-through-`restore.sh` path are checked
+structurally in `appliance/ops/tests/test_artifacts.py` rather than rebuilt
+end-to-end in CI, since that would only repeat `install.sh`'s own build under
+a slower name.
+
+What remains genuinely hardware-gated, and is not claimed here: a real Pi
+backup/restore/upgrade drill against the production profile and a real
+controller — PI-HIL-001 and a pilot-gate drill (`roadmap.md`), not software
+work.
+
+- [x] Backup manifests include version/checksum and both databases/configuration without secrets in logs.
+- [x] Restore passes SQLite integrity and application read-only smoke checks.
+- [x] Upgrade applies migrations then starts daemon before web; failed pre-irreversible upgrade rolls back artifacts/data.
+- [x] Low-disk, backup and journal failure produce health evidence and block new motion as designed.
 
 ## Epic PI-SWQ — Software qualification
 

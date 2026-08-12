@@ -25,9 +25,15 @@ source "$OPS_DIR/lib/common.sh"
 require_root
 
 cleanup() {
-	systemctl stop cs71-web-smoke.service cs71d-smoke.service >/dev/null 2>&1 || true
+	systemctl stop cs71-web.service cs71d.service cs71-web-smoke.service cs71d-smoke.service \
+		>/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/cs71d-smoke.service /etc/systemd/system/cs71-web-smoke.service
 	rm -f /etc/cs71/cs71d-smoke.toml /dev/cs71 /dev/cs71-smoke-stub
+	rm -rf /var/lib/cs71-backups
+	# The restore drill below points the real unit names at the smoke config;
+	# put them back to what install.sh actually shipped.
+	install -m 0644 "$OPS_DIR/systemd/cs71d.service" /etc/systemd/system/cs71d.service
+	install -m 0644 "$OPS_DIR/systemd/cs71-web.service" /etc/systemd/system/cs71-web.service
 	systemctl daemon-reload >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -141,5 +147,47 @@ if systemd-run --pipe --wait --collect \
 	exit 1
 fi
 rm -f /tmp/cs71-smoke-af-inet.log
+
+log "== a real backup.sh run, against the real databases the smoke units wrote =="
+"$OPS_DIR/backup.sh"
+BACKUP_DIR="$(find /var/lib/cs71-backups -mindepth 1 -maxdepth 1 -type d | sort | tail -n1)"
+[ -n "$BACKUP_DIR" ] || {
+	log "FAIL: backup.sh reported success but left no backup directory behind"
+	exit 1
+}
+python3 "$OPS_DIR/lib/manifest.py" verify "$BACKUP_DIR"
+marker_ok="$(python3 -c 'import json; print(json.load(open("/var/lib/cs71d/backup-status.json"))["ok"])')"
+[ "$marker_ok" = "True" ] || {
+	log "FAIL: backup-status.json does not record ok=true after a successful backup"
+	exit 1
+}
+
+log "== a real restore.sh run, through the daemon's own systemd unit names =="
+# restore.sh drives cs71d.service/cs71-web.service by their real, fixed
+# names - the same ones the daemon's durability monitor and every runbook
+# assume. Those names normally boot the production profile, which the
+# unqualified Linux DTR gate always refuses to open; pointing them at the
+# same simulator-backed content the -smoke units already proved healthy
+# lets restore.sh run completely unmodified while still being exercised for
+# real, not skipped. cleanup() puts the original units back.
+systemctl stop cs71-web-smoke.service cs71d-smoke.service
+install -m 0644 /etc/systemd/system/cs71d-smoke.service /etc/systemd/system/cs71d.service
+# cs71-web.service's own content never named cs71d-smoke.service in the first
+# place (only cs71-web-smoke.service, derived from it, does) - the checked-in
+# unit already points at the name just installed above.
+install -m 0644 "$OPS_DIR/systemd/cs71-web.service" /etc/systemd/system/cs71-web.service
+systemctl daemon-reload
+
+if ! "$OPS_DIR/restore.sh" --from "$BACKUP_DIR" --web-port 3000; then
+	journalctl -u cs71d.service -u cs71-web.service --no-pager -n 80
+	log "FAIL: restore.sh did not complete against the real unit names"
+	exit 1
+fi
+
+restored_status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)"
+[ "$restored_status" = "200" ] || {
+	log "FAIL: GET /login after restore returned $restored_status, expected 200"
+	exit 1
+}
 
 log "== all checks passed =="

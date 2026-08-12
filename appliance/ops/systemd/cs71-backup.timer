@@ -1,0 +1,13 @@
+[Unit]
+Description=Run cs71 backup daily
+Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance/ops/README.md
+
+[Timer]
+OnCalendar=daily
+# A Pi that was off at the scheduled time still gets a backup shortly after
+# it comes back, rather than waiting up to 24h for the next OnCalendar= tick.
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

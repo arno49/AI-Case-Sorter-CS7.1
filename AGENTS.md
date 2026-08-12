@@ -18,7 +18,7 @@ hardware-evidence boundaries below.
 | `appliance/daemon/` | Python `cs71d` workspace; sole serial owner |
 | `appliance/daemon/src/cs71d/simulator/` | Deterministic no-hardware protocol simulator |
 | `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
-| `appliance/ops/` | Native systemd/udev/Caddy installer and its own functional smoke test |
+| `appliance/ops/` | Native systemd/udev/Caddy installer, backup/restore/upgrade scripts and their own functional smoke test |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
 | `3DModels/` | Canonical printable mechanical parts |
@@ -56,8 +56,15 @@ explicitly reported as not available, and DTR-gate status read from a new
 installs both services as separate least-privilege systemd units, a udev rule
 matching vendor ID, product ID and serial number together, and a Caddy site
 proxying only to loopback SvelteKit; its own `smoke-test.sh` proves the real
-sandbox on a real Linux CI host, not a Raspberry Pi. None of this is deployed
-or qualified on real hardware.
+sandbox on a real Linux CI host, not a Raspberry Pi. `appliance/ops/backup.sh`,
+`restore.sh` and `upgrade.sh` add SQLite-consistent backup with a checksummed
+manifest, integrity-checked restore with a read-only smoke test, and an
+upgrade that rebuilds from the checkout and rolls artifacts and data back
+through `restore.sh` on any failure before the web service is confirmed
+healthy; `cs71d`'s production profile now also latches new-work-blocking
+faults for low disk space or a stale/failed backup the same way a journal
+write failure already does. None of this is deployed or qualified on real
+hardware.
 
 ## Current validated baseline
 
@@ -68,9 +75,9 @@ or qualified on real hardware.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 299 passing pytest tests.
+- `cs71d` daemon package: 317 passing pytest tests.
 - `appliance/web` workspace: 508 passing vitest tests.
-- `appliance/ops` artifact checks: 30 passing static tests (`unittest`), plus
+- `appliance/ops` artifact checks: 59 passing static tests (`unittest`), plus
   a functional smoke test that only runs on Linux (see below).
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.

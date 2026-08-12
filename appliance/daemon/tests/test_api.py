@@ -25,6 +25,7 @@ from cs71d.journal import IN_MEMORY, Journal
 from cs71d.operations import Actor, OperationAction, OperationRecord, OperationState
 from cs71d.serial_worker import SerialWorker
 from cs71d.simulator import SimulatorConfig, SimulatorTransport
+from cs71d.storage_health import DurabilityMonitor, DurabilityThreatError
 
 TOKEN = "installation-local-service-credential"  # noqa: S105 - test fixture, not a secret
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
@@ -155,6 +156,7 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
         start: bool = True,
         retention: int = 64,
         heartbeat_ms: int = 60_000,
+        durability_monitor: DurabilityMonitor | None = None,
     ) -> ApiHarness:
         simulators: list[SimulatorTransport] = []
         journal = Journal.open(IN_MEMORY, now=lambda: NOW)
@@ -180,6 +182,7 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
             now=lambda: NOW,
             operation_observer=terminals.observe,
             events=events,
+            durability_monitor=durability_monitor,
         )
         if heartbeat_ms != 60_000:
             domain.configure(
@@ -276,6 +279,23 @@ def test_readiness_reports_the_session_rather_than_liveness(
     assert ready.body["ready"] is True
     assert ready.body["connection_state"] == "READY"
     assert ready.body["reason"] is None
+
+
+def test_readiness_surfaces_a_durability_threat_without_any_admission_attempt(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    def always_threatened() -> None:
+        raise DurabilityThreatError("free space at /var/lib/cs71d is critically low")
+
+    harness = make_api(durability_monitor=DurabilityMonitor(checks=(always_threatened,)))
+
+    response = harness.client.request("GET", "/v1/health/ready")
+
+    assert response.status == 200
+    assert_conforms(response.body, "Readiness")
+    assert response.body["ready"] is False
+    assert "durability threat" in response.body["reason"]
+    assert response.body["fault_state"] == "LATCHED"
 
 
 def test_system_reports_the_dtr_gate_status_without_a_session(

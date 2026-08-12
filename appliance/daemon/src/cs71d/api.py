@@ -199,9 +199,12 @@ class ApiServer:
             return _Response(HTTPStatus.OK, self._liveness())
         if path == "/v1/system":
             return _Response(HTTPStatus.OK, self._system())
-        view = self._domain.snapshot
         if path == "/v1/health/ready":
-            return _Response(HTTPStatus.OK, self._readiness(view))
+            # Re-checked here, not only before admission, so a storage or
+            # backup problem is visible to a poller even when nothing is
+            # currently being submitted.
+            return _Response(HTTPStatus.OK, self._readiness(self._domain.refresh_durability()))
+        view = self._domain.snapshot
         if path == "/v1/snapshot":
             return _Response(
                 HTTPStatus.OK,

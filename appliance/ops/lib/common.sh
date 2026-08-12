@@ -92,3 +92,120 @@ substitute_template() {
 	done
 	printf '%s' "$content" >"$dest"
 }
+
+# $1 source checkout root - build the SvelteKit workspace into /opt/cs71/web.
+# Shared by install.sh and upgrade.sh so they build the release the same way;
+# upgrade.sh keeping its own copy of this would be exactly the kind of drift
+# smoke-test.sh already exists to catch for the systemd side.
+build_web_workspace() {
+	local source_root="$1"
+	local entry
+	for entry in src scripts static package.json package-lock.json vite.config.ts tsconfig.json; do
+		rm -rf "/opt/cs71/web/${entry:?}"
+		cp -a "$source_root/appliance/web/$entry" "/opt/cs71/web/$entry"
+	done
+	(
+		cd /opt/cs71/web
+		npm ci
+		npm run build
+		# tsx is a runtime dependency (the bootstrap-token CLI needs it after
+		# this prune); the rest of devDependencies is not needed once build/
+		# exists.
+		npm prune --omit=dev
+	)
+	chown -R root:root /opt/cs71/web
+}
+
+# $1 source checkout root - (re)install cs71d into a dedicated venv.
+build_daemon_venv() {
+	local source_root="$1"
+	rm -rf /opt/cs71/daemon/venv
+	python3 -m venv /opt/cs71/daemon/venv
+	/opt/cs71/daemon/venv/bin/pip install --no-cache-dir --disable-pip-version-check \
+		"$source_root/host" "$source_root/appliance/daemon"
+	chown -R root:root /opt/cs71/daemon
+}
+
+# $1 source checkout root - record what was actually built and installed, so
+# a later backup (from a periodic timer, with no checkout beside it) can
+# still say what version it backed up. install.sh and upgrade.sh both call
+# this right after build_web_workspace/build_daemon_venv succeed.
+write_release_info() {
+	local source_root="$1" lib_dir
+	lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	mkdir -p /opt/cs71/ops
+	python3 "$lib_dir/manifest.py" release-info "$source_root" \
+		/opt/cs71/ops/release-info.json "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	chmod 0644 /opt/cs71/ops/release-info.json
+}
+
+# $1 path  $2 minimum free MiB - refuse to proceed on a nearly-full disk
+# rather than leave a backup, upgrade or restore half-written.
+require_free_disk() {
+	local path="$1" minimum_mib="$2" free_kib
+	free_kib="$(df -Pk "$path" | awk 'NR==2 {print $4}')"
+	if [ "${free_kib:-0}" -lt "$((minimum_mib * 1024))" ]; then
+		log "only ${free_kib:-0}KiB free at $path, below the ${minimum_mib}MiB floor"
+		return 1
+	fi
+}
+
+# $1 sqlite file - refuse to install a database PRAGMA integrity_check does
+# not report clean, whether it is a backup copy about to be restored or one
+# already sitting in production.
+verify_sqlite_integrity() {
+	local db="$1" result
+	result="$(sqlite3 "$db" "PRAGMA integrity_check;")"
+	if [ "$result" != "ok" ]; then
+		log "integrity check failed for $db: $result"
+		return 1
+	fi
+}
+
+# $1 timeout seconds - poll for the daemon's runtime socket rather than
+# trusting `systemctl is-active`, which reports "active (running)" the
+# instant a Type=simple process forks, well before it has bound anything.
+wait_for_daemon_socket() {
+	local timeout="$1" waited=0
+	while [ ! -S /run/cs71/cs71d.sock ]; do
+		sleep 1
+		waited=$((waited + 1))
+		if [ "$waited" -ge "$timeout" ]; then
+			log "cs71d never created /run/cs71/cs71d.sock"
+			return 1
+		fi
+	done
+}
+
+# $1 timeout seconds - a read-only GET through the daemon's own socket, with
+# its own service credential: proof the process actually answers, not just
+# that systemd thinks it is running.
+daemon_smoke_test() {
+	local timeout="$1" token status
+	wait_for_daemon_socket "$timeout" || return 1
+	token="$(cat /etc/cs71d/service-token)"
+	status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+		--unix-socket /run/cs71/cs71d.sock -H "Authorization: Bearer $token" \
+		http://localhost/v1/health/live)"
+	if [ "$status" != "200" ]; then
+		log "GET /v1/health/live through the daemon socket returned $status, expected 200"
+		return 1
+	fi
+}
+
+# $1 timeout seconds  $2 loopback port - a read-only, unauthenticated GET on
+# the web service's own port; the login page still answers 200 fresh.
+web_smoke_test() {
+	local timeout="$1" port="$2" waited=0 status
+	while :; do
+		status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+			"http://127.0.0.1:$port/login" || true)"
+		[ "$status" = "200" ] && return 0
+		waited=$((waited + 1))
+		if [ "$waited" -ge "$timeout" ]; then
+			log "GET /login on 127.0.0.1:$port returned '$status', expected 200"
+			return 1
+		fi
+		sleep 1
+	done
+}
