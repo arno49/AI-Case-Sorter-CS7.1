@@ -111,6 +111,38 @@ not a web-only addition, and every such command still lands in the existing
 durable journal and audit trail with this new attribution visible as what
 it is — a system decision, not a person's.
 
+**Training and activating a new model version is an operator-facing
+action inside `cs71-vision` itself**, mirroring this project's own
+backup/upgrade/rollback discipline (`appliance/ops/backup.sh`/`restore.sh`/
+`upgrade.sh`) applied to a model instead of a database or release artifact,
+rather than a developer-only offline step:
+
+- Per-class example counts are visible *before* training is offered, not
+  only after. A class below a hard minimum-example floor is automatically
+  excluded from the training run, and the UI states why rather than
+  silently omitting it or training on a class too thin to trust.
+- Retraining runs as a background job, locally on the Pi 5, in idle time —
+  not real-time, not blocking ordinary sorting, no workstation or cloud
+  service required.
+- A freshly trained model is a **candidate**, not the active model: its
+  accuracy per class on held-out examples is shown before it can replace
+  what is currently running.
+- Both triggering a retrain and activating a candidate as the live model
+  are available to `operator`, not gated to `administrator` — a deliberate
+  departure from this project's existing pattern of reserving
+  impactful/irreversible actions (`machine.recover`, `config.write`) for
+  administrators. This needs its own new capability (working name
+  `vision.train`), not a reuse of `machine.operate`, since it never touches
+  machine motion.
+- Training and activation never touch `cs71d`'s command surface — they are
+  entirely internal to `cs71-vision`, its own state and its own model
+  files — so they need no new `cs71d` actor kind or contract change. The
+  actor-kind change above is only for the autonomous `sort` command a
+  trained model may eventually issue, not for training itself.
+- At least the previously active model version is retained, so an
+  activation can be rolled back the same way a bad upgrade already is —
+  activation is a durable, versioned switch, never an in-place overwrite.
+
 ## Options considered
 
 | Option | Reason selected or rejected |
@@ -121,6 +153,8 @@ it is — a system decision, not a person's.
 | Keep classification external on a Windows PC, Pi only orchestrates motion | Rejected: this is the thing the user explicitly wants removed. |
 | One hardcoded routing strategy | Rejected: several dozen classes into 8–10 chutes has no single right answer across different batches/use cases; made configurable instead. |
 | Reuse an existing human role (e.g. `operator`) for autonomous commands | Rejected: collapses "a person decided" and "a model decided" into the same audit trail entry, which this project's attribution model exists specifically to avoid. |
+| Gate retrain/activate to `administrator` only, matching `machine.recover`/`config.write` | Rejected (explicit product choice): training/activation never touches machine motion, so it is granted to `operator` through a new, separate capability instead of following the existing impactful-action pattern by default. |
+| No per-class minimum-example floor before training | Rejected: would let a class with a handful of examples produce a confidently wrong model with no signal to the operator about why. |
 
 ## Consequences
 
@@ -135,6 +169,9 @@ it is — a system decision, not a person's.
 - The primer-presence rule and the new actor kind keep the existing
   "physical risk is never a software claim" discipline intact rather than
   quietly eroding it for the sake of automation.
+- Operators can grow and improve the model themselves, entirely on-device,
+  without developer or administrator involvement for routine retraining —
+  closes the loop without needing a separate PC for that either.
 
 ### Negative
 
@@ -150,6 +187,10 @@ it is — a system decision, not a person's.
 - Model quality is bounded by whatever Phase 0 self-labeled data actually
   captures; a biased or thin operator-driven sample yields a biased model,
   and that has to be watched for, not assumed away.
+- Granting `operator` a capability that manages a durable, versioned
+  artifact (the model) is a new precedent in this RBAC model, which has so
+  far reserved that class of action for `administrator`; worth watching for
+  scope creep if it becomes a template for other admin-shaped actions later.
 
 ## Implementation constraints
 
@@ -170,6 +211,17 @@ it is — a system decision, not a person's.
   software signal for "a case is now in position"; a capture trigger has to
   be designed around that absence (e.g. frame-stability detection) rather
   than waiting on a gate this ADR does not control.
+- Training and activation get a new capability (working name `vision.train`)
+  granted to `operator` (and `administrator`, since administrators are a
+  superset), not a reuse of `machine.operate` — it is added to the RBAC
+  matrix in `security-and-safety.md` and `appliance/web/src/lib/server/auth/capabilities.ts`
+  the same way any other capability is, not inferred from an existing role.
+- The per-class minimum-example floor is enforced before a class is
+  included in a training run, not only reported afterward; a class excluded
+  this way is still shown in the UI with its count and the floor, not
+  silently dropped.
+- At least the current and previous model versions are retained on disk so
+  activation can be rolled back without a new retraining run.
 
 ## Validation and revisit triggers
 
@@ -186,6 +238,10 @@ it is — a system decision, not a person's.
   is — this is explicitly not expected to relax on software evidence alone.
 - Revisit this ADR if the feed lifecycle gate closes (PI-DOMAIN-003/PI-HIL
   territory), since that changes what "capture trigger" can rely on.
+- Before shipping operator self-service activation: confirm the UI always
+  shows the candidate's accuracy alongside the currently active model's, so
+  an operator cannot activate a worse candidate without seeing that it is
+  worse.
 
 ## Links
 
