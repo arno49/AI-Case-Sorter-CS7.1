@@ -821,3 +821,93 @@ work.
 - Traceability rows have linked test/gate evidence or explicitly unresolved status.
 - All critical safety/security defects are closed or release is blocked with documented reason.
 - Release statement distinguishes software stop from E-stop and excludes simulator evidence from hardware claims.
+
+## Epic PI-VISION — On-appliance headstamp classification
+
+**Outcome:** manufacturer headstamp classification runs on Uno + Raspberry Pi 5 only, with no separate Windows PC, through a confidence-gated hybrid-autonomy model that starts fully manual and only earns autonomy from recorded evidence. **Dependencies:** PI-OPS-001, PI-API-001, PI-WEB-002, PI-DOMAIN-004. **Out of scope:** closing the feed lifecycle gate itself (`FEED_LIFECYCLE_GATE`, tracked under PI-DOMAIN-003/PI-HIL, only consumed here), producing a specific production-quality model (accuracy is ongoing evidence, not a one-time deliverable), and any claim that primer-presence detection may authorize autonomous action — that is permanently excluded, not a future milestone. **Epic exit criteria:** self-labeled data collection runs in production sorting; a read-only classifier reports recorded per-class accuracy; confidence-gated autonomy for manufacturer routing ships with rollback; the primer-presence axis always forces operator confirmation with no configuration path around it; the operator-facing train/activate lifecycle ships with versioned rollback. See [ADR-0013](adr/0013-vision-classifier-service-and-hybrid-autonomy.md) for the accepted design and its rejected alternatives.
+
+### PI-VISION-001 — Package `cs71-vision` service skeleton and camera capture
+
+**Goal:** stand up the third appliance service with least-privilege systemd packaging and a working capture pipeline. **Implementation notes:** plain V4L2 against the USB VGA UVC module in `3DModels/Classifier/CameraV2`; extend `appliance/ops/install.sh`'s pattern rather than duplicating it. **Dependencies:** PI-OPS-001. **Hardware required:** Pi and the camera module for a real capture; not the controller. **Size:** M.
+
+- New systemd unit follows the same least-privilege sandbox pattern as `cs71d.service`/`cs71-web.service`: own identity, no access to the serial device or either existing database.
+- Captures frames from a V4L2 UVC source at a configurable resolution and interval.
+- A fixture/simulated video source lets this be evidenced in CI without real camera hardware, matching this repository's existing simulator-evidence boundary (ADR-0010).
+
+### PI-VISION-002 — Self-labeled dataset from ordinary manual sorting (Phase 0)
+
+**Goal:** correlate each captured frame with the slot the operator actually chose, with zero extra operator effort. **Implementation notes:** own SQLite store, following the existing separate-ownership pattern; correlate via `operation_id`, never a second write into `machine.db`/`web.db`. **Dependencies:** PI-VISION-001, PI-API-002. **Hardware required:** Pi and camera; controller optional, since the simulator already produces trusted terminals to correlate against. **Size:** M.
+
+- Every sort operation's trusted terminal correlates to exactly one stored frame and label, keyed by `operation_id`.
+- Per-class example counts are queryable without scanning raw frames.
+- No frame is ever stored without a corresponding durable operation record; a frame with no matching terminal is discarded, not guessed at.
+- The store's backup/ownership discipline matches `machine.db`/`web.db`'s (PI-OPS-002): SQLite-consistent, included in `backup.sh`'s manifest once this ships.
+
+### PI-VISION-003 — Operator UI: dataset review and per-class counts
+
+**Goal:** let an operator see training readiness before training is offered, not after. **Implementation notes:** reuse this workspace's wording-as-data pattern rather than inline strings. **Dependencies:** PI-VISION-002, PI-WEB-002. **Hardware required:** No. **Size:** S.
+
+- UI shows the example count per class next to the configured minimum-example floor.
+- A class below the floor is visibly marked ineligible with the reason shown, not merely absent from a list.
+- No training control is enabled until at least one class clears the floor.
+
+### PI-VISION-004 — Local training pipeline and versioned candidate models
+
+**Goal:** implement the Pi-local background retraining job with a hard per-class data floor and recorded held-out accuracy. **Implementation notes:** this is where Pi 5's real training throughput gets measured, not assumed. **Dependencies:** PI-VISION-002, PI-VISION-003. **Hardware required:** Yes, Raspberry Pi 5 — training wall-clock time is itself part of the acceptance evidence. **Size:** L.
+
+- A class below the configured minimum-example floor is excluded from the training set outright, not merely flagged in the UI.
+- Training runs as a background job that never blocks `cs71-vision`'s live suggestion path or `cs71d`'s admission path.
+- A trained candidate is stored as a new durable, versioned model; the previously active version is retained, never overwritten in place.
+- Per-class accuracy on a held-out split is recorded and retrievable before the candidate is ever offered for activation.
+
+### PI-VISION-005 — Operator train/activate capability and RBAC extension
+
+**Goal:** give `operator` a bounded, auditable way to retrain and activate a model, with rollback. **Implementation notes:** new `vision.train` capability, granted to `operator` and `administrator`, refused to `viewer` — a deliberate departure from reserving impactful actions to `administrator`, recorded as such in ADR-0013. **Dependencies:** PI-VISION-004, PI-WEB-002. **Hardware required:** No. **Size:** M.
+
+- `vision.train` is a new row in the capability matrix (`security-and-safety.md`, `appliance/web/src/lib/server/auth/capabilities.ts`), not inferred from an existing capability.
+- Activation is refused unless the operator has been shown the candidate's accuracy alongside the currently active model's.
+- Rollback to the previously active version is a supported, tested action, independent of retraining.
+- Every train/activate/rollback action is durably recorded in its own audit trail, mirroring `web_audit`'s pattern.
+
+### PI-VISION-006 — Read-only classification suggestion (Phase 1)
+
+**Goal:** surface a suggested class and confidence to the operator without ever acting on it. **Implementation notes:** the operator's actual choice, whether or not they follow the suggestion, keeps feeding PI-VISION-002's dataset loop. **Dependencies:** PI-VISION-004. **Hardware required:** Pi and camera; controller optional via the simulator. **Size:** M.
+
+- A suggested class and confidence is shown before the operator picks a slot.
+- `cs71-vision` never issues a `cs71d` command at this stage, under any configuration.
+- Live suggestion accuracy (suggestion versus the operator's actual choice) is tracked as its own evidence stream, separate from training-time held-out accuracy.
+
+### PI-VISION-007 — New `cs71d` machine actor kind for autonomous sort
+
+**Goal:** extend the daemon's contract with a narrowly-scoped, non-human actor kind restricted to `sort`. **Implementation notes:** additive OpenAPI/`API_ROLES`/`Actor` change, reviewed with the same weight as `cs71d`'s existing safety primitives; own service credential, following the two-service-token-file pattern from PI-OPS-001. **Dependencies:** PI-API-001, PI-DOMAIN-004. **Hardware required:** No — this is a daemon-contract change, evidenced the same way any other domain change is. **Size:** L.
+
+- The new actor kind cannot reach `machine.recover`, `config.write` or `users.manage` under any circumstance, enforced at the daemon boundary, not only the UI.
+- It authenticates with its own service credential file, distinct from `cs71-web`'s and `cs71d`'s own.
+- Every command it submits is durably journaled and distinguishable in the audit trail as machine-attributed, never presented as a person's decision.
+- The contract change is additive; no existing `FROZEN_*` contract guard breaks.
+
+### PI-VISION-008 — Confidence-gated hybrid autonomy (Phase 2)
+
+**Goal:** let a sufficiently confident classification submit an autonomous sort through the new actor kind; hold everything else for operator confirmation. **Implementation notes:** per-class threshold, conservative default. **Dependencies:** PI-VISION-006, PI-VISION-007, PI-VISION-010. **Hardware required:** Pi, camera and controller for real autonomous motion; routing/threshold logic itself is evidenced via simulator first. **Size:** L.
+
+- The confidence threshold is configurable per class and defaults conservative (mostly manual).
+- A below-threshold case is held for explicit operator confirmation; it is never silently skipped or defaulted to a guess.
+- A false-autonomous-sort rate is measured and recorded per class before that class's threshold may be lowered.
+- A primer-presence flag (PI-VISION-010) always overrides autonomy regardless of manufacturer-class confidence.
+
+### PI-VISION-009 — Configurable routing profiles
+
+**Goal:** let an operator choose how manufacturer classes map onto 8–10 physical chutes, per run. **Implementation notes:** fixed map plus overflow, dynamic per-batch assignment, and two-pass coarse-then-fine, all as `cs71-vision` configuration rather than one hardcoded strategy (ADR-0013). **Dependencies:** PI-VISION-006. **Hardware required:** Pi and camera for a real run; profile-selection logic itself is software-evidenced. **Size:** L.
+
+- An operator selects a routing profile before a run starts; the active profile is visible throughout the run.
+- Dynamic per-batch mode shows a live, accurate chute↔class legend, updated the moment a new class is first seen in that run.
+- Fixed-map mode supports pre-assigning specific classes to specific chutes with exactly one defined overflow chute.
+- Two-pass mode's second pass operates against exactly one prior group's output, never the whole batch.
+
+### PI-VISION-010 — Primer-presence axis with mandatory confirmation
+
+**Goal:** treat primer presence as a permanently separate signal that always requires operator confirmation. **Implementation notes:** no configuration surface, including administrator-level ones, may disable this. **Dependencies:** PI-VISION-006. **Hardware required:** Pi and camera for the software wiring; real primer-bearing cases and physical trial evidence, reviewed with the same weight as DTR/HIL evidence, before this is ever trusted in practice — never closed on software evidence alone. **Size:** M.
+
+- A primer-flagged or ambiguous case always routes to operator confirmation, regardless of manufacturer-class confidence or the autonomy configuration in PI-VISION-008.
+- No code path, configuration flag or role can bypass this — verified the same way `protocol.direct` is verified as unreachable by any role today.
+- This is explicitly documented as never closing on software evidence alone, matching SAF-07's DTR posture.
