@@ -41,7 +41,7 @@ deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 264 passing pytest tests.
+- `cs71d` daemon package: 278 passing pytest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -178,6 +178,11 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - Lock order is `MachineState` then `Journal` then `SerialWorker`, never the
   reverse. An admitting thread releases the machine lock before enqueueing,
   because the worker thread enters that lock while holding nothing.
+- `SUCCEEDED` always requires a trusted terminal, and what counts as one is
+  decided per operation class: a correlated firmware terminal for machine
+  motion, a verified session with its required snapshots for connect and
+  recover, and the committed snapshot for a configuration change. No operation
+  may succeed on the strength of having been asked.
 - A command that reached the wire without a trusted terminal is `UNCERTAIN`,
   never `FAILED`: the daemon does not know whether the machine moved.
 - A refused journal write latches the machine as undurable and blocks new

@@ -145,6 +145,23 @@ MIGRATIONS: tuple[Migration, ...] = (
         name="operation_terminal_fields",
         statements=("ALTER TABLE operations ADD COLUMN terminal_fields TEXT",),
     ),
+    Migration(
+        version=3,
+        name="configuration_snapshots",
+        statements=(
+            """
+            CREATE TABLE configuration_snapshots (
+                config_id TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX configuration_snapshots_by_generation"
+            " ON configuration_snapshots(generation DESC)",
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -413,6 +430,44 @@ class Journal:
                 tuple(parameters),
             ).fetchall()
         return tuple((int(row["cursor"]), _decode_operation(row)) for row in rows)
+
+    def record_configuration(
+        self,
+        *,
+        config_id: str,
+        generation: int,
+        values: Mapping[str, int],
+        source: str,
+        created_at: datetime,
+    ) -> None:
+        """Append one applied configuration version."""
+        with self._transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO configuration_snapshots"
+                " (config_id, generation, payload, source, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    config_id,
+                    generation,
+                    json.dumps(dict(values), sort_keys=True),
+                    source,
+                    _encode_time(created_at),
+                ),
+            )
+
+    def applied_configuration(self) -> tuple[Mapping[str, int], int, datetime] | None:
+        """Return the most recently applied values, generation and time."""
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT payload, generation, created_at FROM configuration_snapshots"
+                " ORDER BY generation DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(str(row["payload"]))
+        if not isinstance(payload, dict):  # pragma: no cover - written by this module only
+            raise JournalError("a stored configuration payload is not a mapping")
+        values = {str(name): int(value) for name, value in payload.items()}
+        return values, int(row["generation"]), _decode_time(row["created_at"])
 
     def transitions(self, operation_id: str) -> tuple[TransitionRecord, ...]:
         with self._guard() as cursor:

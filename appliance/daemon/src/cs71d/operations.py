@@ -81,6 +81,7 @@ class OperationAction(StrEnum):
     SORT = "sort"
     FEED = "feed"
     STOP = "stop"
+    CONFIGURE = "configure"
 
 
 class OperationState(StrEnum):

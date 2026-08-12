@@ -189,6 +189,8 @@ class ApiServer:
     ) -> _Response:
         if method == "POST":
             return self._command(path, headers or {}, body)
+        if method == "PATCH" and path == "/v1/configuration":
+            return self._configure(headers or {}, body)
         if method not in {"GET", "HEAD"}:
             raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
         if path == "/v1/health/live":
@@ -202,6 +204,8 @@ class ApiServer:
                 self._machine_snapshot(view),
                 etag=f'"generation:{view.generation}"',
             )
+        if path == "/v1/configuration":
+            return _Response(HTTPStatus.OK, self._configuration())
         if path == "/v1/operations":
             return _Response(HTTPStatus.OK, self._operation_page(query))
         matched = _OPERATION_PATH.fullmatch(path)
@@ -290,6 +294,31 @@ class ApiServer:
             expected_generation=generation,
             deadline_ms=deadline_ms,
         )
+
+    def _configuration(self) -> dict[str, Any]:
+        values, generation, updated_at = self._read(self._domain.configuration)
+        return {
+            "api_version": API_VERSION,
+            "generation": generation,
+            "values": values.as_mapping(),
+            "updated_at": _rfc3339(updated_at),
+        }
+
+    def _configure(self, headers: Mapping[str, str], body: bytes) -> _Response:
+        payload = _json_object(body)
+        actor = _commanding_actor(payload)
+        _require_exact_fields(payload, {"api_version", "actor", "changes"}, "configuration")
+        changes = payload["changes"]
+        if not isinstance(changes, dict) or not changes:
+            raise ApiError("VALIDATION_FAILED", "changes must be a non-empty object")
+        record = self._domain.configure(
+            {name: _configuration_value(name, value) for name, value in changes.items()},
+            actor=actor,
+            idempotency_key=_idempotency_key(headers),
+            expected_generation=_exact_generation(headers),
+            deadline_ms=_deadline_ms(headers),
+        )
+        return _Response(HTTPStatus.ACCEPTED, _accepted_body(record))
 
     def _liveness(self) -> dict[str, Any]:
         # Liveness is process liveness only. It deliberately says nothing about
@@ -642,6 +671,12 @@ def _command_body(action: OperationAction, payload: Mapping[str, Any]) -> dict[s
     _require_exact_fields(payload, {"api_version", "actor"}, "feed")
     # Feed carries no slot at this version; the domain refuses it at the gate.
     return {"slot": 0}
+
+
+def _configuration_value(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ApiError("VALIDATION_FAILED", f"{name} must be an integer")
+    return value
 
 
 def _api_slot(value: Any) -> int:

@@ -27,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 from cs71_protocol import Completion, ParseError, ResponseKind, Status
 
 from .adapters import intent_for, require_supported
+from .configuration import ConfigurationChanges, ConfigurationValues
 from .journal import Journal, JournalError
 from .machine import FirmwareProfile, MachineReadiness, MachineSnapshot, MachineState
 from .operations import (
@@ -139,6 +140,9 @@ class OperationDomain:
         # Reports every lifecycle transition, on whichever thread caused it.
         # It must not call back into the domain.
         self._operation_observer = operation_observer
+        self._configuration = ConfigurationValues()
+        self._configuration_generation = 1
+        self._configured_at = now()
         # The worker publishes connection state into the machine view, so it
         # must be constructed with the observer already wired.
         self._worker = worker_factory(
@@ -410,6 +414,103 @@ class OperationDomain:
             raise _translate(exc, accepted.operation_id) from exc
         future.add_done_callback(lambda done: self._settle(accepted.operation_id, done))
         return accepted
+
+    def configuration(self) -> tuple[ConfigurationValues, int, datetime]:
+        """Return the applied policy, the generation that applied it, and when."""
+        applied = self._journal.applied_configuration()
+        if applied is None:
+            return self._configuration, self._configuration_generation, self._configured_at
+        values, generation, created_at = applied
+        return ConfigurationValues.from_mapping(values), generation, created_at
+
+    def configure(
+        self,
+        changes: ConfigurationChanges,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+        expected_generation: int,
+        deadline_ms: int,
+    ) -> OperationRecord:
+        """Apply a validated daemon policy change as a durable operation.
+
+        Configuration never reaches the controller, so this admits while the
+        session is unready. It still requires durability: an appliance that
+        cannot record when a policy changed cannot explain its own behaviour.
+        """
+        key = require_idempotency_key(idempotency_key)
+        window = self._require_deadline(deadline_ms)
+        now = self._now()
+        current, _generation, _at = self.configuration()
+        candidate = current.with_changes(changes)
+        fingerprint = request_fingerprint(
+            OperationAction.CONFIGURE, dict(sorted(changes.items())), actor
+        )
+
+        with self._machine.admission() as view:
+            self._require_durable(view)
+            with self._durable("applying a configuration change"):
+                replayed = self._replay(key, fingerprint, at=now)
+                if replayed is not None:
+                    return replayed
+                if expected_generation != view.generation:
+                    raise StaleGenerationError(
+                        f"request observed generation {expected_generation};"
+                        f" the machine is at {view.generation}"
+                    )
+                accepted = self._admit(
+                    OperationAction.CONFIGURE,
+                    fingerprint,
+                    actor=actor,
+                    key=key,
+                    view=view,
+                    now=now,
+                    window=window,
+                    reason="admitted as a daemon configuration change",
+                )
+                running = self._transition(
+                    accepted.operation_id,
+                    OperationState.RUNNING,
+                    "applying the configuration change",
+                )
+                applied = self._apply_configuration(running, candidate, actor, now)
+        return applied
+
+    def _apply_configuration(
+        self,
+        operation: OperationRecord,
+        values: ConfigurationValues,
+        actor: Actor,
+        now: datetime,
+    ) -> OperationRecord:
+        """Commit the new values, then record the operation as successful.
+
+        A configuration change has no firmware terminal, and it must not claim
+        one. Its trusted terminal is the committed configuration snapshot: the
+        daemon's own durable record that the values are in force. The order
+        matters — the snapshot is written first, so a success can never be
+        recorded for values that were not stored.
+        """
+        with self._machine.transition(operation.operation_id, "configuration applied") as version:
+            self._journal.record_configuration(
+                config_id=new_operation_id(),
+                generation=version,
+                values=values.as_mapping(),
+                source=f"{actor.role}:{actor.user_id}",
+                created_at=now,
+            )
+        self._configuration = values
+        self._configuration_generation = version
+        self._configured_at = now
+        self._max_deadline_ms = min(self._max_deadline_ms, values.max_deadline_ms)
+        return self._transition(
+            operation.operation_id,
+            OperationState.SUCCEEDED,
+            "configuration committed",
+            trusted_terminal=True,
+            outcome="applied",
+            terminal_fields={name: str(value) for name, value in values.as_mapping().items()},
+        )
 
     def _admit(
         self,
