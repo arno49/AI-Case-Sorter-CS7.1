@@ -18,6 +18,7 @@ import pytest
 from contract import assert_conforms
 
 from cs71d.api import ApiServer
+from cs71d.device import DTR_GATE_STATUS
 from cs71d.domain import OperationDomain, WorkerObservers
 from cs71d.events import EventRing
 from cs71d.journal import IN_MEMORY, Journal
@@ -275,6 +276,20 @@ def test_readiness_reports_the_session_rather_than_liveness(
     assert ready.body["ready"] is True
     assert ready.body["connection_state"] == "READY"
     assert ready.body["reason"] is None
+
+
+def test_system_reports_the_dtr_gate_status_without_a_session(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    # No session is started: the DTR gate is a fact about this daemon build,
+    # not about a controller it has or has not observed.
+    harness = make_api(start=False)
+
+    response = harness.client.request("GET", "/v1/system")
+
+    assert response.status == 200
+    assert_conforms(response.body, "System")
+    assert response.body["dtr_gate_status"] == DTR_GATE_STATUS
 
 
 def test_the_snapshot_conforms_and_carries_its_generation_as_an_etag(

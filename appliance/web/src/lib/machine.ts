@@ -24,3 +24,4 @@ export type ConnectionState = Schemas['ConnectionState'];
 export type FaultState = Schemas['FaultState'];
 export type Fault = Schemas['Fault'];
 export type Capabilities = Schemas['Capabilities'];
+export type System = Schemas['System'];

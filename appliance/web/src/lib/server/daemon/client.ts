@@ -35,6 +35,7 @@ export type OperationAccepted = Schemas['OperationAccepted'];
 export type OperationPage = Schemas['OperationPage'];
 export type OperationState = Schemas['OperationState'];
 export type OperationType = Schemas['OperationType'];
+export type System = Schemas['System'];
 export type Configuration = Schemas['Configuration'];
 export type ConfigurationPatch = Schemas['ConfigurationPatch'];
 export type HomeTarget = Schemas['HomeRequest']['target'];
@@ -144,6 +145,17 @@ export class DaemonClient {
 
 	async configuration(): Promise<Configuration> {
 		return this.#read<Configuration>('/v1/configuration');
+	}
+
+	/**
+	 * Static, session-independent facts — today, the DTR-gate status.
+	 *
+	 * `NOT_EXECUTED` is a documented project evidence-status label, not a
+	 * protocol detail, and is never presented as a pass: see
+	 * `$lib/system-view.ts` for the sentence that goes with it.
+	 */
+	async system(): Promise<System> {
+		return this.#read<System>('/v1/system');
 	}
 
 	async connect(context: CommandContext): Promise<OperationAccepted> {

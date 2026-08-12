@@ -24,9 +24,10 @@ export interface RenderedForm {
 	readonly action: string;
 	readonly method: string;
 	/**
-	 * What a submitted body carries: hidden and pre-filled inputs, and each
-	 * enabled select's chosen option — the one marked `selected`, else the
-	 * first, which is what a browser submits untouched.
+	 * What a submitted body carries: hidden and pre-filled inputs, each enabled
+	 * select's chosen option — the one marked `selected`, else the first — and
+	 * a checkbox or radio only when it is marked `checked`, which is what a
+	 * browser submits untouched.
 	 */
 	readonly fields: Readonly<Record<string, string>>;
 }
@@ -104,7 +105,11 @@ export function focusOrder(html: string): readonly Focusable[] {
 		}
 		if (tag === 'input') {
 			const name = attributes.name;
-			if (name !== undefined && forms.length > 0) {
+			const type = (attributes.type ?? 'text').toLowerCase();
+			// An unchecked checkbox or radio submits nothing at all; a browser
+			// does not send a field a person never selected.
+			const submits = (type !== 'checkbox' && type !== 'radio') || 'checked' in attributes;
+			if (name !== undefined && submits && forms.length > 0) {
 				forms[forms.length - 1].fields[name] = attributes.value ?? '';
 			}
 		}

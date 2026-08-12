@@ -16,13 +16,20 @@
  * A daemon that is not answering makes the page report that, not fail. An
  * operator whose machine has gone quiet still needs the screen, and the stop
  * control has to stay on it.
+ *
+ * Recovery is the same shape of intent as a manual command — a snapshot
+ * generation, a render-minted idempotency key, an authorization check next to
+ * the effect — but a different capability (`machine.recover`,
+ * administrator-only) and a required confirmation field this workspace checks
+ * before anything is sent, because the contract itself never implies consent
+ * from the request merely having been made.
  */
 
 import { fail, type Actions, type RequestEvent, type ServerLoad } from '@sveltejs/kit';
 
 import { recordAudit } from '$lib/server/audit';
 import { requireCapability } from '$lib/server/auth/authorization';
-import { capabilitiesFor } from '$lib/server/auth/capabilities';
+import { capabilitiesFor, type Capability } from '$lib/server/auth/capabilities';
 import {
 	actorFor,
 	InvalidCommandError,
@@ -41,7 +48,7 @@ const STOP_ACTION = 'machine.stop';
 /** Our own form failed our own checks; nothing was sent to the daemon. */
 const INVALID_MESSAGE = 'That request was rejected as invalid.';
 
-type ManualControl = 'connect' | 'home' | 'sort' | 'feed';
+type ManualControl = 'connect' | 'home' | 'sort' | 'feed' | 'recover';
 
 export const load: ServerLoad = async ({ locals }) => {
 	// The hook has already refused an unauthenticated request and checked that
@@ -76,7 +83,8 @@ export const load: ServerLoad = async ({ locals }) => {
 					sort: newIdempotencyKey(),
 					feed: newIdempotencyKey()
 				}
-			: null
+			: null,
+		recoveryKey: capabilities.includes('machine.recover') ? newIdempotencyKey() : null
 	};
 };
 
@@ -137,17 +145,37 @@ export const actions: Actions = {
 		}
 	},
 
-	connect: (event) => operate(event, 'connect', (daemon, context) => daemon.connect(context)),
+	connect: (event) =>
+		operate(event, 'connect', 'machine.operate', (daemon, context) => daemon.connect(context)),
 
 	home: (event) =>
-		operate(event, 'home', (daemon, context, form) => daemon.home(context, homeTargetField(form))),
+		operate(event, 'home', 'machine.operate', (daemon, context, form) =>
+			daemon.home(context, homeTargetField(form))
+		),
 
 	sort: (event) =>
-		operate(event, 'sort', (daemon, context, form) =>
+		operate(event, 'sort', 'machine.operate', (daemon, context, form) =>
 			daemon.sort(context, integerField(form, 'slot'))
 		),
 
-	feed: (event) => operate(event, 'feed', (daemon, context) => daemon.feed(context))
+	feed: (event) =>
+		operate(event, 'feed', 'machine.operate', (daemon, context) => daemon.feed(context)),
+
+	/**
+	 * Recovery, which the operator has to confirm explicitly.
+	 *
+	 * `confirm` is this workspace's own field, checked before anything reaches
+	 * the daemon: a request that arrived without it is not the confirmation the
+	 * contract requires, and is refused the same way any other invalid form is,
+	 * not silently coerced into one.
+	 */
+	recover: (event) =>
+		operate(event, 'recover', 'machine.recover', (daemon, context, form) => {
+			if (form.get('confirm') !== 'true') {
+				throw new InvalidCommandError('recovery requires the confirmation checkbox');
+			}
+			return daemon.recover(context, true);
+		})
 };
 
 /**
@@ -163,13 +191,14 @@ export const actions: Actions = {
 async function operate(
 	event: RequestEvent,
 	control: ManualControl,
+	capability: Capability,
 	command: (
 		daemon: DaemonClient,
 		context: CommandContext,
 		form: FormData
 	) => Promise<OperationAccepted>
 ) {
-	const user = requireCapability(event.locals.user, 'machine.operate');
+	const user = requireCapability(event.locals.user, capability);
 	const { daemon, database } = webRuntime();
 	const now = new Date();
 	const action = `machine.${control}`;

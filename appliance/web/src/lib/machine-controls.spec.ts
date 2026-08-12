@@ -11,11 +11,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { MachineSnapshot } from '$lib/machine';
-import { acceptedWording, controlsPlan } from '$lib/machine-controls';
+import { acceptedWording, controlsPlan, recoveryPlan } from '$lib/machine-controls';
 import { COMPLETION_WORDS } from '$lib/machine-status';
 
 const OPERATOR = ['machine.read', 'machine.stop', 'machine.operate'];
 const VIEWER = ['machine.read', 'machine.stop'];
+const ADMINISTRATOR = [...OPERATOR, 'machine.recover', 'config.write', 'users.manage'];
 
 function snapshot(
 	overrides: Partial<MachineSnapshot> = {},
@@ -156,6 +157,64 @@ describe('a machine without a working session', () => {
 
 		expect(plan.home.enabled).toBe(false);
 		expect(plan.home.reason).toContain('journal unavailable');
+	});
+
+	it('withholds every motion control when the session state is not known', () => {
+		// UNCERTAIN is exactly the case a guessed capability must not paper over:
+		// the wire has not told this module anything trustworthy about what the
+		// controller can do right now.
+		const view = snapshot({ connection_state: 'UNCERTAIN', ready: false });
+
+		const plan = controlsPlan(view, OPERATOR);
+
+		expect(plan.home.enabled).toBe(false);
+		expect(plan.sort.enabled).toBe(false);
+		expect(plan.feed.enabled).toBe(false);
+	});
+});
+
+describe('who is offered recovery', () => {
+	it('offers nothing to a role without machine.recover', () => {
+		const plan = recoveryPlan(snapshot(), OPERATOR);
+
+		expect(plan.offered).toBe(false);
+	});
+
+	it('offers nothing against a machine that has not been read', () => {
+		const plan = recoveryPlan(null, ADMINISTRATOR);
+
+		expect(plan.offered).toBe(true);
+		expect(plan.generation).toBeNull();
+		expect(plan.withheld).toContain('has not been read');
+		expect(plan.decision.enabled).toBe(false);
+	});
+});
+
+describe('when recovery may be attempted', () => {
+	it('is the way back from a session that is not known', () => {
+		const view = snapshot({ connection_state: 'UNCERTAIN', ready: false });
+
+		const plan = recoveryPlan(view, ADMINISTRATOR);
+
+		expect(plan.decision).toEqual({ enabled: true, reason: null });
+		expect(plan.generation).toBe(41);
+	});
+
+	it('is offered as a deliberate reset of an otherwise healthy session', () => {
+		const plan = recoveryPlan(snapshot(), ADMINISTRATOR);
+
+		expect(plan.decision.enabled).toBe(true);
+	});
+
+	it('is withheld while a session is already being established or recovered', () => {
+		for (const connection_state of ['CONNECTING', 'VERIFYING_V1', 'ACTIVATING_V2'] as const) {
+			const plan = recoveryPlan(snapshot({ connection_state }), ADMINISTRATOR);
+			expect(plan.decision.enabled).toBe(false);
+		}
+
+		const recovering = recoveryPlan(snapshot({ connection_state: 'RECOVERING' }), ADMINISTRATOR);
+		expect(recovering.decision.enabled).toBe(false);
+		expect(recovering.decision.reason).toContain('Recovery is in progress');
 	});
 });
 

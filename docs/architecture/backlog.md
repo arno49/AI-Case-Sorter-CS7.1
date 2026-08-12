@@ -126,7 +126,9 @@ runs stop/reset/verify for an unsafe exchange and reports the outcome through
 `RecoveryError.recovered`; the worker only decides whether to re-activate v2 or
 escalate to a full reconnect on a fresh transport. Real-port opening is gated
 in `cs71d.device`, which refuses POSIX opens while the DTR gate is
-`NOT_EXECUTED`.
+`NOT_EXECUTED`. That same constant is now readable over the API at
+`GET /v1/system` (PI-UI-002), so the web system view can show it without
+duplicating it — the gate itself is unchanged by exposing its status.
 
 - Connection transitions include `DISCONNECTED`, `VERIFYING_V1`, `READY`, `RECOVERING` and `UNCERTAIN` with generation changes.
 - Timeout, malformed frame, CRC fault or device loss marks affected operation non-successful.
@@ -486,9 +488,9 @@ journal of record: `cs71d` owns what the machine did in its own database, and
 the two are never written in one transaction. Entries cannot be edited, and the
 table has no column for a password, a token or a form body.
 
-Remaining for PI-UI-002: recovery and configuration have clients but no
-screens. Connect, home, sort and feed are now screens, delivered in
-PI-UI-001.
+Remaining: configuration has a client but no screen; no backlog item yet owns
+it. Connect, home, sort, feed and recovery are now screens, delivered in
+PI-UI-001 and PI-UI-002.
 
 - [x] Browser requests cannot select daemon URL, serial path or arbitrary protocol command.
 - [x] BFF supplies required command headers and maps daemon errors to safe user responses.
@@ -591,10 +593,39 @@ opaque `next_cursor` carries the current filter forward for the next page.
 
 **Goal:** make unsafe state and maintenance evidence actionable. **Implementation notes:** recovery/reset requires administrator confirmation; no raw serial access. **Dependencies:** PI-UI-001. **Hardware required:** No. **Size:** M.
 
-- `UNCERTAIN` is visually and semantically more prominent than ordinary status.
-- Dependent motion controls are disabled when readiness/homing/capabilities are unknown.
-- Recovery/reset prompt requires explicit administrator confirmation and records outcome.
-- System view shows versions, storage/journal health and DTR-gate status without claiming it passed.
+Delivered. `[data-tone="uncertain"]` is now styled distinctly from
+`[data-tone="attention"]` — bold, bordered and filled rather than color alone
+— so a machine whose state is not known cannot be mistaken at a glance for one
+with an ordinary known problem; the two never collapse into the same visual
+weight. Dependent motion was already withheld whenever a session is not
+`READY` or an axis is unadvertised (PI-UI-001's `machine-controls.ts`), which
+already covers a session the daemon has never observed; that coverage is now
+asserted directly for `UNCERTAIN`.
+
+Recovery is a new control on the dashboard, gated to `machine.recover`
+(administrator-only) and decided independently of the operator controls by
+`recoveryPlan()`: it is the way back from a session that is not known, and a
+deliberate reset of an otherwise healthy one, withheld only while a session is
+already being established or is already recovering. The form requires an
+explicit confirmation checkbox this workspace validates on the server before
+anything reaches the daemon — a request that arrives without it is refused as
+invalid, not silently coerced into consent — and every attempt lands in
+`web_audit` under `machine.recover`, accepted or refused.
+
+The system view at `/system` shows the firmware and protocol version already
+in the snapshot, journal health inferred from recorded faults and captioned as
+inferred rather than a dedicated check, storage health explicitly reported as
+not available from this service (no daemon data source exists for it yet),
+and DTR-gate status from a new `GET /v1/system` endpoint this slice adds to
+the contract and to `cs71d`: it serializes the existing
+`cs71d.device.DTR_GATE_STATUS` constant, today `NOT_EXECUTED`, worded as the
+project's own evidence-status legend and never presented as a pass — the same
+caution the daemon has always applied to opening a real serial port on POSIX.
+
+- [x] `UNCERTAIN` is visually and semantically more prominent than ordinary status.
+- [x] Dependent motion controls are disabled when readiness/homing/capabilities are unknown.
+- [x] Recovery/reset prompt requires explicit administrator confirmation and records outcome.
+- [x] System view shows versions, storage/journal health and DTR-gate status without claiming it passed.
 
 ## Epic PI-OPS — Deployment and operations
 
