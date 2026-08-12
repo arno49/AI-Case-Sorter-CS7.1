@@ -12,6 +12,7 @@
 
 import { openWebDatabase, type WebDatabase } from './auth/database';
 import { loadWebConfig, type WebConfig } from './config';
+import { EventBroadcast } from './daemon/broadcast';
 import { DaemonClient } from './daemon/client';
 import { createWebLimits, type WebLimits } from './limits';
 
@@ -30,6 +31,13 @@ export interface WebRuntime {
 	 * even when `cs71d` is not up yet and reports that per request instead.
 	 */
 	readonly daemon: DaemonClient;
+	/**
+	 * The one reader of the daemon's event stream, shared by every browser.
+	 *
+	 * It attaches when the first browser subscribes and lets go when the last one
+	 * leaves, so an appliance nobody is watching holds no connection open.
+	 */
+	readonly events: EventBroadcast;
 }
 
 let runtime: WebRuntime | undefined;
@@ -50,10 +58,22 @@ function start(): WebRuntime {
 		socketPath: config.daemonSocketPath,
 		serviceTokenPath: config.serviceTokenPath
 	});
-	return { config, database, limits: createWebLimits(), daemon };
+	const events = new EventBroadcast({
+		socketPath: config.daemonSocketPath,
+		serviceTokenPath: config.serviceTokenPath
+	});
+	return { config, database, limits: createWebLimits(), daemon, events };
 }
 
+/**
+ * Let go of everything this process holds.
+ *
+ * Nothing here reaches the machine. The daemon owns every operation in flight
+ * and goes on running it; this closes a database handle and a reader, which is
+ * why restarting the web service can neither cancel nor duplicate an operation.
+ */
 export function closeWebRuntime(): void {
+	runtime?.events.close();
 	runtime?.database.close();
 	runtime = undefined;
 }

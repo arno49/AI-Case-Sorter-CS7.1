@@ -179,6 +179,7 @@ writing code.
 | `credentials.ts` | Reading the service credential from its protected file                  |
 | `errors.ts`      | What went wrong, and what the operator is told about it                 |
 | `events.ts`      | Reading the daemon's event stream, and staying attached to it           |
+| `broadcast.ts`   | One reader of that stream, fanned out to however many browsers watch    |
 
 There is no host, no port and no URL in any of it: the socket path comes from
 configuration and the request path is a literal the client builds, so a browser
@@ -286,8 +287,70 @@ not something to lose in transit. A single event is size-capped, and silence
 past the idle window counts as a disconnection — the daemon sends heartbeats
 precisely so a quiet stream can be told from a dead socket.
 
-No browser route consumes this yet. The SSE bridge to the browser, its fan-out
-and its restart isolation are the rest of PI-BFF-002.
+### One reader, many browsers
+
+`broadcast.ts` attaches to the daemon's stream when the first browser subscribes
+and lets go when the last one leaves. A second connection would buy nothing —
+the events are identical for every viewer — and it would spend the daemon's
+retention budget on a stream nobody is reading any faster. It also puts the cost
+of a slow browser here, where dropping one is cheap.
+
+A browser never applies back pressure. If it falls far enough behind that its
+backlog is worthless, the backlog is discarded and it is told to read a
+snapshot: more events cannot catch up a viewer that is that far out of date,
+only a fresh snapshot can. Nothing in the fan-out ever waits for a browser, so
+one that stops reading, or vanishes without closing, cannot slow the daemon's
+event production or the serial worker behind it.
+
+Recent events are retained so a browser whose connection blinked can resume
+exactly where it was. That is not durable history and not a substitute for the
+daemon's own retention: a cursor older than what is held, or from a position
+this process never saw, is answered with a resynchronisation rather than a
+guess.
+
+### The browser's stream
+
+`GET /events` is that fan-out as SSE. It requires `machine.read` — watching is
+reading — and asks for it in the handler, next to the effect.
+
+The browser's own `EventSource` is the reconnection policy. It re-sends the last
+`id:` it saw, which is the daemon's `event_id` unrenumbered, so a resumption
+names a position the daemon would understand. Only real events carry an `id:`; a
+`resync` or `unavailable` notice does not, because a notice that moved the
+cursor would make the next reconnection ask for a position that never existed.
+A cursor this process cannot resume — absent, unparseable, too old, or from
+before a restart — opens the stream with a `resync`.
+
+The `event:` name is written raw, so it is stripped of anything that could end
+the field: a daemon that has gone wrong must not be able to compose a second
+frame inside the first. A comment frame goes out periodically so the reverse
+proxy in front of the appliance does not close a connection that is quiet
+because the machine is.
+
+### What the browser does with it
+
+`src/lib/machine-view.svelte.ts` holds the rule, and it is deliberately small:
+the stream is a prompt, not a source of truth. Nothing there builds a machine
+state out of an event. An event says the machine has moved past the generation
+on screen, and the answer to that is to read a snapshot — the only thing that
+describes the machine completely. So the screen is either a snapshot or a
+snapshot being replaced, never a state assembled from whichever half of a
+sequence arrived. Reading a snapshot is re-running the page's own server load,
+so there is no second path to the machine to keep honest.
+
+Reads are coalesced: a busy machine can produce events far faster than a page
+can read, and one read per event would be load the page inflicted on itself.
+What matters is that a read _ends_ after the last event. A screen that owes a
+snapshot says so, so a stale picture is visibly stale rather than quietly wrong.
+
+### Restarting this service
+
+A restart drops a database handle and a reader. It reaches nothing else: `cs71d`
+owns every operation in flight and goes on running it, which is why restarting
+the web service can neither cancel nor duplicate one, and why nothing is resent
+on the way back up. A browser that reconnects across a restart is told to read a
+snapshot, because what this process had retained went with it and the cursor the
+browser holds cannot be shown to join up with what follows.
 
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.

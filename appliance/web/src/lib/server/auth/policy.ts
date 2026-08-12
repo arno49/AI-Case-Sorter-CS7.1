@@ -27,6 +27,8 @@ export type RoutePolicies = Readonly<Record<string, RoutePolicy>>;
 /** Keyed by SvelteKit route id, which is the route directory, not the URL. */
 export const ROUTE_POLICIES: RoutePolicies = Object.freeze({
 	'/': { access: 'capability', capability: 'machine.read' },
+	/** The machine's event stream. Watching is reading, and nothing more. */
+	'/events': { access: 'capability', capability: 'machine.read' },
 	'/login': { access: 'public' },
 	'/logout': { access: 'authenticated' }
 });

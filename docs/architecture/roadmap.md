@@ -113,12 +113,19 @@ graph LR
   attempt without a transaction across the two databases. Connect, home, sort,
   feed, recovery and configuration have clients but no screens, which is
   PI-UI-001.
-- PI-BFF-002 has its daemon-side event reader but no browser route consuming it,
-  so none of its criteria are claimed. It resumes from the daemon's own
-  `event_id`, announces a `resync` on every reconnection and whenever the daemon
-  rejects a cursor, passes daemon identifiers through unrenumbered, and
-  reconnects only a reader — never a command. The browser SSE route, its fan-out
-  and the restart-isolation evidence remain.
+- PI-BFF-002 is complete for its software criteria. One reader of the daemon's
+  event stream is fanned out to every open browser over SSE behind
+  `machine.read`; it attaches on the first subscriber and lets go after the last.
+  It resumes from the daemon's own `event_id`, announces a `resync` on every
+  reconnection and whenever a cursor cannot be resumed, passes daemon identifiers
+  through unrenumbered, and reconnects only a reader — never a command. Nothing
+  waits for a browser: one that falls behind is told to read a snapshot and one
+  that vanishes cannot slow daemon event production or the serial worker. The
+  browser builds no machine state out of an event — an event means the screen is
+  behind, and that is resolved by reading a snapshot — and a restart of this
+  service drops a database handle and a reader and nothing else, so it can
+  neither cancel nor duplicate an operation the daemon is running. M5's exit
+  criteria are met apart from the operator screens, which are PI-UI-001.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

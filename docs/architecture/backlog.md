@@ -498,26 +498,34 @@ have clients but no screens.
 
 **Goal:** maintain browser view from daemon events/snapshots. **Implementation notes:** BFF fans out/reconnects; it does not own/retry machine operations. **Dependencies:** PI-BFF-001. **Hardware required:** No. **Size:** M.
 
-The daemon side exists; no browser route consumes it yet, so none of the
-criteria below are claimed. `appliance/web/src/lib/server/daemon/events.ts` is
-the only place that reconnects to `cs71d` on its own, which is safe because
-reading is the only thing that can be retried without asking whether the machine
-already acted; it re-attaches a reader and never resends a command. Resumption
-uses the daemon's own `event_id`: a reconnection continues after the last event
-actually delivered, a `snapshot.required` answer drops that cursor rather than
-presenting it again, and every reconnection surfaces a `resync` so a consumer
-re-reads a snapshot instead of applying increments across a gap. Daemon
-`event_id`, `operation_id` and `generation` are passed through unrenumbered, an
-unknown event type is passed through as the contract requires, a single event is
-size-capped, and silence past the idle window counts as a disconnection.
+Complete for its software criteria. `events.ts` is the only place that
+reconnects to `cs71d` on its own, which is safe because reading is the only
+thing that can be retried without asking whether the machine already acted; it
+re-attaches a reader and never resends a command. `broadcast.ts` turns that one
+reader into as many browser streams as are open, attaching on the first
+subscriber and letting go after the last, and `GET /events` serves them as SSE
+behind `machine.read`.
 
-Remaining: the browser SSE route, its fan-out and per-browser cursor, and the
-restart-isolation evidence.
+Nothing in the fan-out waits for a browser: one that falls behind has its
+backlog discarded and is told to read a snapshot, and one that vanishes cannot
+slow daemon event production or the serial worker. A cursor is honoured only
+when the whole run since it can be handed over; absent, unparseable, too old or
+from before a restart, it opens with a `resync` instead. Only real events carry
+an SSE `id:`, so a notice never becomes a cursor. Daemon `event_id`,
+`operation_id` and `generation` reach the browser unrenumbered, and an unknown
+event type is passed through as the contract requires.
 
-- Browser reconnect after event overflow fetches snapshot before presenting incremental updates.
-- BFF restart during a simulated daemon operation neither cancels nor duplicates it.
-- Browser event disconnect does not block daemon event production or serial worker.
-- UI-facing events preserve daemon `event_id`, `operation_id` and generation semantics.
+`machine-view.svelte.ts` is what the browser does with it, and it builds no
+machine state out of an event: an event means the screen is behind, and being
+behind is resolved by reading a snapshot through the page's own server load.
+Reads are coalesced, and a screen that owes a snapshot says so. A restart of
+this service drops a database handle and a reader and nothing else, which is
+why it can neither cancel nor duplicate an operation `cs71d` is running.
+
+- [x] Browser reconnect after event overflow fetches snapshot before presenting incremental updates.
+- [x] BFF restart during a simulated daemon operation neither cancels nor duplicates it.
+- [x] Browser event disconnect does not block daemon event production or serial worker.
+- [x] UI-facing events preserve daemon `event_id`, `operation_id` and generation semantics.
 
 ## Epic PI-UI — Operator UI
 
