@@ -6,11 +6,13 @@ the serial device and never bypasses `cs71d` — it only ever asks `cs71d` to
 act, the same way `cs71-web` does today.
 
 PI-VISION-001 shipped the camera abstraction and capture loop. PI-VISION-002
-adds the self-labeled dataset: `cs71-vision` now reads `cs71d`'s own
-operation history (never `machine.db` directly) to learn which slot a
-completed sort actually reached, and pairs that with a frame it already
-captured. It still classifies nothing and still never talks to the web
-BFF — that is PI-VISION-003 onward.
+added the self-labeled dataset: `cs71-vision` reads `cs71d`'s own operation
+history (never `machine.db` directly) to learn which slot a completed sort
+actually reached, and pairs that with a frame it already captured.
+PI-VISION-003 gives `cs71-vision` its first HTTP surface of its own — a
+single read-only resource the web BFF queries for dataset review — so it now
+talks to the web side, but only ever to answer that one read. It still
+classifies nothing; that is PI-VISION-004 onward.
 
 ## Self-labeled dataset (PI-VISION-002)
 
@@ -44,6 +46,56 @@ operator-driven sorting, with zero extra effort from anyone.
 Wiring is additive and optional: a config with no `daemon_service_token_path`
 runs exactly like PI-VISION-001's plain capture-only mode. Set it, and
 `cs71-vision` starts correlating against `cs71d` automatically.
+
+## Dataset api (PI-VISION-003)
+
+Lets an operator see training readiness before training is offered, not
+after (ADR-0013). `cs71vision.api.DatasetApiServer` serves one resource,
+`GET /v1/dataset`, on its own Unix domain socket — mirroring `cs71d.api`'s
+shape (bearer auth against the same shared service credential, stale-socket
+reclaim on start, `AF_UNIX`-only) at a fraction of its surface: one route, no
+commands, no event stream. The response is per-class counts against the
+configured floor:
+
+```json
+{
+  "api_version": "v1",
+  "minimum_examples_per_class": 40,
+  "classes": [
+    { "slot": 3, "count": 52, "eligible": true },
+    { "slot": 5, "count": 12, "eligible": false }
+  ],
+  "training_ready": true
+}
+```
+
+A "class" is the slot the operator sorted into — the same self-labeling
+ADR-0013 describes, so this introduces no second labeling concept. The floor
+is `minimum_examples_per_class` in `cs71vision.config.VisionConfig` (default
+40, configurable per installation); a class below it is `eligible: false`,
+never merely absent. `training_ready` is true once at least one class clears
+the floor.
+
+Same gate as correlation: `cs71vision.runtime.build_api_server` returns
+`None` when `daemon_service_token_path` is unset — no credential to
+authenticate a caller against, and nothing in the dataset ever gets
+populated either, so capture-only mode exposes no api. It opens its own
+`DatasetStore` connection, independent of the correlation loop's — safe
+under the WAL mode `DatasetStore.open` already enforces, and it keeps this
+server's lifecycle free of any dependency on whether correlation happens to
+be running.
+
+The web BFF's side is `appliance/web/src/lib/server/vision/client.ts` — a
+small hand-typed client, not a second generated OpenAPI contract: one
+resource does not justify that weight yet (see PI-VISION-003's backlog
+entry for the full reasoning, and revisit if PI-VISION-004/005 grow this
+surface). It reuses the daemon module's own Unix-socket transport and
+credential reader, both already generic infrastructure, and reads through
+`cs71-web`'s existing copy of the shared service credential — the same
+secret `cs71-web` already presents to `cs71d`, no new credential to
+provision. The operator-facing page is `/dataset`
+(`appliance/web/src/routes/dataset/`), gated by the same `machine.read`
+capability `/system` uses.
 
 ## Camera
 
@@ -115,12 +167,20 @@ the same way the sorter's own adapter identity is required — if omitted,
 `cs71-vision` is installed and enabled but has no matched device until an
 operator supplies that hardware evidence.
 
-Reaching `cs71d`'s socket needs the same `cs71-api` group membership
-`cs71-web` already has (`SupplementaryGroups=cs71-api` in the unit, plus
-real OS-level membership from `install.sh`, for anything that reaches this
-identity a different way — see `appliance/ops/README.md`). Its own
-`vision.db` lives under `StateDirectory=cs71-vision`
-(`/var/lib/cs71-vision`), included in `backup.sh`'s manifest and
-`restore.sh`'s restore path whenever it exists, the same way
-`machine.db`/`web.db` already are — optionally, since an appliance upgraded
-from a pre-PI-VISION install may not have one yet.
+`cs71-vision.service`'s *effective* `Group=` is `cs71-api` — the same shape
+`cs71d.service` itself uses, not a `SupplementaryGroups=` grant — which does
+two jobs with one directive: it lets `cs71-vision` reach `cs71d`'s socket as
+a client, and it makes `cs71-vision`'s own new dataset-api socket
+(PI-VISION-003, above) come out `cs71-vision:cs71-api` 0660, so `cs71-web`
+can reach it through the same supplementary grant it already carries for
+`cs71d`'s socket — no new grant needed on that side. Real OS-level group
+membership is still granted separately in `install.sh`, for anything that
+reaches this identity a different way (`su`, `runuser`) — see
+`appliance/ops/README.md`. Its own `vision.db` lives under
+`StateDirectory=cs71-vision` (`/var/lib/cs71-vision`), included in
+`backup.sh`'s manifest and `restore.sh`'s restore path whenever it exists,
+the same way `machine.db`/`web.db` already are — optionally, since an
+appliance upgraded from a pre-PI-VISION install may not have one yet. The
+dataset-api socket lives under `RuntimeDirectory=cs71-vision`
+(`/run/cs71-vision`), recreated fresh on every start the same way
+`cs71d.service`'s own `RuntimeDirectory=` is.

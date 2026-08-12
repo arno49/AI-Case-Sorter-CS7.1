@@ -76,7 +76,12 @@ install -o cs71-web -g cs71-web -m 0600 "$FROM/web.db" /var/lib/cs71-web/web.db
 rm -f /var/lib/cs71d/machine.db-wal /var/lib/cs71d/machine.db-shm
 rm -f /var/lib/cs71-web/web.db-wal /var/lib/cs71-web/web.db-shm
 if [ -f "$FROM/vision.db" ]; then
-	install -o cs71-vision -g cs71-vision -m 0600 "$FROM/vision.db" /var/lib/cs71-vision/vision.db
+	# Group cs71-api, not cs71-vision: PI-VISION-003 made Group=cs71-api
+	# cs71-vision.service's own effective group (the same shape cs71d.service
+	# uses), so a file the running service creates itself would carry that
+	# group too - this keeps a restored file consistent with that. The 0600
+	# mode is what actually keeps it owner-only either way.
+	install -o cs71-vision -g cs71-api -m 0600 "$FROM/vision.db" /var/lib/cs71-vision/vision.db
 	rm -f /var/lib/cs71-vision/vision.db-wal /var/lib/cs71-vision/vision.db-shm
 fi
 
@@ -105,9 +110,21 @@ if ! web_smoke_test 30 "$WEB_PORT"; then
 	exit 1
 fi
 
-# cs71-vision has no socket or HTTP endpoint of its own yet to smoke-test
-# through (PI-VISION-002); starting it is best-effort, the same no-op-until-
-# camera-present behavior install.sh already relies on, not a verified answer.
+# Starting cs71-vision stays best-effort, the same no-op-until-camera-present
+# behavior install.sh already relies on: a fresh/camera-less install never
+# brings this service up at all. When it does come up, PI-VISION-003 gives it
+# a real dataset api to verify, so a started-but-unhealthy service is at least
+# logged - but sorting does not depend on cs71-vision, so this never fails
+# the restore.
 systemctl start cs71-vision.service || true
+sleep 1
+if systemctl is-active --quiet cs71-vision.service; then
+	if ! vision_smoke_test 30; then
+		journalctl -u cs71-vision.service --no-pager -n 50 || true
+		log "WARNING: cs71-vision started but its dataset api did not answer after restore"
+	fi
+else
+	log "cs71-vision did not start (no camera provisioned yet); nothing to verify"
+fi
 
 log "restore complete from $FROM"

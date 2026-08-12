@@ -42,9 +42,14 @@ PRODUCTION_DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71-vision/service-token"
 #: The self-labeled dataset store (PI-VISION-002); cs71-vision exclusively
 #: owns it, the same separate-ownership rule machine.db/web.db follow.
 PRODUCTION_DATASET_PATH = "/var/lib/cs71-vision/vision.db"
+#: cs71-vision's own read-only dataset API (PI-VISION-003), the socket
+#: cs71-web reads from - cs71-vision has exactly one, the same shape
+#: PRODUCTION_DAEMON_SOCKET_PATH is for cs71d.
+PRODUCTION_API_SOCKET_PATH = "/run/cs71-vision/cs71vision.sock"
 #: Development/test default matching cs71d's and cs71-web's own dev socket.
 _DEVELOPMENT_DAEMON_SOCKET_PATH = "/tmp/cs71/cs71d.sock"
 _DEVELOPMENT_DATASET_PATH = "/tmp/cs71-vision/vision.db"
+_DEVELOPMENT_API_SOCKET_PATH = "/tmp/cs71-vision/cs71vision.sock"
 
 _ALLOWED_FIELDS = {
     "profile",
@@ -56,6 +61,8 @@ _ALLOWED_FIELDS = {
     "daemon_socket_path",
     "daemon_service_token_path",
     "dataset_path",
+    "api_socket_path",
+    "minimum_examples_per_class",
 }
 
 _DEFAULT_INTERVAL_MS = 1_000
@@ -63,6 +70,11 @@ _DEFAULT_INTERVAL_MS = 1_000
 #: (3DModels/Classifier/CameraV2/Camera Assembly V2.pdf).
 _DEFAULT_WIDTH = 640
 _DEFAULT_HEIGHT = 480
+#: A hard floor, not a suggestion (ADR-0013): a class below this is excluded
+#: from training and the UI says why, rather than training on a class too
+#: thin to trust. No number is specified by the ADR; this is a conservative
+#: starting default and is configurable per installation.
+_DEFAULT_MINIMUM_EXAMPLES_PER_CLASS = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +88,13 @@ class VisionConfig:
     daemon_socket_path: str
     dataset_path: str
     #: None means "do not correlate a dataset" - PI-VISION-001's plain
-    #: capture-only mode still works without ever reaching cs71d.
+    #: capture-only mode still works without ever reaching cs71d. The dataset
+    #: API (PI-VISION-003) shares this gate: with no dataset ever populated
+    #: and no credential to authenticate a caller against, it has nothing to
+    #: serve either.
     daemon_service_token_path: str | None = None
+    api_socket_path: str = _DEVELOPMENT_API_SOCKET_PATH
+    minimum_examples_per_class: int = _DEFAULT_MINIMUM_EXAMPLES_PER_CLASS
 
     @classmethod
     def development(cls) -> VisionConfig:
@@ -91,6 +108,8 @@ class VisionConfig:
             daemon_socket_path=_DEVELOPMENT_DAEMON_SOCKET_PATH,
             dataset_path=_DEVELOPMENT_DATASET_PATH,
             daemon_service_token_path=None,
+            api_socket_path=_DEVELOPMENT_API_SOCKET_PATH,
+            minimum_examples_per_class=_DEFAULT_MINIMUM_EXAMPLES_PER_CLASS,
         )
 
     @classmethod
@@ -117,6 +136,12 @@ class VisionConfig:
         if not isinstance(dataset_path, str) or not dataset_path:
             raise ConfigError("dataset_path must be a non-empty string")
         daemon_service_token_path = _optional_string(raw, "daemon_service_token_path")
+        api_socket_path = raw.get("api_socket_path", _DEVELOPMENT_API_SOCKET_PATH)
+        if not isinstance(api_socket_path, str) or not api_socket_path:
+            raise ConfigError("api_socket_path must be a non-empty string")
+        minimum_examples_per_class = _positive_int(
+            raw, "minimum_examples_per_class", _DEFAULT_MINIMUM_EXAMPLES_PER_CLASS
+        )
 
         if backend is Backend.FIXTURE and device_path is not None:
             raise ConfigError("fixture backend cannot specify device_path")
@@ -137,6 +162,10 @@ class VisionConfig:
                     "production daemon_service_token_path must be"
                     f" {PRODUCTION_DAEMON_SERVICE_TOKEN_PATH}"
                 )
+            if api_socket_path != PRODUCTION_API_SOCKET_PATH:
+                raise ConfigError(
+                    f"production api_socket_path must be {PRODUCTION_API_SOCKET_PATH}"
+                )
         elif backend is Backend.V4L2:
             raise ConfigError("v4l2 backend is reserved for the production profile")
 
@@ -150,6 +179,8 @@ class VisionConfig:
             daemon_socket_path=daemon_socket_path,
             dataset_path=dataset_path,
             daemon_service_token_path=daemon_service_token_path,
+            api_socket_path=api_socket_path,
+            minimum_examples_per_class=minimum_examples_per_class,
         )
 
 

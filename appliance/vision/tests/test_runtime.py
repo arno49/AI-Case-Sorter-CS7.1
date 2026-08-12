@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from cs71vision.api import DatasetApiServer
 from cs71vision.camera import CameraError, Frame
 from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
@@ -16,6 +17,7 @@ from cs71vision.dataset import IN_MEMORY, DatasetStore
 from cs71vision.runtime import (
     CaptureLoop,
     CorrelationLoop,
+    build_api_server,
     build_camera,
     build_correlation_loop,
     read_service_token,
@@ -298,3 +300,34 @@ def test_build_correlation_loop_builds_a_working_loop_given_a_token_path(
     assert loop is not None
     assert isinstance(loop, CorrelationLoop)
     loop.close()
+
+
+def test_build_api_server_is_none_without_a_token_path() -> None:
+    config = VisionConfig.development()
+
+    assert build_api_server(config) is None
+
+
+def test_build_api_server_builds_a_working_server_given_a_token_path(
+    token_workspace: Path,
+) -> None:
+    token_path = _token_file(token_workspace)
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=IN_MEMORY,
+        daemon_service_token_path=str(token_path),
+        api_socket_path=str(token_workspace / "cs71vision.sock"),
+        minimum_examples_per_class=5,
+    )
+
+    server = build_api_server(config)
+
+    assert server is not None
+    assert isinstance(server, DatasetApiServer)
+    server.close()

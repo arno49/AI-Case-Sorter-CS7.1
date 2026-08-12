@@ -145,11 +145,22 @@ if ! web_smoke_test 30 "$WEB_PORT"; then
 	exit 1
 fi
 
-# cs71-vision has no smoke-testable answer of its own yet (PI-VISION-002);
-# starting it is best-effort, the same no-op-until-camera-present behavior
-# install.sh already relies on, and never blocks the upgrade from completing.
+# Starting cs71-vision stays best-effort, the same no-op-until-camera-present
+# behavior install.sh already relies on, and never blocks the upgrade from
+# completing. When it does come up, PI-VISION-003 gives it a real dataset api
+# to verify - not fatal, since sorting does not depend on cs71-vision, but
+# worth logging rather than assuming health from "systemd says it started".
 log "== starting the vision service on the new release =="
 systemctl start cs71-vision.service || true
+sleep 1
+if systemctl is-active --quiet cs71-vision.service; then
+	if ! vision_smoke_test 30; then
+		journalctl -u cs71-vision.service --no-pager -n 50 || true
+		log "WARNING: cs71-vision started but its dataset api did not answer on the new release"
+	fi
+else
+	log "cs71-vision did not start (no camera provisioned yet); nothing to verify"
+fi
 
 rm -rf /opt/cs71/web.previous /opt/cs71/daemon.previous /opt/cs71/vision.previous
 log "UPGRADE COMPLETE"

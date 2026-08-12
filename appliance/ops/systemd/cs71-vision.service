@@ -10,11 +10,13 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=cs71-vision
-Group=cs71-vision
-# Membership only, not the primary group - same reason cs71-web.service
-# carries this: reaching cs71d's socket, which cs71d.service's own Group=
-# is what actually owns, not this one.
-SupplementaryGroups=cs71-api
+# The effective group, not a supplementary one - the same shape cs71d.service
+# itself uses. cs71-vision needs cs71-api both ways: to reach cs71d's socket
+# as a client, and so PI-VISION-003's own dataset socket (below) comes out
+# owned cs71-vision:cs71-api, reachable by cs71-web the same way cs71d's is.
+# Real OS-level membership in cs71-api (for su/runuser outside systemd) is
+# still granted separately in install.sh.
+Group=cs71-api
 UMask=0077
 ExecStart=/opt/cs71/vision/venv/bin/cs71vision --serve /etc/cs71/cs71vision.toml
 Restart=on-failure
@@ -24,6 +26,13 @@ RestartSec=2
 # the same discipline cs71d.service's DeviceAllow= already uses for the
 # serial adapter.
 DeviceAllow=/dev/cs71vision rw
+
+# PI-VISION-003's own dataset API socket. Recreated fresh on every start,
+# owned cs71-vision:cs71-api the same way /run/cs71 is cs71d:cs71-api; the
+# socket file itself gets its own 0660 mode in code (cs71vision.api), not
+# here - group access is how cs71-web reaches it without any other grant.
+RuntimeDirectory=cs71-vision
+RuntimeDirectoryMode=0750
 
 # PI-VISION-002's self-labeled dataset (vision.db) lives here; cs71-vision
 # exclusively owns it, the same separate-ownership rule machine.db/web.db

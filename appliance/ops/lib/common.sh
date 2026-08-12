@@ -208,6 +208,31 @@ daemon_smoke_test() {
 	fi
 }
 
+# $1 timeout seconds - a read-only GET through cs71-vision's own dataset api
+# socket (PI-VISION-003), with the shared service credential. Only checked
+# when the socket actually appears within the timeout: a fresh install with
+# no --camera-vendor-id/--camera-product-id, or one whose camera has not
+# arrived yet, never brings cs71-vision.service up at all
+# (ConditionPathExists=) and that absence is not a failure here.
+vision_smoke_test() {
+	local timeout="$1" waited=0 token status
+	while [ ! -S /run/cs71-vision/cs71vision.sock ]; do
+		sleep 1
+		waited=$((waited + 1))
+		if [ "$waited" -ge "$timeout" ]; then
+			return 1
+		fi
+	done
+	token="$(cat /etc/cs71-web/service-token)"
+	status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+		--unix-socket /run/cs71-vision/cs71vision.sock -H "Authorization: Bearer $token" \
+		http://localhost/v1/dataset)"
+	if [ "$status" != "200" ]; then
+		log "GET /v1/dataset through cs71-vision's socket returned $status, expected 200"
+		return 1
+	fi
+}
+
 # $1 timeout seconds  $2 loopback port - a read-only, unauthenticated GET on
 # the web service's own port; the login page still answers 200 fresh.
 web_smoke_test() {

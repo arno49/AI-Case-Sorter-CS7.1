@@ -130,6 +130,7 @@
 
 	<p><a href={resolve('/operations')}>Operation history</a></p>
 	<p><a href={resolve('/system')}>System</a></p>
+	<p><a href={resolve('/dataset')}>Dataset</a></p>
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>

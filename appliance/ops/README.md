@@ -27,9 +27,10 @@ and "Backups, observability and runbooks" sections.
 /var/lib/cs71d/machine.db      daemon-owned SQLite, cs71d:cs71d 0700 directory, 0600 file
 /var/lib/cs71d/backup-status.json  the daemon's own BackupFreshnessMonitor reads this, cs71d:cs71d 0600
 /var/lib/cs71-web/web.db       web-owned SQLite, cs71-web:cs71-web 0700 directory, 0600 file
-/var/lib/cs71-vision/vision.db the self-labeled dataset (PI-VISION-002), cs71-vision:cs71-vision 0700 directory, 0600 file
+/var/lib/cs71-vision/vision.db the self-labeled dataset (PI-VISION-002), cs71-vision:cs71-api 0700 directory, 0600 file
 /var/lib/cs71-backups/<stamp>/ one backup.sh snapshot: all three databases, config and a manifest, root:root 0700
 /run/cs71/cs71d.sock           systemd RuntimeDirectory=; recreated on every start, not persisted
+/run/cs71-vision/cs71vision.sock  cs71-vision's own read-only dataset api (PI-VISION-003); systemd RuntimeDirectory=, recreated on every start, not persisted
 ```
 
 **Three service-token files, not one.** `cs71d`, `cs71-web` and
@@ -51,12 +52,12 @@ does not depend on which supplementary groups a service ends up with.
 
 ## Users and groups
 
-| Identity | Owns | Access to the serial device | Access to the socket |
+| Identity | Owns | Access to the serial device | Access to the socket(s) |
 | --- | --- | --- | --- |
-| `cs71d` (user) | `/var/lib/cs71d`, `/etc/cs71d/service-token` | Yes — the only one | Creates it |
-| `cs71-web` (user) | `/var/lib/cs71-web`, `/etc/cs71-web/service-token` | No | Via the `cs71-api` group |
-| `cs71-vision` (user) | `/var/lib/cs71-vision`, `/etc/cs71-vision/service-token`, `/dev/cs71vision` | No | Via the `cs71-api` group |
-| `cs71-api` (group) | nothing | — | `cs71d.service` runs with this as its effective group, so the socket it creates is `cs71d:cs71-api` 0660; `cs71-web.service` and `cs71-vision.service` each carry this as a supplementary group to reach it |
+| `cs71d` (user) | `/var/lib/cs71d`, `/etc/cs71d/service-token` | Yes — the only one | Creates `cs71d`'s |
+| `cs71-web` (user) | `/var/lib/cs71-web`, `/etc/cs71-web/service-token` | No | Reaches `cs71d`'s and `cs71-vision`'s via the `cs71-api` group |
+| `cs71-vision` (user) | `/var/lib/cs71-vision`, `/etc/cs71-vision/service-token`, `/dev/cs71vision` | No | Creates its own (PI-VISION-003) and reaches `cs71d`'s, both via the `cs71-api` group |
+| `cs71-api` (group) | nothing | — | `cs71d.service` and `cs71-vision.service` each run with this as their *effective* group, so the socket each creates comes out `<owner>:cs71-api` 0660; `cs71-web.service` carries it as a supplementary group to reach both |
 
 `cs71d.service` sets `Group=cs71-api` (not its own `cs71d` group) specifically
 so the socket comes out group-owned `cs71-api`; everything else the daemon
@@ -92,21 +93,30 @@ controller optional" — the controller is the part still missing).
 hardened unit; this only adds `After=`/`Wants=cs71-web.service` so it starts
 once SvelteKit is up.
 
-`systemd/cs71-vision.service` (PI-VISION-001/002, ADR-0013) follows the same
-design: `RestrictAddressFamilies=AF_UNIX` (it reaches `cs71d`'s socket to
-read operation outcomes, PI-VISION-002 — nothing more, so no
-`AF_INET`/`AF_INET6` the way `cs71-web` needs for its loopback port), and
-`DeviceAllow=/dev/cs71vision rw` is its own camera symlink, disjoint from the
-controller's. It carries `SupplementaryGroups=cs71-api`, the same grant
-`cs71-web.service` has, to reach `cs71d`'s socket — its own primary `Group=`
-stays `cs71-vision`. `StateDirectory=cs71-vision` is where `vision.db`
-lives. It gates on its own camera the same way `cs71d.service` gates on the
+`systemd/cs71-vision.service` (PI-VISION-001/002/003, ADR-0013) follows the
+same design: `RestrictAddressFamilies=AF_UNIX` (it reaches `cs71d`'s socket to
+read operation outcomes, PI-VISION-002, and serves its own dataset api,
+PI-VISION-003 — nothing more, so no `AF_INET`/`AF_INET6` the way `cs71-web`
+needs for its loopback port), and `DeviceAllow=/dev/cs71vision rw` is its own
+camera symlink, disjoint from the controller's. Its *effective* `Group=` is
+`cs71-api` — not a `SupplementaryGroups=` grant, but its own primary group at
+runtime, the same shape `cs71d.service` itself uses (`User and groups`,
+above): that one directive both lets it reach `cs71d`'s socket as a client
+and makes its own dataset api socket come out `cs71-vision:cs71-api`, so
+`cs71-web` can reach it the same way it already reaches `cs71d`'s.
+`StateDirectory=cs71-vision` is where `vision.db` lives;
+`RuntimeDirectory=cs71-vision` is where the dataset api socket lives,
+recreated fresh on every start like `cs71d.service`'s own `RuntimeDirectory=`.
+It gates capture on its own camera the same way `cs71d.service` gates on the
 controller: `BindsTo=dev-cs71vision.device` plus
-`ConditionPathExists=/dev/cs71vision`. `tests/smoke-test.sh` runs the same
-derived-unit trick against the fixture backend, since there is no real
-camera on the CI runner either — and, once cs71d-smoke is up, points the
-derived unit's `daemon_socket_path` at that real running instance, so the
-`cs71-api` group grant is proven for real, not just declared.
+`ConditionPathExists=/dev/cs71vision` — the dataset api and correlation loop
+share that same gate, since both are meaningless without the service running
+at all. `tests/smoke-test.sh` runs the same derived-unit trick against the
+fixture backend, since there is no real camera on the CI runner either — and,
+once cs71d-smoke is up, points the derived unit's `daemon_socket_path` at
+that real running instance and queries its own dataset api as `cs71-web`, so
+the `cs71-api` group grant is proven for real in both directions, not just
+declared.
 
 ## udev
 
@@ -226,10 +236,14 @@ before starting the web service and proving the same
 (`GET /login` on its loopback port) — the "restore is validated by integrity
 check and application read-only smoke test" contract in
 [data-and-persistence.md](../../docs/architecture/data-and-persistence.md).
-`cs71-vision.service` is started too, best-effort: it has no socket or HTTP
-endpoint of its own yet to smoke-test through. Any failure stops the script
-rather than declaring success; the runbooks in `deployment-and-operations.md`
-take over from there.
+`cs71-vision.service` is started too, best-effort: a fresh or camera-less
+install never brings it up at all (`ConditionPathExists=/dev/cs71vision`),
+and that absence is not a restore failure. When it does come up, its own
+dataset api (PI-VISION-003) is queried the same way (`GET /v1/dataset`
+through its socket) — logged as a warning rather than failing the restore,
+since sorting does not depend on `cs71-vision`. Any daemon or web failure
+stops the script rather than declaring success; the runbooks in
+`deployment-and-operations.md` take over from there.
 
 `upgrade.sh` backs up first, stops web and vision then daemon, rebuilds the
 web workspace, the daemon venv and the vision venv from the current checkout
@@ -303,10 +317,10 @@ camera backend, and checks it stays active and actually logs a captured
 frame (not just "active" — `systemctl is-active` alone would not prove the
 capture loop is really running). Its `daemon_socket_path` points at the
 real, already-running `cs71d-smoke.service` from earlier in the script —
-real proof the `SupplementaryGroups=cs71-api` grant and `RestrictAddressFamilies=AF_UNIX`
+real proof `Group=cs71-api` and `RestrictAddressFamilies=AF_UNIX`
 actually let it reach the daemon, not just that the fixture camera works in
 isolation: the check confirms no "could not reach cs71d" error was logged
-and that `vision.db` was actually created, `cs71-vision:cs71-vision` owned,
+and that `vision.db` was actually created, `cs71-vision:cs71-api` owned,
 proving `DatasetStore.open()` succeeded for real. It does not drive an
 actual sort operation through `cs71d-smoke` to prove a labeled example gets
 recorded end to end — `Correlator`/`DaemonClient` already have thorough
@@ -314,6 +328,16 @@ unit/integration coverage of that logic (`appliance/vision/tests/`,
 including a real fake HTTP server over a real `AF_UNIX` socket), and this
 smoke test's job is the sandbox/packaging layer underneath it, not a second
 copy of that coverage.
+
+**PI-VISION-003's own dataset api socket is checked the same way.** The
+script waits for `/run/cs71-vision/cs71vision.sock` to appear (systemd's
+`RuntimeDirectory=`), asserts it is `cs71-vision:cs71-api` 0660 - the same
+shape `/run/cs71/cs71d.sock` already is - and then, running *as* `cs71-web`
+with `cs71-web`'s own copy of the shared credential, issues a real
+`GET /v1/dataset` through it and checks for `200`. That is real proof the
+new `Group=cs71-api` grant lets `cs71-web` reach a socket `cs71-vision`
+itself created, not only one `cs71d` created - the two are different claims,
+and PI-VISION-002 only ever proved the first.
 
 What it cannot prove, and does not claim to: that the production profile
 (`backend = "serial"`) starts at all. It does not, on any Linux host,
