@@ -36,6 +36,16 @@ ensure_system_user() {
 	fi
 }
 
+# $1 group  $2 user - idempotent. The systemd units grant supplementary
+# groups themselves (SupplementaryGroups=), which needs no OS-level
+# membership at all; this is for everything that reaches these identities
+# a different way (su, runuser, a technician's own shell) to see the same
+# group access systemd would have given them.
+ensure_group_member() {
+	local group="$1" user="$2"
+	usermod -aG "$group" "$user"
+}
+
 # $1 path  $2 owner:group  $3 octal mode
 ensure_dir() {
 	local path="$1" owner="$2" mode="$3"

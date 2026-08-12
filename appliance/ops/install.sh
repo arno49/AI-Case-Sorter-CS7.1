@@ -83,6 +83,11 @@ ensure_group cs71-web
 ensure_group cs71-api
 ensure_system_user cs71d cs71d /var/lib/cs71d
 ensure_system_user cs71-web cs71-web /var/lib/cs71-web
+# Real OS-level membership, in addition to (not instead of) cs71-web.service's
+# own SupplementaryGroups=cs71-api: that directive is systemd's own grant and
+# needs no /etc/group entry, but anything reaching this identity a different
+# way - su, runuser, a technician's shell - only sees real group membership.
+ensure_group_member cs71-api cs71-web
 
 log "== directories =="
 ensure_dir /opt/cs71/web root:root 0755
