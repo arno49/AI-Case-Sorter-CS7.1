@@ -563,3 +563,23 @@ def test_unusable_terminal_fields_are_refused(journal: Journal) -> None:
             trusted_terminal=True,
             terminal_fields={"Slot": "3"},
         )
+
+
+def test_the_applied_configuration_is_the_newest_version(journal: Journal) -> None:
+    assert journal.applied_configuration() is None
+
+    for generation, interval in ((7, 15_000), (9, 20_000)):
+        journal.record_configuration(
+            config_id=new_operation_id(),
+            generation=generation,
+            values={"heartbeat_interval_ms": interval},
+            source="administrator:opaque",
+            created_at=CREATED,
+        )
+
+    applied = journal.applied_configuration()
+    assert applied is not None
+    values, generation, created_at = applied
+    assert values == {"heartbeat_interval_ms": 20_000}
+    assert generation == 9
+    assert created_at == CREATED

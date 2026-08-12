@@ -368,9 +368,9 @@ def test_an_unknown_resource_and_an_unavailable_method_are_reported_as_errors(
     harness = make_api()
 
     unknown = harness.client.request("GET", "/v1/nope")
-    # Configuration is in the contract but has no domain behind it yet, so the
-    # daemon reports it as absent rather than pretending to accept a change.
-    unavailable = harness.client.request("PATCH", "/v1/configuration", body=b"{}")
+    # The event stream is in the contract but is not served yet, so the daemon
+    # reports it as absent rather than opening a stream it cannot sustain.
+    unavailable = harness.client.request("DELETE", "/v1/snapshot")
 
     assert unknown.status == 404
     assert_conforms(unknown.body, "NotFoundError")
@@ -819,3 +819,133 @@ def test_a_viewer_may_not_command_the_session(make_api: Callable[..., ApiHarness
 
     assert response.status == 403
     assert_conforms(response.body, "ForbiddenError")
+
+
+CONFIGURATION_FIELDS = {
+    "heartbeat_interval_ms",
+    "event_retention_count",
+    "operation_retention_days",
+    "max_deadline_ms",
+}
+
+
+def test_the_applied_configuration_is_readable(make_api: Callable[..., ApiHarness]) -> None:
+    harness = make_api()
+
+    response = harness.client.request("GET", "/v1/configuration")
+
+    assert response.status == 200
+    assert_conforms(response.body, "Configuration")
+    assert set(response.body["values"]) == CONFIGURATION_FIELDS
+
+
+def _patch(
+    harness: ApiHarness,
+    changes: dict[str, Any],
+    *,
+    generation: int | None = None,
+    role: str = "administrator",
+) -> Response:
+    sent = dict(COMMAND_HEADERS)
+    if generation is not None:
+        sent["If-Match-Generation"] = str(generation)
+    payload = {
+        "api_version": "v1",
+        "actor": {"user_id": OPERATOR.user_id, "role": role},
+        "changes": changes,
+    }
+    return harness.client.request(
+        "PATCH", "/v1/configuration", headers=sent, body=json.dumps(payload).encode()
+    )
+
+
+def test_a_configuration_change_is_applied_and_versioned(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    before = harness.client.request("GET", "/v1/configuration").body
+
+    accepted = _patch(
+        harness,
+        {"heartbeat_interval_ms": 20_000},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert accepted.status == 202
+    assert_conforms(accepted.body, "OperationAccepted")
+    applied = harness.client.request("GET", "/v1/configuration").body
+    assert_conforms(applied, "Configuration")
+    assert applied["values"]["heartbeat_interval_ms"] == 20_000
+    assert applied["generation"] > before["generation"]
+    recorded = harness.domain.operation(accepted.body["operation_id"])
+    assert recorded is not None
+    assert recorded.state is OperationState.SUCCEEDED
+    assert recorded.action is OperationAction.CONFIGURE
+    assert recorded.terminal_fields is not None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {},
+        {"heartbeat_interval_ms": 999},
+        {"heartbeat_interval_ms": 60_001},
+        {"operation_retention_days": 0},
+        {"max_deadline_ms": 120_001},
+        {"unknown_field": 5},
+        {"heartbeat_interval_ms": "20000"},
+        {"heartbeat_interval_ms": True},
+    ],
+)
+def test_an_invalid_configuration_change_is_refused(
+    make_api: Callable[..., ApiHarness],
+    changes: dict[str, Any],
+) -> None:
+    harness = make_api()
+
+    response = _patch(harness, changes, generation=harness.domain.snapshot.generation)
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+
+
+def test_a_configuration_change_needs_the_observed_generation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _patch(harness, {"heartbeat_interval_ms": 20_000}, generation=1)
+
+    assert response.status == 409
+    assert response.body["code"] == "STALE_GENERATION"
+
+
+def test_a_viewer_may_not_change_the_configuration(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    response = _patch(
+        harness,
+        {"heartbeat_interval_ms": 20_000},
+        generation=harness.domain.snapshot.generation,
+        role="viewer",
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+def test_a_configuration_change_never_reaches_the_controller(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    before = len(harness.simulator.transcript)
+
+    _patch(
+        harness,
+        {"event_retention_count": 1_000},
+        generation=harness.domain.snapshot.generation,
+    )
+
+    assert len(harness.simulator.transcript) == before

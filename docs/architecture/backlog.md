@@ -234,7 +234,16 @@ satisfied by an already verified session, while recover always starts again
 from a fresh transport because the point of asking is that the current one is
 not trusted. A session operation succeeds only once the session is `READY` and
 its required snapshots exist, and it records the observed mode and phase as its
-terminal evidence. The configuration half is outstanding.
+terminal evidence.
+
+Configuration is implemented as `cs71d.configuration` plus schema migration 3.
+Values are daemon policy — heartbeat interval, event retention, operation
+retention and the maximum accepted deadline — validated against the contract's
+bounds by the daemon rather than trusted from the caller. A change is admitted,
+journaled and versioned like any other operation and never reaches the
+controller. Its trusted terminal is the committed configuration snapshot: the
+values are written first, so success can never be recorded for values that were
+not stored.
 
 - Connect and recover are durable attributable operations admitted even when the session is not ready.
 - Recover requires an explicit confirmation field and never runs implicitly.

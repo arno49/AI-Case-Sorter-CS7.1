@@ -133,7 +133,8 @@ content.
 Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
 `/v1/operations`, `/v1/operations/{operation_id}`, the commands
 `/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`, and the session
-operations `/v1/session/connect` and `/v1/session/recover`.
+operations `/v1/session/connect` and `/v1/session/recover`, and
+`/v1/configuration`.
 `/v1/snapshot` returns `ETag: "generation:<n>"`, and an unobserved controller
 advertises no v2 and no capability rather than a hopeful default. The session
 and configuration resources and the SSE stream arrive in later roadmap tasks.
@@ -193,6 +194,21 @@ current one is not trusted, and the API requires an explicit
 `confirm_uncertain_recovery` so it is never implied by the request having been
 sent. Either operation succeeds only once the session is `READY` and its
 required snapshots exist, and records the observed mode and phase as evidence.
+
+## Configuration
+
+`cs71d.configuration` holds daemon policy — heartbeat interval, event and
+operation retention, and the maximum deadline the daemon will accept. These are
+the daemon's own settings: applying a change moves no motor and never reaches
+the controller.
+
+A change is still admitted, validated, journaled and versioned like any other
+operation, because an appliance that cannot say when a retention or deadline
+policy changed cannot explain its own behaviour afterwards. Bounds match the
+contract and are re-validated here rather than trusted from the caller. The
+trusted terminal for a configuration change is the committed snapshot itself:
+the values are written first, so success can never be recorded for values that
+were not stored.
 
 ## Durability and priority stop
 

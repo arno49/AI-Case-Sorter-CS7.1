@@ -63,7 +63,7 @@ graph LR
   its firmware lifecycle gate is `NOT_EXECUTED`; its operation coverage stays
   blocked on V2-09 and hardware evidence, so the PI-DOMAIN epic exit criteria
   are met only for the operations the firmware actually implements.
-- PI-API-001 is partially delivered and remains the active critical-path step.
+- PI-API-001 is complete.
   The daemon serves health, snapshot and operation resources over a Unix
   domain socket only, with owner/group-only permissions and a bearer service
   credential on every request; responses are checked against the frozen
@@ -71,8 +71,10 @@ graph LR
   with their required idempotency, generation and deadline headers, and
   `cs71d --serve` runs the assembled daemon behind a protected service
   credential. `/v1/session/connect` and `/v1/session/recover` are served by
-  the new PI-DOMAIN-004 session operations; only `/v1/configuration` and its
-  domain remain.
+  the new PI-DOMAIN-004 session operations, and `/v1/configuration` is served
+  by its configuration domain. PI-DOMAIN-004 and PI-API-001 are therefore
+  complete, and PI-API-002 resumable bounded SSE is the active critical-path
+  implementation step.
   PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
