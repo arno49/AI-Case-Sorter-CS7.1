@@ -1621,7 +1621,7 @@
       },
       "DaemonEventType": {
         "type": "string",
-        "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+        "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)*$",
         "description": "Extensible v1 event name. Consumers ignore unknown names and reconcile from snapshots when required.",
         "x-known-values": [
           "snapshot.changed",

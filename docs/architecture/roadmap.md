@@ -73,8 +73,12 @@ graph LR
   credential. `/v1/session/connect` and `/v1/session/recover` are served by
   the new PI-DOMAIN-004 session operations, and `/v1/configuration` is served
   by its configuration domain. PI-DOMAIN-004 and PI-API-001 are therefore
-  complete, and PI-API-002 resumable bounded SSE is the active critical-path
-  implementation step.
+  complete. PI-API-002 is complete for stream behaviour: events carry a
+  monotonic daemon `event_id`, `Last-Event-ID` resumes retained events, a stale
+  or foreign cursor and a slow subscriber both force `snapshot.required`, and a
+  disconnected consumer cannot stall the serial worker. Event retention is in
+  memory only, so durable replay across a restart remains outstanding. M3 is
+  therefore substantially complete and M5 is unblocked.
   PI-WEB-001 remains independently available in parallel.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.

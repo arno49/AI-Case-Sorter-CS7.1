@@ -133,8 +133,8 @@ content.
 Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
 `/v1/operations`, `/v1/operations/{operation_id}`, the commands
 `/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`, and the session
-operations `/v1/session/connect` and `/v1/session/recover`, and
-`/v1/configuration`.
+operations `/v1/session/connect` and `/v1/session/recover`, `/v1/configuration`, and the
+`/v1/events` stream.
 `/v1/snapshot` returns `ETag: "generation:<n>"`, and an unobserved controller
 advertises no v2 and no capability rather than a hopeful default. The session
 and configuration resources and the SSE stream arrive in later roadmap tasks.
@@ -180,6 +180,25 @@ The action selects the intent and the body must contain exactly that intent's
 own field, so no API or BFF input can smuggle a raw protocol payload. The
 trusted terminal's fields are recorded against the operation as evidence of
 what the controller actually reported.
+
+## The event stream
+
+`cs71d.events.EventRing` retains a bounded window of events and fans them out.
+Publishing never blocks: events are produced on the serial worker thread — the
+same thread that has to keep answering a priority stop — so a subscriber that
+stops reading is dropped rather than allowed to apply backpressure to the
+machine.
+
+Loss is always explicit. A subscriber that overruns its bounded queue, resumes
+from a cursor the ring no longer retains, or presents a cursor from a previous
+daemon life receives `snapshot.required` and must rebuild from `/v1/snapshot`.
+It is never handed an incomplete sequence. Heartbeats are emitted on the
+configured interval and carry the current generation without moving it.
+
+The daemon `event_id` is monotonic within the daemon's retention scope. It is
+not a protocol `request_id`: it neither wraps nor is session-scoped. Retention
+is in memory, so replay does not survive a restart — a cursor from a previous
+life is refused rather than mismatched.
 
 ## Session operations
 

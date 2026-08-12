@@ -19,6 +19,7 @@ from contract import assert_conforms
 
 from cs71d.api import ApiServer
 from cs71d.domain import OperationDomain, WorkerObservers
+from cs71d.events import EventRing
 from cs71d.journal import IN_MEMORY, Journal
 from cs71d.operations import Actor, OperationAction, OperationRecord, OperationState
 from cs71d.serial_worker import SerialWorker
@@ -148,7 +149,12 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
     directory = Path(tempfile.mkdtemp(prefix="cs71d"))
     built: list[ApiHarness] = []
 
-    def make(*, start: bool = True) -> ApiHarness:
+    def make(
+        *,
+        start: bool = True,
+        retention: int = 64,
+        heartbeat_ms: int = 60_000,
+    ) -> ApiHarness:
         simulators: list[SimulatorTransport] = []
         journal = Journal.open(IN_MEMORY, now=lambda: NOW)
 
@@ -166,9 +172,22 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
             )
 
         terminals = TerminalWatcher()
+        events = EventRing(retention=retention, subscriber_capacity=32)
         domain = OperationDomain(
-            journal, worker_factory, now=lambda: NOW, operation_observer=terminals.observe
+            journal,
+            worker_factory,
+            now=lambda: NOW,
+            operation_observer=terminals.observe,
+            events=events,
         )
+        if heartbeat_ms != 60_000:
+            domain.configure(
+                {"heartbeat_interval_ms": heartbeat_ms},
+                actor=OPERATOR,
+                idempotency_key="heartbeat-configuration-key",
+                expected_generation=domain.snapshot.generation,
+                deadline_ms=5_000,
+            )
         if start:
             domain.start(timeout=1.0)
         server = ApiServer(
@@ -949,3 +968,156 @@ def test_a_configuration_change_never_reaches_the_controller(
     )
 
     assert len(harness.simulator.transcript) == before
+
+
+class EventStream:
+    """Read an SSE stream frame by frame, the way the BFF bridge will."""
+
+    def __init__(self, socket_path: str, *, last_event_id: str | None = None) -> None:
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._socket.settimeout(5.0)
+        self._socket.connect(socket_path)
+        resume = f"Last-Event-ID: {last_event_id}\r\n" if last_event_id else ""
+        request = (
+            "GET /v1/events HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            f"Authorization: Bearer {TOKEN}\r\n"
+            f"{resume}\r\n"
+        )
+        self._socket.sendall(request.encode())
+        self._buffer = b""
+        self.headers = self._read_until(b"\r\n\r\n").decode()
+
+    def _read_until(self, marker: bytes) -> bytes:
+        while marker not in self._buffer:
+            chunk = self._socket.recv(4096)
+            if not chunk:
+                raise AssertionError("the stream closed before the marker arrived")
+            self._buffer += chunk
+        head, _, self._buffer = self._buffer.partition(marker)
+        return head
+
+    def next_event(self) -> dict[str, Any]:
+        frame = self._read_until(b"\n\n").decode()
+        fields = dict(line.split(": ", 1) for line in frame.splitlines() if ": " in line)
+        return {
+            "id": fields.get("id"),
+            "event": fields["event"],
+            "data": json.loads(fields["data"]),
+        }
+
+    def close(self) -> None:
+        self._socket.close()
+
+    def __enter__(self) -> EventStream:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+def test_the_event_stream_announces_itself_as_an_uncached_sse_response(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    with EventStream(harness.server.socket_path) as stream:
+        assert "text/event-stream" in stream.headers
+        assert "no-store" in stream.headers
+        assert "X-Request-ID" in stream.headers
+
+
+def test_every_event_carries_an_id_type_generation_and_timestamp(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+
+    with EventStream(harness.server.socket_path) as stream:
+        _command(
+            harness,
+            "/v1/operations/home",
+            _home_payload(),
+            generation=harness.domain.snapshot.generation,
+        )
+        event = stream.next_event()
+
+    assert_conforms(event["data"], "DaemonEvent")
+    assert event["id"] == str(event["data"]["event_id"])
+    assert event["data"]["generation"] >= 1
+
+
+def test_a_stream_resumes_from_a_retained_cursor(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    published = harness.domain.events.publish("snapshot.changed", generation=1, occurred_at=NOW)
+    harness.domain.events.publish("snapshot.changed", generation=2, occurred_at=NOW)
+
+    with EventStream(harness.server.socket_path, last_event_id=str(published.event_id)) as stream:
+        resumed = stream.next_event()
+
+    assert resumed["data"]["event_id"] == published.event_id + 1
+
+
+def test_a_stale_cursor_is_told_to_reconcile_instead_of_losing_events(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(retention=2)
+    for generation in range(1, 8):
+        harness.domain.events.publish("snapshot.changed", generation=generation, occurred_at=NOW)
+
+    with EventStream(harness.server.socket_path, last_event_id="1") as stream:
+        event = stream.next_event()
+
+    assert event["event"] == "snapshot.required"
+    assert_conforms(event["data"], "DaemonEvent")
+    assert event["data"]["generation"] == harness.domain.snapshot.generation
+
+
+def test_an_idle_stream_heartbeats_without_moving_the_generation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(heartbeat_ms=1_000)
+    before = harness.domain.snapshot.generation
+
+    with EventStream(harness.server.socket_path) as stream:
+        event = stream.next_event()
+
+    assert event["event"] == "heartbeat"
+    assert_conforms(event["data"], "DaemonEvent")
+    assert harness.domain.snapshot.generation == before
+
+
+def test_a_malformed_cursor_is_refused(make_api: Callable[..., ApiHarness]) -> None:
+    harness = make_api()
+
+    response = harness.client.request(
+        "GET", "/v1/events", headers={"Last-Event-ID": "not-a-cursor"}
+    )
+
+    assert response.status == 400
+    assert_conforms(response.body, "ValidationError")
+
+
+def test_a_disconnected_subscriber_does_not_stall_the_daemon(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api()
+    stream = EventStream(harness.server.socket_path)
+    stream.close()
+
+    for generation in range(1, 200):
+        harness.domain.events.publish("snapshot.changed", generation=generation, occurred_at=NOW)
+
+    # The daemon still answers, and a command still completes.
+    assert harness.client.request("GET", "/v1/health/live").status == 200
+    admitted = _command(
+        harness,
+        "/v1/operations/home",
+        _home_payload(),
+        generation=harness.domain.snapshot.generation,
+    )
+    assert admitted.status == 202
+    harness.simulator.wait_until_scheduled(timeout=1.0)
+    harness.simulator.advance(10_000)
+    assert harness.terminals.await_terminal(admitted.body["operation_id"]).trusted_terminal

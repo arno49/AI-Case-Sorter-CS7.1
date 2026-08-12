@@ -302,6 +302,26 @@ generated TypeScript client and its CI divergence check already exist as
 
 **Goal:** publish daemon events without serial-worker backpressure. **Implementation notes:** retain daemon event ring; keep daemon `event_id` distinct from protocol `request_id`. **Dependencies:** PI-API-001. **Hardware required:** No. **Size:** M.
 
+**Status:** Implemented as `cs71d.events.EventRing` and the `/v1/events`
+stream. Publishing never blocks: events are produced on the serial worker
+thread, so a subscriber that stops reading is dropped rather than allowed to
+apply backpressure to the machine. Loss is always explicit — a subscriber that
+overruns its bounded queue, resumes from a cursor the ring no longer retains,
+or presents a cursor from a previous daemon life is told to reconcile from a
+snapshot instead of being handed an incomplete sequence. Heartbeats are emitted
+on the configured interval and carry the current generation without moving it.
+
+Retention is in memory only. The `machine_events` table remains unwritten, so
+replay does not survive a restart: a resumed cursor from a previous life is
+refused rather than mismatched, which is safe but is not the durable replay the
+persistence design describes. That gap is deliberate and belongs to a later
+task.
+
+The event-type pattern in the executable contract was fixed as part of this
+work: `heartbeat` was listed in `x-known-values` but could not match the
+pattern, which required at least one dotted segment. The pattern now permits a
+single segment, which keeps every previously valid value valid.
+
 - Every emitted event has monotonic daemon `event_id`, UTC timestamp, type and snapshot generation.
 - `Last-Event-ID` resumes retained events in order.
 - A stale cursor or subscriber overflow emits `snapshot.required` and does not silently omit changes.

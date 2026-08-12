@@ -34,6 +34,7 @@ from uuid import uuid4
 
 from .adapters import FEED_LIFECYCLE_GATE
 from .domain import OperationDomain
+from .events import HEARTBEAT, SNAPSHOT_REQUIRED, DaemonEvent, EventRing
 from .journal import Journal, JournalError
 from .machine import FaultState, MachineSnapshot
 from .operations import Actor, DomainError, OperationAction, OperationRecord, OperationState
@@ -204,6 +205,8 @@ class ApiServer:
                 self._machine_snapshot(view),
                 etag=f'"generation:{view.generation}"',
             )
+        if path == "/v1/events":
+            raise _StreamRequested(_last_event_id(headers or {}))
         if path == "/v1/configuration":
             return _Response(HTTPStatus.OK, self._configuration())
         if path == "/v1/operations":
@@ -293,6 +296,34 @@ class ApiServer:
             idempotency_key=key,
             expected_generation=generation,
             deadline_ms=deadline_ms,
+        )
+
+    @property
+    def events(self) -> EventRing:
+        return self._domain.events
+
+    @property
+    def heartbeat_seconds(self) -> float:
+        """The idle interval after which a heartbeat is emitted."""
+        values, _generation, _at = self._domain.configuration()
+        return values.heartbeat_interval_ms / 1000
+
+    def heartbeat(self) -> DaemonEvent:
+        """An idle keepalive. It carries the current generation and moves nothing."""
+        return DaemonEvent(
+            event_id=0,
+            type=HEARTBEAT,
+            occurred_at=self._now(),
+            generation=self._domain.snapshot.generation,
+        )
+
+    def snapshot_required(self) -> DaemonEvent:
+        """Tell a subscriber that its stream is incomplete and must be rebuilt."""
+        return DaemonEvent(
+            event_id=0,
+            type=SNAPSHOT_REQUIRED,
+            occurred_at=self._now(),
+            generation=self._domain.snapshot.generation,
         )
 
     def _configuration(self) -> dict[str, Any]:
@@ -454,6 +485,14 @@ class ApiServer:
             return
 
 
+class _StreamRequested(Exception):
+    """Routing signal: this request is a stream, not a single response."""
+
+    def __init__(self, after: int | None) -> None:
+        super().__init__("event stream requested")
+        self.after = after
+
+
 class _Response:
     __slots__ = ("status", "body", "etag")
 
@@ -517,6 +556,8 @@ class _Handler(BaseHTTPRequestHandler):
                 headers={name.lower(): value for name, value in self.headers.items()},
                 body=body,
             )
+        except _StreamRequested as stream:
+            self._stream(api, stream.after, request_id)
         except ApiError as exc:
             self._write(_error_response(exc, request_id), request_id)
         except DomainError as exc:
@@ -533,6 +574,46 @@ class _Handler(BaseHTTPRequestHandler):
             )
         else:
             self._write(response, request_id)
+
+    def _stream(self, api: ApiServer, after: int | None, request_id: str) -> None:
+        """Serve the SSE stream until the client goes away.
+
+        The response is chunk-free and unbuffered by design: each event is
+        written as it is drained, and a write failure means the consumer is
+        gone, which ends the stream without disturbing anything upstream.
+        """
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Request-ID", request_id)
+        self.end_headers()
+        with api.events.subscribe(after=after) as subscriber:
+            while True:
+                if subscriber.overflowed:
+                    self._emit(api.snapshot_required())
+                    return
+                drained = subscriber.drain(timeout=api.heartbeat_seconds)
+                if subscriber.overflowed:
+                    self._emit(api.snapshot_required())
+                    return
+                for event in drained or [api.heartbeat()]:
+                    if not self._emit(event):
+                        return
+
+    def _emit(self, event: DaemonEvent) -> bool:
+        frame = (
+            f"id: {event.event_id}\n"
+            f"event: {event.type}\n"
+            f"data: {json.dumps(_event_body(event), separators=(',', ':'))}\n\n"
+        )
+        try:
+            self.wfile.write(frame.encode("utf-8"))
+            self.wfile.flush()
+        except OSError:
+            # The consumer disconnected. Nothing upstream is affected.
+            return False
+        return True
 
     def _api(self) -> ApiServer:
         server = self.server
@@ -609,6 +690,29 @@ def _operation_body(record: OperationRecord) -> dict[str, Any]:
             outcome = "STOPPED"
         body["outcome"] = outcome
     return body
+
+
+def _event_body(event: DaemonEvent) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "api_version": API_VERSION,
+        "event_id": max(event.event_id, 1),
+        "occurred_at": _rfc3339(event.occurred_at),
+        "generation": event.generation,
+        "type": event.type,
+        "data": dict(event.data),
+    }
+    if event.operation_id is not None:
+        body["operation_id"] = event.operation_id
+    return body
+
+
+def _last_event_id(headers: Mapping[str, str]) -> int | None:
+    supplied = headers.get("last-event-id", "").strip()
+    if not supplied:
+        return None
+    if not _EXACT_GENERATION.fullmatch(supplied):
+        raise ApiError("VALIDATION_FAILED", "Last-Event-ID must be a daemon event id")
+    return int(supplied)
 
 
 def _accepted_body(record: OperationRecord) -> dict[str, Any]:
