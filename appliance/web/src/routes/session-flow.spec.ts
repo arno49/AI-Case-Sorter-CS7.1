@@ -7,7 +7,7 @@
  * useless rather than merely absent.
  */
 
-import { isRedirect, type Cookies, type Handle, type RequestEvent } from '@sveltejs/kit';
+import { isRedirect, type RequestEvent } from '@sveltejs/kit';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ import { PASSWORD } from '$lib/server/auth/harness';
 import { createUser } from '$lib/server/auth/users';
 import { closeWebRuntime, webRuntime } from '$lib/server/runtime';
 
+import { browser, raisedBy, request, throughHook as through } from './harness';
 import { handle } from '../hooks.server';
 import { actions as loginActions, load as loginLoad } from './login/+page.server';
 import { actions as logoutActions } from './logout/+page.server';
@@ -25,63 +26,11 @@ import { actions as logoutActions } from './logout/+page.server';
 let directory: string;
 const COOKIE = sessionCookieName('development');
 
-/** A cookie jar shared across the requests of one simulated browser. */
-function browser(): Cookies & { readonly store: Map<string, string> } {
-	const store = new Map<string, string>();
-	return {
-		store,
-		get: (name: string) => store.get(name),
-		getAll: () => [...store].map(([name, value]) => ({ name, value })),
-		set: (name: string, value: string) => store.set(name, value),
-		delete: (name: string) => store.delete(name),
-		serialize: () => ''
-	} as unknown as Cookies & { readonly store: Map<string, string> };
-}
-
-function request(path: string, cookies: Cookies, form?: Record<string, string>): RequestEvent {
-	return {
-		cookies,
-		url: new URL(`http://localhost${path}`),
-		locals: {},
-		request: {
-			formData: async () => {
-				const data = new FormData();
-				for (const [key, value] of Object.entries(form ?? {})) {
-					data.set(key, value);
-				}
-				return data;
-			}
-		}
-	} as unknown as RequestEvent;
-}
-
-/** Run the hook, returning either the redirect it raised or the event it allowed. */
-async function throughHook(
-	event: RequestEvent
-): Promise<{ redirectedTo: string } | { allowed: RequestEvent }> {
-	const resolve = (async () => new Response('ok')) as Parameters<Handle>[0]['resolve'];
-	try {
-		await handle({ event, resolve });
-	} catch (raised) {
-		if (isRedirect(raised)) {
-			return { redirectedTo: raised.location };
-		}
-		throw raised;
-	}
-	return { allowed: event };
-}
+const throughHook = (event: RequestEvent) => through(event, handle);
 
 /** A `load` receives more than a bare request event; the extras go unused here. */
 function asLoadEvent(event: RequestEvent): Parameters<typeof loginLoad>[0] {
 	return event as unknown as Parameters<typeof loginLoad>[0];
-}
-
-async function raisedBy(action: () => unknown): Promise<unknown> {
-	try {
-		return await action();
-	} catch (raised) {
-		return raised;
-	}
 }
 
 beforeEach(async () => {
@@ -135,13 +84,15 @@ describe('signing in and out', () => {
 
 		// The wrong password neither authenticates nor sets a cookie.
 		const refused = await loginActions.default(
-			request('/login', cookies, { username: 'operator', password: 'wrong-password' })
+			request('/login', cookies, { form: { username: 'operator', password: 'wrong-password' } })
 		);
 		expect(refused).toMatchObject({ status: 401 });
 		expect(cookies.store.size).toBe(0);
 
 		const accepted = await raisedBy(() =>
-			loginActions.default(request('/login', cookies, { username: 'operator', password: PASSWORD }))
+			loginActions.default(
+				request('/login', cookies, { form: { username: 'operator', password: PASSWORD } })
+			)
 		);
 		expect(isRedirect(accepted) && accepted.location).toBe('/');
 		const issued = cookies.get(COOKIE);
@@ -169,12 +120,16 @@ describe('signing in and out', () => {
 	it('rotates the session, so a token planted before the login cannot survive it', async () => {
 		const cookies = browser();
 		await raisedBy(() =>
-			loginActions.default(request('/login', cookies, { username: 'operator', password: PASSWORD }))
+			loginActions.default(
+				request('/login', cookies, { form: { username: 'operator', password: PASSWORD } })
+			)
 		);
 		const first = cookies.get(COOKIE);
 
 		await raisedBy(() =>
-			loginActions.default(request('/login', cookies, { username: 'operator', password: PASSWORD }))
+			loginActions.default(
+				request('/login', cookies, { form: { username: 'operator', password: PASSWORD } })
+			)
 		);
 
 		expect(cookies.get(COOKIE)).not.toBe(first);
@@ -186,7 +141,7 @@ describe('signing in and out', () => {
 	});
 
 	it('refuses a login form that was not a form at all', async () => {
-		const result = await loginActions.default(request('/login', browser(), {}));
+		const result = await loginActions.default(request('/login', browser(), { form: {} }));
 
 		expect(result).toMatchObject({ status: 400 });
 	});

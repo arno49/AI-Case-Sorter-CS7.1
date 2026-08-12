@@ -38,14 +38,17 @@ it runs only on the server: SvelteKit never bundles `$lib/server` into client
 code, so no hashing parameter, session row or token digest can reach the
 browser.
 
-| Module            | Responsibility                                                                     |
-| ----------------- | ---------------------------------------------------------------------------------- |
-| `database.ts`     | The only module that opens `web.db` or writes SQL; migrations and file permissions |
-| `passwords.ts`    | The only module that imports `@node-rs/argon2`; the Argon2id policy                |
-| `tokens.ts`       | Opaque 256-bit credentials, their digests and non-secret identifiers               |
-| `users.ts`        | Local accounts, authentication, password change and disable                        |
-| `sessions.ts`     | Opaque server-side sessions, their two expiry bounds and revocation                |
-| `provisioning.ts` | One-time, expiry-bound bootstrap of the first administrator                        |
+| Module             | Responsibility                                                                     |
+| ------------------ | ---------------------------------------------------------------------------------- |
+| `database.ts`      | The only module that opens `web.db` or writes SQL; migrations and file permissions |
+| `passwords.ts`     | The only module that imports `@node-rs/argon2`; the Argon2id policy                |
+| `tokens.ts`        | Opaque 256-bit credentials, their digests and non-secret identifiers               |
+| `users.ts`         | Local accounts, authentication, password change and disable                        |
+| `sessions.ts`      | Opaque server-side sessions, their two expiry bounds and revocation                |
+| `provisioning.ts`  | One-time, expiry-bound bootstrap of the first administrator                        |
+| `capabilities.ts`  | The documented RBAC matrix as data; the only place a role becomes permission       |
+| `policy.ts`        | What each route requires, keyed by route id                                        |
+| `authorization.ts` | Turning a policy or a capability into a refusal                                    |
 
 `web.db` is this workspace's own database and is never the daemon's
 `machine.db`. It is created owner-only and refuses to open when another local
@@ -70,11 +73,12 @@ appliance is unmeasured until it is timed on representative hardware.
 
 ### The request boundary
 
-`src/hooks.server.ts` resolves the session on every request and **denies by
-default**: a route is reachable without a session only by appearing in its
-public list, so a page added later is protected by omission rather than exposed
-by it. A request presenting a token the server will not honour always leaves
-without that cookie.
+`src/hooks.server.ts` resolves the session on every request and then authorizes
+it, both **denying by default**: a route is reachable without a session only if
+its policy says so, and a signed-in account reaches it only if the policy names
+a capability the role holds, so a page added later is protected by omission
+rather than exposed by it. A request presenting a token the server will not
+honour always leaves without that cookie.
 
 The session cookie carries an opaque token and nothing else — no role, no user
 id, no signed claims. It is `HttpOnly`, `SameSite=Strict` and root-scoped in
@@ -87,7 +91,34 @@ return path, so the login page cannot be turned into an open redirect. Signing
 out is a POST; a `GET /logout` would let any page on the network sign an
 operator out of a running machine.
 
-Role enforcement, per-session CSRF tokens and login rate limiting are
+### Authorization
+
+Roles become permission in exactly one place. `capabilities.ts` transcribes the
+RBAC matrix from `docs/architecture/security-and-safety.md`, and routes ask for
+a capability rather than for a role, so the next change to that table is one
+edit rather than a search for every handler that compared a role name.
+
+Two rows of the matrix are worth repeating here. A viewer may stop the machine:
+withholding the software stop from the least privileged account would make an
+access-control table into a safety decision. And no role at all may drive the
+protocol or the device path, so `protocol.direct` exists in order to be refused
+— for an administrator too.
+
+`policy.ts` declares what each route requires, keyed by SvelteKit route id, and
+the hook consults it before any page or action runs. A route with no entry is
+**refused**, and `policy.spec.ts` scans `src/routes` so a page added without an
+entry fails the build rather than waiting to be discovered in production. A
+path that matched no route is left alone to answer as missing; turning every
+wrong URL into a permission error would only confuse the person reading the
+screen.
+
+The route table is the coarse gate. A route whose actions differ in privilege
+calls `requireCapability` inside the action as well: an action is where
+privilege is spent, and the check that matters is the one next to the effect.
+Pages are told what the role may do so they can show the right controls, but
+that list is a reflection of the server's decision, never a substitute for it.
+
+Per-session CSRF tokens and login rate limiting are the remainder of
 PI-WEB-002 and are **not** implemented; SvelteKit's own rejection of
 cross-origin form posts is the only CSRF control in place. There is no
 operator-facing command to print a bootstrap token until the installer provides

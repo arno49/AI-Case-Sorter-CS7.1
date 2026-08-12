@@ -63,8 +63,9 @@ its session state. Opening a real serial port on Linux stays blocked by the
 unqualified DTR gate. The web workspace now authenticates local operators: its
 own `web.db`, Argon2id password hashing, opaque server-side sessions behind a
 deny-by-default request hook, and one-time expiry-bound bootstrap provisioning
-instead of a default password. Role enforcement, CSRF tokens, rate limiting and
-the operator UI have not been implemented yet.
+instead of a default password. Roles are enforced server-side against the
+documented capability matrix, with every route declaring what it requires. CSRF
+tokens, rate limiting and the operator UI have not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
