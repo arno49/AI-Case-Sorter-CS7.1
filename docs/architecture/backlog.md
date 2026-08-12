@@ -446,8 +446,7 @@ having to remember them.
 
 **Goal:** call `cs71d` from SvelteKit server actions. **Implementation notes:** pass authenticated actor attribution, idempotency, generation and deadline; never forward browser raw commands. **Dependencies:** PI-API-002, PI-WEB-002. **Hardware required:** No. **Size:** M.
 
-The client exists; no route calls it yet, so none of the criteria below are
-claimed. `appliance/web/src/lib/server/daemon/` holds named commands with typed
+`appliance/web/src/lib/server/daemon/` holds named commands with typed
 arguments over the Unix domain socket. There is no host, no port and no URL in
 it: the socket path comes from configuration and the request path is a literal
 the client builds, and there is no method that takes a path, a device or a
@@ -469,14 +468,31 @@ was refused. The credential is read from a protected file named by
 `CS71_WEB_SERVICE_TOKEN_PATH`, never from an environment value, and a file other
 users can read is refused rather than repaired.
 
-Remaining: server actions that call it, the `web_audit` entries that correlate
-actor, request and `operation_id` in `web.db`, and the operator-facing responses
-built from the mapped errors.
+The dashboard reads the snapshot in its `load` and submits the software stop as
+a named action. Authorization happens in the action, next to the effect, rather
+than being inferred from the fact that a page rendered a button. A daemon that
+is not answering makes the page report that rather than fail, because an
+operator whose machine has gone quiet still needs the screen and the stop
+control has to stay on it. The stop never reuses an idempotency key:
+deduplication is for a resubmitted intent, and a replayed key would let the
+daemon answer with the first result and turn a stop into a no-op. What the page
+shows is an `operation_id` and a pending state, labelled as an acceptance and
+not a completion.
 
-- Browser requests cannot select daemon URL, serial path or arbitrary protocol command.
-- BFF supplies required command headers and maps daemon errors to safe user responses.
-- Accepted response displays `operation_id`/pending state, not completion.
-- BFF audit entries correlate actor, request and `operation_id` without shared database writes.
+Every command writes a `web_audit` row in `web.db` — accepted, refused or never
+answered — carrying the actor, this service's request id, the `operation_id` and
+the daemon code that explains a refusal. It is attribution, not the machine's
+journal of record: `cs71d` owns what the machine did in its own database, and
+the two are never written in one transaction. Entries cannot be edited, and the
+table has no column for a password, a token or a form body.
+
+Remaining for PI-UI-001: connect, home, sort, feed, recovery and configuration
+have clients but no screens.
+
+- [x] Browser requests cannot select daemon URL, serial path or arbitrary protocol command.
+- [x] BFF supplies required command headers and maps daemon errors to safe user responses.
+- [x] Accepted response displays `operation_id`/pending state, not completion.
+- [x] BFF audit entries correlate actor, request and `operation_id` without shared database writes.
 
 ### PI-BFF-002 — Implement browser SSE bridge and restart isolation
 

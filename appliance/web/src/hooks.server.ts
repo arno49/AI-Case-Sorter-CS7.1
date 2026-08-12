@@ -30,6 +30,7 @@ import {
 	presentedCsrfToken
 } from '$lib/server/auth/csrf';
 import { routePolicy } from '$lib/server/auth/policy';
+import { createIdentifier } from '$lib/server/auth/tokens';
 import { declaresOversizedBody, type WebLimits } from '$lib/server/limits';
 import { webRuntime } from '$lib/server/runtime';
 
@@ -44,6 +45,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	event.locals.user = authentication.authenticated ? authentication.user : null;
 	event.locals.session = authentication.authenticated ? authentication.session : null;
+	// One id per browser request, so an audit entry, a server log line and a
+	// daemon operation can be lined up afterwards. It is not a secret and not a
+	// session identifier.
+	event.locals.requestId = createIdentifier('req');
 	// Established before anything is validated, so the token a page renders is
 	// the token the next request is checked against.
 	event.locals.csrfToken = establishCsrfToken(event.cookies, config.profile);

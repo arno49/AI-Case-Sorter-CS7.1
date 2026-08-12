@@ -214,9 +214,49 @@ credential is wrong, so the operator is told the service is unavailable and
 never that their account was refused. `UNCERTAIN` says the machine may have
 moved and that the recovery procedure comes first.
 
-No route calls any of this yet — wiring the dashboard snapshot and the stop
-action into server actions, with audit entries in `web.db`, is the rest of
-PI-BFF-001.
+### Commands from a page
+
+The dashboard reads the snapshot in its `load` and submits the software stop as
+a named action. A daemon that is not answering makes the page report that
+rather than fail: an operator whose machine has gone quiet still needs the
+screen, and the stop control has to stay on it.
+
+Authorization happens in the action, next to the effect, rather than being
+inferred from the fact that a page rendered a button. The stop asks for
+`machine.stop`, which a viewer holds.
+
+The stop never reuses an idempotency key. Deduplication is for a resubmitted
+intent; a second press of stop is a second intent, and a replayed key would let
+the daemon answer with the first result and turn a stop into a no-op.
+
+What comes back is an acceptance: an `operation_id` and a pending state, shown
+as exactly that. The page says it is not a completion, and never calls a
+software stop an emergency stop.
+
+### The web audit
+
+Every command writes a `web_audit` row in `web.db`, whatever the answer was —
+accepted, refused, or never answered. An audit that recorded only the successes
+would describe a machine nobody ever argued with.
+
+| Column                             | Purpose                                          |
+| ---------------------------------- | ------------------------------------------------ |
+| `user_id`, `role`                  | who asked                                        |
+| `action`                           | what they asked for, in this workspace's words   |
+| `request_id`                       | this service's id for the browser request        |
+| `operation_id`                     | the daemon's identity for the work, the join key |
+| `daemon_code`, `daemon_request_id` | why it was refused, for correlation              |
+
+This is attribution, not the machine's journal of record: `cs71d` owns what the
+machine did, in its own database, and the two are never written in one
+transaction. Entries cannot be edited — a trigger refuses the update — and the
+table has no column for a password, a token or a form body, so redaction is a
+property of the shape rather than a step somebody has to remember. There is no
+foreign key to `users`, because an audit entry has to outlive the account it
+describes.
+
+The remaining commands — connect, home, sort, feed, recovery and configuration
+— have clients but no screens; those are PI-UI-001.
 
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.
