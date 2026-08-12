@@ -152,6 +152,10 @@ substitute_template "$OPS_DIR/udev/99-cs71.rules" /etc/udev/rules.d/99-cs71.rule
 	"VENDOR_ID=$VENDOR_ID" "PRODUCT_ID=$PRODUCT_ID" "SERIAL=$SERIAL"
 
 log "== Caddy site =="
+# /etc/caddy may not exist yet if the Caddy package has not been installed
+# on this host before this script runs; the site config does not need the
+# package present to be written.
+mkdir -p /etc/caddy
 substitute_template "$OPS_DIR/caddy/Caddyfile.cs71" /etc/caddy/Caddyfile \
 	"HOSTNAME=$HOSTNAME_ARG" "WEB_PORT=$WEB_PORT"
 
