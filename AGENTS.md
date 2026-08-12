@@ -28,9 +28,11 @@ The Raspberry Pi application currently has approved architecture, an executable
 API contract, initial daemon/web workspace scaffolds, a single-owner serial
 worker, published session state with conservative reconnect, and durable
 operations with idempotent admission, fail-closed durability, an attributable
-priority stop, and capability-validated home and sort adapters. Feed, the
-internal API and operator features are not implemented; do not describe it as
-deployed or qualified.
+priority stop, capability-validated home and sort adapters, a socket-only
+internal API with bounded resumable events, and a server-side web
+authentication core. Feed, the browser-facing request boundary, RBAC and
+operator features are not implemented; do not describe it as deployed or
+qualified.
 
 ## Current validated baseline
 
@@ -42,6 +44,7 @@ deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
+- `appliance/web` workspace: 98 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -199,6 +202,26 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - Starting the daemon must not displace one that is already serving the socket:
   a second instance would take the path while the first still owns the serial
   port.
+- Only `appliance/web/src/lib/server/auth/database.ts` may import
+  `better-sqlite3`, open `web.db` or write SQL, and only
+  `appliance/web/src/lib/server/auth/passwords.ts` may import `@node-rs/argon2`.
+  The whole authentication core lives under `$lib/server`, which SvelteKit
+  never bundles into client code.
+- `web.db` is opened owner-only and refused when another local identity can
+  already read it. Its migrations are forward-only and checksummed, and a
+  newer or diverged schema refuses to open rather than downgrading in place.
+- No default account or default password ships. The first administrator is
+  created by claiming a one-time, expiry-bound bootstrap token, and issuing a
+  new token supersedes any outstanding one so only a single bootstrap
+  credential is ever live. Provisioning cannot be re-opened once claimed.
+- Passwords are stored only as Argon2id encodings under the policy in
+  `passwords.ts`, enforced by a database `CHECK`. Session and bootstrap tokens
+  are 256-bit random values stored only as SHA-256 digests, so a stolen
+  `web.db` yields no usable credential.
+- Sessions are opaque and server-side. Logging in issues a new session and
+  revokes the one it replaces; logout, idle expiry, absolute expiry, account
+  disable and password change all revoke. Revocation is final and a session
+  may not be rebound to another account or token, both enforced by triggers.
 - `appliance/contracts/cs71d-v1.openapi.json` is the source of truth for the
   API surface. Translate daemon vocabulary at that boundary; never let protocol
   internals, raw serial content or secrets appear in a response body.

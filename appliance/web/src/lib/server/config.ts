@@ -3,10 +3,13 @@ export type WebProfile = 'development' | 'test' | 'production';
 export interface WebConfig {
 	profile: WebProfile;
 	daemonSocketPath: string;
+	databasePath: string;
 }
 
 const PRODUCTION_SOCKET_PATH = '/run/cs71/cs71d.sock';
 const DEVELOPMENT_SOCKET_PATH = '/tmp/cs71/cs71d.sock';
+const PRODUCTION_DATABASE_PATH = '/var/lib/cs71-web/web.db';
+const DEVELOPMENT_DATABASE_PATH = '/tmp/cs71-web/web.db';
 
 export function loadWebConfig(
 	env: Readonly<Record<string, string | undefined>>
@@ -15,6 +18,9 @@ export function loadWebConfig(
 	const daemonSocketPath =
 		env.CS71D_SOCKET_PATH ??
 		(profile === 'production' ? PRODUCTION_SOCKET_PATH : DEVELOPMENT_SOCKET_PATH);
+	const databasePath =
+		env.CS71_WEB_DATABASE_PATH ??
+		(profile === 'production' ? PRODUCTION_DATABASE_PATH : DEVELOPMENT_DATABASE_PATH);
 
 	if (!daemonSocketPath.startsWith('/') || daemonSocketPath.includes('://')) {
 		throw new Error('CS71D_SOCKET_PATH must be an absolute Unix socket path');
@@ -22,8 +28,16 @@ export function loadWebConfig(
 	if (profile === 'production' && daemonSocketPath !== PRODUCTION_SOCKET_PATH) {
 		throw new Error(`production CS71D_SOCKET_PATH must be ${PRODUCTION_SOCKET_PATH}`);
 	}
+	if (!databasePath.startsWith('/')) {
+		throw new Error('CS71_WEB_DATABASE_PATH must be an absolute path');
+	}
+	// The web database is never the daemon's: separate ownership is the control
+	// that keeps a web compromise away from the machine journal.
+	if (profile === 'production' && databasePath !== PRODUCTION_DATABASE_PATH) {
+		throw new Error(`production CS71_WEB_DATABASE_PATH must be ${PRODUCTION_DATABASE_PATH}`);
+	}
 
-	return Object.freeze({ profile, daemonSocketPath });
+	return Object.freeze({ profile, daemonSocketPath, databasePath });
 }
 
 function parseProfile(value: string | undefined): WebProfile {

@@ -60,8 +60,11 @@ approved, and initial Python daemon/SvelteKit SSR workspaces now exist under
 protocol simulator for software-only development, and a single-owner serial
 worker that confines all controller I/O to one dedicated thread and publishes
 its session state. Opening a real serial port on Linux stays blocked by the
-unqualified DTR gate. The machine-control runtime, authentication, and the
-operator UI have not been implemented yet.
+unqualified DTR gate. The web workspace now holds the server-side
+authentication core — its own `web.db`, Argon2id password hashing, opaque
+server-side sessions and one-time expiry-bound bootstrap provisioning. The
+browser-facing login boundary, role enforcement and the operator UI have not
+been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the
