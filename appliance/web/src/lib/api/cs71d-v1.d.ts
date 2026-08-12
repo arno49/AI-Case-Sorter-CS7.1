@@ -38,6 +38,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/system": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Report static system facts that do not depend on a session */
+        readonly get: operations["getSystem"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/v1/snapshot": {
         readonly parameters: {
             readonly query?: never;
@@ -382,6 +399,12 @@ export interface components {
             readonly generation: components["schemas"]["Generation"];
             readonly observed_at: components["schemas"]["Timestamp"];
         };
+        readonly System: {
+            readonly api_version: components["schemas"]["ApiVersion"];
+            /** @description A project evidence-status label (see docs/architecture/README.md's status legend), e.g. NOT_EXECUTED. Never implies the gate passed. */
+            readonly dtr_gate_status: string;
+            readonly observed_at: components["schemas"]["Timestamp"];
+        };
         /** @description Extensible v1 event name. Consumers ignore unknown names and reconcile from snapshots when required. */
         readonly DaemonEventType: string;
         readonly DaemonEvent: {
@@ -647,6 +670,29 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Readiness"];
+                };
+            };
+            readonly 401: components["responses"]["Unauthenticated"];
+            readonly 500: components["responses"]["InternalError"];
+        };
+    };
+    readonly getSystem: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Current system facts. A NOT_EXECUTED gate is a successful read, not a failure. */
+            readonly 200: {
+                headers: {
+                    readonly "X-Request-ID": components["headers"]["XRequestId"];
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["System"];
                 };
             };
             readonly 401: components["responses"]["Unauthenticated"];

@@ -99,6 +99,38 @@
         }
       }
     },
+    "/v1/system": {
+      "get": {
+        "operationId": "getSystem",
+        "tags": [
+          "system"
+        ],
+        "summary": "Report static system facts that do not depend on a session",
+        "responses": {
+          "200": {
+            "description": "Current system facts. A NOT_EXECUTED gate is a successful read, not a failure.",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/System"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/v1/snapshot": {
       "get": {
         "operationId": "getMachineSnapshot",
@@ -1613,6 +1645,29 @@
           },
           "generation": {
             "$ref": "#/components/schemas/Generation"
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "System": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "api_version",
+          "dtr_gate_status",
+          "observed_at"
+        ],
+        "properties": {
+          "api_version": {
+            "$ref": "#/components/schemas/ApiVersion"
+          },
+          "dtr_gate_status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "A project evidence-status label (see docs/architecture/README.md's status legend), e.g. NOT_EXECUTED. Never implies the gate passed."
           },
           "observed_at": {
             "$ref": "#/components/schemas/Timestamp"

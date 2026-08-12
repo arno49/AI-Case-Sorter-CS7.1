@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .adapters import FEED_LIFECYCLE_GATE
+from .device import DTR_GATE_STATUS
 from .domain import OperationDomain
 from .events import HEARTBEAT, SNAPSHOT_REQUIRED, DaemonEvent, EventRing
 from .journal import Journal, JournalError
@@ -196,6 +197,8 @@ class ApiServer:
             raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
         if path == "/v1/health/live":
             return _Response(HTTPStatus.OK, self._liveness())
+        if path == "/v1/system":
+            return _Response(HTTPStatus.OK, self._system())
         view = self._domain.snapshot
         if path == "/v1/health/ready":
             return _Response(HTTPStatus.OK, self._readiness(view))
@@ -355,6 +358,17 @@ class ApiServer:
         # Liveness is process liveness only. It deliberately says nothing about
         # the controller, the session, or whether anything may move.
         return {"api_version": API_VERSION, "live": True, "observed_at": self._timestamp()}
+
+    def _system(self) -> dict[str, Any]:
+        # Static and session-independent, unlike readiness: this is a fact
+        # about what this daemon build may safely do, not about a session.
+        # NOT_EXECUTED is a documented evidence-status label, never a claim
+        # that the gate passed.
+        return {
+            "api_version": API_VERSION,
+            "dtr_gate_status": DTR_GATE_STATUS,
+            "observed_at": self._timestamp(),
+        }
 
     def _readiness(self, view: MachineSnapshot) -> dict[str, Any]:
         return {

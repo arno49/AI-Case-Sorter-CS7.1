@@ -45,8 +45,14 @@ generation and a render-minted idempotency key, and the feed control stays
 disabled with the daemon's reason for the unqualified firmware gate shown
 verbatim. The operation history screen at `/operations` is implemented,
 reusing the dashboard's own per-operation wording so a row is never worded as
-a completion; the fault, recovery and system views (PI-UI-002) are not
-implemented, and neither is deployed or qualified.
+a completion. Recovery is a dashboard control gated to `machine.recover`,
+requiring an explicit confirmation checkbox this workspace validates before
+anything reaches the daemon. The system view at `/system` shows firmware
+version, journal health inferred from recorded faults, storage health
+explicitly reported as not available, and DTR-gate status read from a new
+`GET /v1/system` endpoint that serializes `cs71d.device.DTR_GATE_STATUS` —
+`NOT_EXECUTED` today, never presented as a pass. None of this is deployed or
+qualified.
 
 ## Current validated baseline
 
@@ -57,8 +63,8 @@ implemented, and neither is deployed or qualified.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 472 passing vitest tests.
+- `cs71d` daemon package: 299 passing pytest tests.
+- `appliance/web` workspace: 503 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -341,7 +347,9 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   An axis the session has not observed reads "not known", not "not homed": the
   wire has no third value, and a guess in the safe-looking direction is still a
   guess. `UNCERTAIN` keeps a tone of its own so it cannot collapse into ordinary
-  attention.
+  attention — `[data-tone="uncertain"]` is also styled more loudly than
+  `[data-tone="attention"]` (bold, bordered, filled) in `+layout.svelte`, so
+  the two cannot be mistaken for each other visually either.
 - The software stop is the first control in the document and therefore in the
   tab order; no element on an operator page declares a positive `tabindex`. The
   page says beside the button that it is a software stop, not an emergency stop.
@@ -365,6 +373,22 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   recognise is dropped rather than forwarded to the daemon, and paging
   forward uses the daemon's own opaque `next_cursor`. It is a `GET`, not a
   form post — there is no action here to audit.
+- Recovery is a different capability from a manual command: `machine.recover`,
+  administrator-only, decided by `recoveryPlan()` in `machine-controls.ts`
+  independently of `controlsPlan()`. It is offered whenever a session is not
+  already being established or already recovering — including `UNCERTAIN`,
+  which it is the way back from — and its form requires a `confirm` checkbox
+  this workspace checks server-side before calling `daemon.recover`; a request
+  without it is refused as invalid, never coerced into consent.
+  `routes/rendered.ts`'s form-field reader only counts a checkbox or radio as
+  submitted when it carries `checked`, matching what a browser actually sends.
+- The system view at `/system` (`appliance/web/src/lib/system-view.ts`) never
+  presents `dtr_gate_status` as a pass: `NOT_EXECUTED` carries an explicit "not
+  a pass" sentence, and any value this module has not seen before is presented
+  with the `uncertain` tone rather than assumed safe. Journal health is the
+  dashboard's own `faultSummary`, captioned as inferred from recorded faults
+  rather than a dedicated check; storage health has no daemon data source yet,
+  and the page says "Not reported by this service" rather than inventing one.
 - Restarting the web service drops a database handle and a reader and nothing
   else. `cs71d` owns every operation in flight and goes on running it, which is
   why a restart can neither cancel nor duplicate one, and why no command is ever

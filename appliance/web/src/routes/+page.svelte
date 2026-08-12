@@ -5,8 +5,9 @@
 
 	import MachineStatus from '$lib/components/MachineStatus.svelte';
 	import ManualControls from '$lib/components/ManualControls.svelte';
+	import RecoveryControl from '$lib/components/RecoveryControl.svelte';
 	import StopControl from '$lib/components/StopControl.svelte';
-	import { controlsPlan } from '$lib/machine-controls';
+	import { controlsPlan, recoveryPlan } from '$lib/machine-controls';
 	import { MachineView } from '$lib/machine-view.svelte';
 	import type { MachineSnapshot } from '$lib/machine';
 
@@ -80,10 +81,14 @@
 			? { operationId: stopFeedback.operationId, state: String(stopFeedback.state) }
 			: null
 	);
-	const commandFeedback = $derived(form?.control && form.control !== 'stop' ? form : null);
+	const commandFeedback = $derived(
+		form?.control && form.control !== 'stop' && form.control !== 'recover' ? form : null
+	);
+	const recoveryFeedback = $derived(form?.control === 'recover' ? form : null);
 
 	// What may be offered, decided from the machine the operator is looking at.
 	const plan = $derived(controlsPlan(machine ?? null, data.capabilities));
+	const recovery = $derived(recoveryPlan(machine ?? null, data.capabilities));
 
 	// Labels for what the server said this role may do. The list is a reflection
 	// of the server's decision, not a source of it: hiding an entry here hides a
@@ -109,6 +114,13 @@
 
 	<MachineStatus snapshot={machine} {unavailable} stale={view.stale} refreshing={view.refreshing} />
 
+	<RecoveryControl
+		plan={recovery}
+		csrfToken={data.csrfToken}
+		recoveryKey={data.recoveryKey ?? null}
+		feedback={recoveryFeedback}
+	/>
+
 	<ManualControls
 		{plan}
 		csrfToken={data.csrfToken}
@@ -117,6 +129,7 @@
 	/>
 
 	<p><a href={resolve('/operations')}>Operation history</a></p>
+	<p><a href={resolve('/system')}>System</a></p>
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>

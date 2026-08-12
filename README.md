@@ -18,7 +18,7 @@ also starting in v1.
 | `native` | 89 tests pass |
 | `native_v2` | 49 tests pass |
 | Python host package | 116 pytest tests pass |
-| Python daemon/simulator | 298 pytest tests pass |
+| Python daemon/simulator | 299 pytest tests pass |
 
 The Python package under `host/` implements the v1/v2 client, typed protocol
 models, CRC, fail-closed recovery, and the `cs71-protocol` compatibility CLI.
@@ -84,7 +84,15 @@ with the daemon's reason for the unqualified firmware gate shown verbatim. The
 operation history screen reads the durable record the daemon keeps, filtered
 by exactly the state and type values the contract defines and paged forward
 on the daemon's own cursor, describing every row with the same wording the
-dashboard uses so an unsettled operation is never worded as a completion.
+dashboard uses so an unsettled operation is never worded as a completion. A
+machine whose state is not known renders visibly distinct from ordinary
+attention rather than as a shade of it. Recovery is a dashboard control
+gated to administrators, requiring an explicit confirmation checkbox this
+workspace checks before anything reaches the daemon. A system view shows
+firmware version, journal health inferred from recorded faults, storage
+health explicitly reported as not available, and DTR-gate status read from
+the daemon — presented as the project's own evidence-status legend defines
+it and never as a pass.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

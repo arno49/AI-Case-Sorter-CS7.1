@@ -130,11 +130,13 @@ codes map to the documented HTTP statuses through one table keyed by the domain
 error code, and no response body carries protocol internals or raw serial
 content.
 
-Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/snapshot`,
-`/v1/operations`, `/v1/operations/{operation_id}`, the commands
+Currently served: `/v1/health/live`, `/v1/health/ready`, `/v1/system`,
+`/v1/snapshot`, `/v1/operations`, `/v1/operations/{operation_id}`, the commands
 `/v1/operations/home`, `/sort`, `/feed` and `/v1/machine/stop`, and the session
 operations `/v1/session/connect` and `/v1/session/recover`, `/v1/configuration`, and the
-`/v1/events` stream.
+`/v1/events` stream. `/v1/system` is static and session-independent — today,
+the DTR-gate status (see below) — unlike readiness, which is about the current
+session.
 `/v1/snapshot` returns `ETag: "generation:<n>"`, and an unobserved controller
 advertises no v2 and no capability rather than a hopeful default. The session
 and configuration resources and the SSE stream arrive in later roadmap tasks.
@@ -267,6 +269,13 @@ Linux and other POSIX behavior is recorded as `DTR_GATE_STATUS =
 opening one and hoping the controller does not reset. The Raspberry Pi
 deployment path is consequently blocked until that gate is closed with
 hardware evidence; simulator runs cannot close it.
+
+`GET /v1/system` serializes this same constant as `dtr_gate_status`, so the
+web system view can show it without a second copy of the value. Exposing the
+status over the API does not change the gate itself: `NOT_EXECUTED` remains a
+documented evidence-status label (`docs/architecture/README.md`'s status
+legend), and this endpoint's own contract description says a `NOT_EXECUTED`
+answer is a successful read, not a claim of qualification.
 
 ## Deterministic simulator
 

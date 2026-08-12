@@ -423,6 +423,49 @@ screen, and paging forward carries the daemon's own opaque `next_cursor`.
 what the fake daemon actually receives, and that an unrecognised filter value
 never reaches it.
 
+### A machine whose state is not known
+
+`+layout.svelte` styles `[data-tone="uncertain"]` more loudly than
+`[data-tone="attention"]` — bold, bordered and filled rather than color alone
+— so the two cannot collapse into the same visual weight. Which tone a
+reading carries is still decided entirely in `machine-status.ts`; this is the
+one place markup renders that decision, and it renders every tone the same
+way everywhere `data-tone` appears, dashboard or system view.
+
+### Recovery, with explicit confirmation
+
+Recovery is a different capability from a manual command —
+`machine.recover`, administrator-only — and `recoveryPlan()` in
+`machine-controls.ts` decides it independently of `controlsPlan()`: it is
+offered whenever a session is not already being established or already
+recovering, which includes `UNCERTAIN` — recovery is the way back from
+that — and a deliberate reset of an otherwise healthy session otherwise.
+`RecoveryControl.svelte` renders the same protected-intent shape as a manual
+command (snapshot generation, render-minted idempotency key) plus a required
+`confirm` checkbox; the server checks that field before calling
+`daemon.recover`, so a request that arrived without it is refused as
+invalid rather than treated as consent. `recovery-page.spec.ts` proves this
+end to end, including that an unchecked confirmation reaches the action as
+nothing — `routes/rendered.ts`'s form reader was extended so a checkbox or
+radio only counts as submitted when it carries `checked`, the same as a
+browser. Every attempt lands in `web_audit` under `machine.recover`.
+
+### What the system view reports
+
+`src/lib/system-view.ts` decides what `/system` may say about facts that
+are not per-session. Firmware version and journal health both come from the
+snapshot the dashboard already reads — journal health is `machine-status.ts`'s
+own `faultSummary`, captioned as inferred from recorded faults rather than a
+dedicated check the daemon does not perform. Storage health has no daemon
+data source at all yet, so the page says "Not reported by this service"
+rather than inventing one. DTR-gate status comes from a new
+`GET /v1/system`, added to the contract and to `cs71d` in the same slice: it
+serializes the daemon's existing `DTR_GATE_STATUS` constant, and this module
+never presents `NOT_EXECUTED`, or any value it has not seen before, as a
+pass — an unrecognised value renders with the `uncertain` tone rather than
+assumed safe. `system-page.spec.ts` proves the load reads both the snapshot
+and the system facts through the real hook.
+
 ### Restarting this service
 
 A restart drops a database handle and a reader. It reaches nothing else: `cs71d`

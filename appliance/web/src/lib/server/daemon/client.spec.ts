@@ -171,6 +171,30 @@ describe('the operation history', () => {
 	});
 });
 
+describe('the system read', () => {
+	beforeEach(() => {
+		daemon.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				dtr_gate_status: 'NOT_EXECUTED',
+				observed_at: '2026-08-11T12:00:00.000Z'
+			})
+		);
+	});
+
+	it('reads a fixed path with no session or generation of its own', async () => {
+		await client.system();
+
+		expect(sent().path).toBe('/v1/system');
+	});
+
+	it('uses the read deadline, not a command deadline', async () => {
+		await client.system();
+
+		expect(sent().headers['x-deadline-ms']).toBe(String(DEADLINES.read));
+	});
+});
+
 describe('what the browser cannot choose', () => {
 	it('has no method that takes a path, a device or a protocol string', () => {
 		const surface = Object.getOwnPropertyNames(DaemonClient.prototype);
@@ -187,6 +211,7 @@ describe('what the browser cannot choose', () => {
 			'snapshot',
 			'sort',
 			'stop',
+			'system',
 			'updateConfiguration'
 		]);
 	});

@@ -14,6 +14,12 @@
  * daemon remains the authority on what the machine will actually accept: a
  * form this module enabled can still be refused, and that refusal reaches the
  * page in the error boundary's wording.
+ *
+ * `recoveryPlan` makes the same decision for recovery, which is a different
+ * capability (`machine.recover`, administrator-only) and a different kind of
+ * control: it tears the session down and starts again from a fresh
+ * transport, so it is offered whenever a session isn't already being
+ * established, not gated on a `READY` session the way motion is.
  */
 
 import type { MachineSnapshot } from '$lib/machine';
@@ -90,6 +96,50 @@ export function controlsPlan(
 /** What the page says beside an accepted command. Never a completion. */
 export function acceptedWording(operationId: string): string {
 	return `Accepted as operation ${operationId}. This is an acceptance, not a result — watch the machine.`;
+}
+
+/** Recovery/reset: a different capability, decided independently of `ControlsPlan`. */
+export interface RecoveryPlan {
+	readonly offered: boolean;
+	readonly withheld: string | null;
+	readonly generation: number | null;
+	readonly decision: ControlDecision;
+}
+
+export function recoveryPlan(
+	snapshot: MachineSnapshot | null,
+	capabilities: readonly string[]
+): RecoveryPlan {
+	const offered = capabilities.includes('machine.recover');
+	if (!offered || snapshot === null) {
+		return {
+			offered,
+			withheld: offered ? NO_SNAPSHOT : null,
+			generation: null,
+			decision: { enabled: false, reason: null }
+		};
+	}
+	return {
+		offered,
+		withheld: null,
+		generation: snapshot.generation,
+		decision: recoveryDecision(snapshot)
+	};
+}
+
+function recoveryDecision(snapshot: MachineSnapshot): ControlDecision {
+	switch (snapshot.connection_state) {
+		case 'RECOVERING':
+			return withheld(RECOVERY_IN_PROGRESS);
+		case 'CONNECTING':
+		case 'VERIFYING_V1':
+		case 'ACTIVATING_V2':
+			return withheld(SESSION_IN_PROGRESS);
+		default:
+			// READY, DISCONNECTED and UNCERTAIN all accept a recovery: it is the
+			// way back from UNCERTAIN, and a deliberate reset in the others.
+			return offeredControl();
+	}
 }
 
 function connectDecision(snapshot: MachineSnapshot): ControlDecision {

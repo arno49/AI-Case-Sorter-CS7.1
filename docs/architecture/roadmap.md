@@ -110,9 +110,9 @@ graph LR
   dashboard reads the snapshot and submits the software stop, authorizing in the
   action before the daemon call, showing an `operation_id` and a pending state
   rather than a completion, and writing a `web_audit` row in `web.db` for every
-  attempt without a transaction across the two databases. Connect, home, sort
-  and feed now have screens, delivered in PI-UI-001; recovery and
-  configuration remain client-only, which is PI-UI-002.
+  attempt without a transaction across the two databases. Connect, home, sort,
+  feed and recovery now have screens, delivered in PI-UI-001 and PI-UI-002;
+  configuration remains client-only, and no backlog item yet owns its screen.
 - PI-BFF-002 is complete for its software criteria. One reader of the daemon's
   event stream is fanned out to every open browser over SSE behind
   `machine.read`; it attaches on the first subscriber and lets go after the last.
@@ -125,8 +125,7 @@ graph LR
   behind, and that is resolved by reading a snapshot — and a restart of this
   service drops a database handle and a reader and nothing else, so it can
   neither cancel nor duplicate an operation the daemon is running. M5's exit
-  criteria are met apart from the fault and recovery screens, which are
-  PI-UI-002, and the installer command, which is PI-OPS-001.
+  criteria are met apart from the installer command, which is PI-OPS-001.
 - PI-UI-001 is complete: the dashboard, manual controls and operation history
   are delivered.
   What a screen may say about the machine is decided in one tested module —
@@ -144,6 +143,21 @@ graph LR
   row — an unsettled row is never worded as a completion and an unconfirmed
   terminal still reads as not known — filters on exactly the state and type
   values the contract defines, and pages forward on the daemon's own cursor.
+- PI-UI-002 is complete: fault, recovery and system views are delivered.
+  `UNCERTAIN` renders visually distinct from ordinary attention — bold,
+  bordered and filled rather than color alone — so the two tones cannot be
+  mistaken for each other at a glance. Recovery is a new dashboard control
+  gated to `machine.recover`, decided independently of the operator controls:
+  it is the way back from a session that is not known and a deliberate reset
+  of a healthy one otherwise, and its form requires an explicit confirmation
+  checkbox this workspace validates before anything reaches the daemon. The
+  system view at `/system` shows the firmware version already in the
+  snapshot, journal health captioned as inferred from recorded faults rather
+  than a dedicated check, storage health explicitly reported as not available
+  from this service, and DTR-gate status from a new `GET /v1/system` endpoint
+  that serializes the daemon's existing `DTR_GATE_STATUS` constant —
+  `NOT_EXECUTED` today, worded as the project's own evidence-status legend
+  and never presented as a pass.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

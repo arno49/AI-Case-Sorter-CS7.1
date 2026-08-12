@@ -32,6 +32,9 @@ export const ROUTE_POLICIES: RoutePolicies = Object.freeze({
 	/** The durable operation history. A read of the same record `machine.read`
 	 *  already grants a view of on the dashboard, just further back. */
 	'/operations': { access: 'capability', capability: 'machine.read' },
+	/** Versions, journal-evidence and DTR-gate status. A read, same as the
+	 *  dashboard's snapshot; nothing here is a command. */
+	'/system': { access: 'capability', capability: 'machine.read' },
 	'/login': { access: 'public' },
 	'/logout': { access: 'authenticated' }
 });
