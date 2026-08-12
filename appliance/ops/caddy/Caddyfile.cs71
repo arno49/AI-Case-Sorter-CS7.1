@@ -1,0 +1,18 @@
+# Installed to /etc/caddy/Caddyfile by install.sh, with @@HOSTNAME@@ and
+# @@WEB_PORT@@ substituted from installer arguments.
+#
+# This is the entire site: one host, proxying only to loopback SvelteKit.
+# There is nothing here that reaches cs71d - no route to /run/cs71/cs71d.sock,
+# the daemon API, a static secret or a SQLite file - because there is nothing
+# here but this one reverse_proxy block. TLS uses Caddy's own automatic
+# certificate management; for a hostname with no public DNS that resolves to
+# Caddy's internal CA, which is the private-LAN default this appliance
+# assumes (docs/architecture/vision-and-scope.md - not Internet-exposed).
+@@HOSTNAME@@ {
+	# flush_interval -1 sends each write immediately rather than buffering it,
+	# which the /events SSE stream depends on to reach the browser promptly.
+	reverse_proxy 127.0.0.1:@@WEB_PORT@@ {
+		flush_interval -1
+	}
+	encode gzip
+}

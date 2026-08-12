@@ -21,7 +21,8 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
-		"report:dependencies": "node scripts/dependency-report.mjs"
+		"report:dependencies": "node scripts/dependency-report.mjs",
+		"bootstrap-token": "tsx scripts/issue-bootstrap-token.ts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -46,6 +47,7 @@
 	},
 	"dependencies": {
 		"@node-rs/argon2": "^2.0.2",
-		"better-sqlite3": "^13.0.3"
+		"better-sqlite3": "^13.0.3",
+		"tsx": "^4.23.12"
 	}
 }

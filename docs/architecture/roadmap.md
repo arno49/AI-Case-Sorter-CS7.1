@@ -87,8 +87,8 @@ graph LR
   expiry-bound bootstrap token. A stolen `web.db` yields no usable credential.
   The request hook denies by default and the session cookie is `HttpOnly`,
   `SameSite=Strict` and root-scoped, `Secure` and `__Host-` prefixed in
-  production. The installer command that prints a bootstrap token remains
-  PI-OPS-001, so M5 is not yet met.
+  production. The installer command that prints a bootstrap token is now
+  delivered, in PI-OPS-001.
 - PI-WEB-002 is complete for role enforcement. The documented RBAC matrix is
   transcribed once as data and asserted role by role and capability by
   capability, including the viewer's software stop and the protocol path no role
@@ -99,9 +99,7 @@ graph LR
   page cannot read, and they are bounded by documented rate, concurrency and
   size budgets. PI-WEB-002 is therefore complete for its software criteria, so
   M4's exit criterion — server-side authentication and authorization controls
-  passing without daemon access — is met by software evidence. The command
-  endpoints those controls will also cover do not exist until PI-BFF-001, and
-  the installer command that prints a bootstrap token remains PI-OPS-001.
+  passing without daemon access — is met by software evidence.
 - PI-BFF-001 is complete for its software criteria. The daemon client is
   socket-only with no host, port or URL, exposes named commands with typed
   arguments and no protocol pass-through, supplies idempotency, generation and
@@ -125,7 +123,8 @@ graph LR
   behind, and that is resolved by reading a snapshot — and a restart of this
   service drops a database handle and a reader and nothing else, so it can
   neither cancel nor duplicate an operation the daemon is running. M5's exit
-  criteria are met apart from the installer command, which is PI-OPS-001.
+  criteria are now met: PI-OPS-001 delivers the installer command that prints
+  a bootstrap token, which was the one remaining piece.
 - PI-UI-001 is complete: the dashboard, manual controls and operation history
   are delivered.
   What a screen may say about the machine is decided in one tested module —
@@ -158,6 +157,24 @@ graph LR
   that serializes the daemon's existing `DTR_GATE_STATUS` constant —
   `NOT_EXECUTED` today, worded as the project's own evidence-status legend
   and never presented as a pass.
+- PI-OPS-001 is delivered for the evidence class achievable without a Pi.
+  `appliance/ops/install.sh` creates the documented users, group and
+  directory layout, writes one shared service credential to each side's own
+  copy, and installs least-privilege systemd units for `cs71d` and
+  `cs71-web` plus a Caddy drop-in and a udev rule matching vendor ID, product
+  ID and serial number together. `appliance/ops/tests/smoke-test.sh` is
+  functional, not structural: on a real Linux host (the `appliance-ops` CI
+  job) it starts the real services under their real sandbox directives —
+  against the simulator backend, since `backend = "serial"` cannot start on
+  any Linux host while Linux DTR is `NOT_EXECUTED`, Pi included — and proves
+  the socket's owner and mode, that the web identity can reach the daemon
+  through it and nothing else can reach the serial device, that Node stays up
+  under the sandbox, and that a process carrying the daemon's own sandbox
+  properties is kernel-refused when it tries to open a TCP socket. A real Pi
+  install/reboot/backup drill, the approved adapter's actual identity and
+  closing Linux DTR remain PI-HIL-001 and a future Pi drill, not software
+  work — M5's exit criteria are met by this evidence class; M6 stays open
+  behind PI-OPS-002 and that Pi-hardware drill.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

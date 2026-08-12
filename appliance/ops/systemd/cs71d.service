@@ -1,0 +1,65 @@
+[Unit]
+Description=cs71d - sole serial-device owner for the CS7.1 appliance
+Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance/daemon/README.md
+After=local-fs.target dev-cs71.device
+BindsTo=dev-cs71.device
+ConditionPathExists=/dev/cs71
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=cs71d
+Group=cs71-api
+UMask=0077
+ExecStart=/opt/cs71/daemon/venv/bin/cs71d --serve /etc/cs71/cs71d.toml
+Restart=on-failure
+RestartSec=2
+
+# /run/cs71 is created fresh by systemd on every start, owned cs71d:cs71-api.
+# The socket cs71d binds there ends up with that same ownership and its own
+# 0660 mode (set in code, not here) - group access is how cs71-web reaches it
+# without being able to open the serial device or the journal directly.
+RuntimeDirectory=cs71
+RuntimeDirectoryMode=0750
+
+# /var/lib/cs71d is 0700: no group access at all. machine.db is additionally
+# chmod 0600 by the journal itself, so its protection does not depend only on
+# directory permissions.
+StateDirectory=cs71d
+StateDirectoryMode=0700
+
+# Only the configured adapter, only read/write, nothing else in /dev.
+DeviceAllow=/dev/cs71 rw
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# No TCP: the daemon has no code path that opens an internet socket at all
+# (appliance/daemon/tests/test_api.py asserts this statically); this is the
+# same guarantee enforced again at the sandbox boundary.
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

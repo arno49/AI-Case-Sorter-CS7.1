@@ -319,3 +319,7 @@ readable by any local user, and it is refused if the file is reachable by
 others. Taking the socket path refuses to displace a daemon that is already
 serving it — a second instance must not steal the path while the first still
 owns the serial port.
+
+[`appliance/ops/README.md`](../ops/README.md) packages this console script as
+`cs71d.service`: which user runs it, what least-privilege sandbox it runs
+under, and how `install.sh` writes `service_token_path`'s file.
