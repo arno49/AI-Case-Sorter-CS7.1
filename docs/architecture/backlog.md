@@ -410,16 +410,33 @@ the effect, which is where PI-BFF-001 will authorize before the daemon call.
 Pages are told what the role may do so they can show the right controls; that
 list is a reflection of the server's decision and never a substitute for it.
 
-Per-session CSRF tokens, Origin policy and the size, rate and concurrency
-controls are the remainder of this task and are not implemented. SvelteKit's own
-rejection of cross-origin form posts is the only CSRF control in place, and a
-login attempt currently costs the appliance an unbounded number of Argon2id
-hashes.
+Forgery and cost are handled in the same hook, before any handler runs and
+cheapest check first, so a forged or oversized request costs a header comparison
+rather than a database read or an Argon2id hash. A state-changing request must
+name the appliance's own origin — a missing `Origin` header is refused rather
+than excused — and must echo back a token a forging page cannot read. For a
+signed-in browser that token is derived from the session token by HMAC, so
+nothing extra is stored, it rotates with the session, and a stolen `web.db`
+still yields nothing; a browser with no session gets a random token in its own
+`HttpOnly` cookie, which the login form echoes back, because signing in is
+state-changing too.
+
+The documented budgets are 30 state-changing requests per minute per address,
+five sign-in attempts per minute per account and per address, two password
+hashes in flight at once, and a 16 KiB declared form body. The concurrency limit
+refuses rather than queues: an Argon2id hash costs 64 MiB, and a queue would
+turn a burst into memory pressure plus a delay. The body check reads the
+declared length as an early refusal; the enforcement that cannot be lied to is
+the adapter's `BODY_SIZE_LIMIT`.
 
 - [x] Tests exercise each allowed and denied role/action pair, including Viewer software stop.
-- [ ] State-changing forms/actions reject missing/invalid CSRF and invalid Origin policy.
+- [x] State-changing forms/actions reject missing/invalid CSRF and invalid Origin policy.
 - [x] Server handlers, not client code, perform authorization before daemon call.
-- [ ] Login and command endpoints apply documented size/rate controls.
+- [x] Login and command endpoints apply documented size/rate controls.
+
+The command endpoints themselves do not exist yet; the controls above apply to
+every state-changing route by default, so PI-BFF-001 inherits them rather than
+having to remember them.
 
 ## Epic PI-BFF — BFF integration
 

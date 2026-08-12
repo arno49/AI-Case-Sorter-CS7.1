@@ -10,6 +10,8 @@ declare global {
 			/** The authenticated operator, or `null` on a public route. */
 			user: UserRecord | null;
 			session: SessionRecord | null;
+			/** The token every state-changing form on this response must carry. */
+			csrfToken: string;
 		}
 		// interface PageData {}
 		// interface PageState {}

@@ -3,7 +3,9 @@
  *
  * Only a POST ends a session. A `GET /logout` would let any page on the
  * network sign an operator out with an image tag, which is a denial of control
- * on a machine that may be running.
+ * on a machine that may be running. The hook checks the origin and the CSRF
+ * token before this action runs, so the post has to have come from a page this
+ * appliance rendered for this browser.
  */
 
 import { redirect, type Actions, type ServerLoad } from '@sveltejs/kit';

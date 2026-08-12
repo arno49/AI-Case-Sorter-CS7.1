@@ -33,6 +33,8 @@
 	<p>Machine controls are not implemented yet.</p>
 
 	<form method="POST" action="/logout">
+		<!-- The server refuses this post without the token it issued. -->
+		<input type="hidden" name="csrf_token" value={data.csrfToken} />
 		<button type="submit">Sign out</button>
 	</form>
 </main>

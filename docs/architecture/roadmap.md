@@ -94,8 +94,14 @@ graph LR
   capability, including the viewer's software stop and the protocol path no role
   holds. Every route declares what it requires, the hook authorizes before any
   page or action runs, a route with no declaration is refused, and a spec scans
-  the route directory so an undeclared page fails the build. Per-session CSRF
-  tokens and request size, rate and concurrency limits are still outstanding.
+  the route directory so an undeclared page fails the build. State-changing
+  requests must name the appliance's own origin and echo back a token a forging
+  page cannot read, and they are bounded by documented rate, concurrency and
+  size budgets. PI-WEB-002 is therefore complete for its software criteria, so
+  M4's exit criterion — server-side authentication and authorization controls
+  passing without daemon access — is met by software evidence. The command
+  endpoints those controls will also cover do not exist until PI-BFF-001, and
+  the installer command that prints a bootstrap token remains PI-OPS-001.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

@@ -49,6 +49,10 @@ browser.
 | `capabilities.ts`  | The documented RBAC matrix as data; the only place a role becomes permission       |
 | `policy.ts`        | What each route requires, keyed by route id                                        |
 | `authorization.ts` | Turning a policy or a capability into a refusal                                    |
+| `csrf.ts`          | The Origin rule and the token a state-changing request must echo back              |
+
+`src/lib/server/limits.ts` sits beside them and holds the rate and concurrency
+budgets, which ration cost rather than decide identity.
 
 `web.db` is this workspace's own database and is never the daemon's
 `machine.db`. It is created owner-only and refuses to open when another local
@@ -118,11 +122,51 @@ privilege is spent, and the check that matters is the one next to the effect.
 Pages are told what the role may do so they can show the right controls, but
 that list is a reflection of the server's decision, never a substitute for it.
 
-Per-session CSRF tokens and login rate limiting are the remainder of
-PI-WEB-002 and are **not** implemented; SvelteKit's own rejection of
-cross-origin form posts is the only CSRF control in place. There is no
-operator-facing command to print a bootstrap token until the installer provides
-one, so a fresh appliance cannot yet be provisioned without writing code.
+### Forgery and cost
+
+A state-changing request — anything but `GET`, `HEAD` or `OPTIONS` — is checked
+before it reaches a handler, cheapest check first, so a forged or oversized
+request costs this appliance a header comparison rather than a database read or
+an Argon2id hash.
+
+Two independent controls stand against cross-site request forgery. The request
+must name this appliance's own origin; a missing `Origin` header is refused
+rather than excused, because browsers have sent it on state-changing requests
+for years and an exemption for "no Origin" is an exemption an attacker can ask
+for. And it must echo back a token that a forging page cannot read, in the
+`csrf_token` field or the `X-CSRF-Token` header.
+
+For a signed-in browser that token is derived from the session token by HMAC,
+so there is nothing extra to store: the server already receives the session
+token in the cookie on every request, the derivation is one way, the token
+rotates with the session, and a stolen `web.db` still yields nothing because the
+database holds only the session token's digest. A browser with no session gets a
+random token in an `HttpOnly`, `SameSite=Strict` cookie of its own, which the
+login form echoes back — signing in is state-changing too, since it costs a
+password hash and a forged one would leave an operator working inside somebody
+else's account.
+
+The budgets in `limits.ts` ration what a stranger on the network can spend:
+
+| Control                   | Budget                                    |
+| ------------------------- | ----------------------------------------- |
+| State-changing requests   | 30 per minute per client address          |
+| Sign-in attempts          | 5 per minute, per account and per address |
+| Password hashes in flight | 2 at once, refused rather than queued     |
+| Declared form body        | 16 KiB                                    |
+
+Succeeding clears the sign-in budget, so an operator who mistyped once is not
+still being punished a minute later. The concurrency limit refuses rather than
+queues because an Argon2id hash costs 64 MiB of working memory: a queue would
+turn a burst into memory pressure plus a delay, and the person waiting cannot
+tell that apart from a machine that has stopped answering. The body check reads
+the declared `Content-Length` as an early, cheap refusal; the enforcement that
+cannot be lied to is the adapter's own `BODY_SIZE_LIMIT`, which counts bytes as
+they arrive.
+
+There is no operator-facing command to print a bootstrap token until the
+installer provides one, so a fresh appliance cannot yet be provisioned without
+writing code.
 
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.

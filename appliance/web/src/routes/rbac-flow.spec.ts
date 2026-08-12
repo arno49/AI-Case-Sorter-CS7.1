@@ -96,7 +96,8 @@ describe('what the dashboard tells the browser', () => {
 		expect(await dashboardLoad(event as unknown as ServerLoadEvent)).toEqual({
 			username: 'viewer',
 			role: 'viewer',
-			capabilities: ['machine.read', 'machine.stop']
+			capabilities: ['machine.read', 'machine.stop'],
+			csrfToken: expect.any(String)
 		});
 	});
 

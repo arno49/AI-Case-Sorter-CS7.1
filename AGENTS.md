@@ -30,9 +30,10 @@ worker, published session state with conservative reconnect, and durable
 operations with idempotent admission, fail-closed durability, an attributable
 priority stop, capability-validated home and sort adapters, a socket-only
 internal API with bounded resumable events, local web authentication with
-opaque server-side sessions, and server-side role enforcement against the
-documented capability matrix. Feed, CSRF tokens, rate limiting and operator
-features are not implemented; do not describe it as deployed or qualified.
+opaque server-side sessions, server-side role enforcement against the documented
+capability matrix, and CSRF, origin, rate and concurrency controls on
+state-changing requests. Feed and operator features are not implemented; do not
+describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -44,7 +45,7 @@ features are not implemented; do not describe it as deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 177 passing vitest tests.
+- `appliance/web` workspace: 229 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -240,6 +241,21 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   needs more than the page calls `requireCapability` next to the effect; what a
   page shows is a reflection of the server's decision, never a substitute for
   it.
+- A state-changing request -- anything but `GET`, `HEAD` or `OPTIONS` -- must
+  name the appliance's own origin and echo back the CSRF token, and is checked
+  before any handler runs, cheapest check first. A missing `Origin` header is
+  refused, not excused. Do not exempt a route from these checks; they apply by
+  method, so a new state-changing route inherits them.
+- The CSRF token is derived from the session token by HMAC rather than stored,
+  so it rotates with the session and a stolen `web.db` still yields nothing. A
+  browser with no session gets a random token in its own `HttpOnly` cookie,
+  because signing in is state-changing too.
+- Login and every other state-changing route are bounded by the documented
+  budgets in `limits.ts`: 30 state changes per minute per address, five sign-in
+  attempts per minute per account and per address, two password hashes in
+  flight, and a 16 KiB declared form body. The concurrency limit refuses rather
+  than queues -- an Argon2id hash costs 64 MiB, and queueing turns a burst into
+  memory pressure.
 - The session cookie carries an opaque token only -- no role, no user id, no
   signed claims. It is `HttpOnly`, `SameSite=Strict` and root-scoped in every
   profile, and `Secure` with the `__Host-` prefix in production. Ending a

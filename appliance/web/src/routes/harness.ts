@@ -14,8 +14,22 @@ import {
 	type RequestEvent
 } from '@sveltejs/kit';
 
+import { establishCsrfToken } from '$lib/server/auth/csrf';
+import type { WebProfile } from '$lib/server/config';
+
 export interface CookieJar extends Cookies {
 	readonly store: Map<string, string>;
+}
+
+/**
+ * The token this browser's next post must carry.
+ *
+ * Idempotent: it derives the token from a session cookie when there is one and
+ * otherwise returns the anonymous token already in the jar, which is what a
+ * page rendered for this browser would have shown.
+ */
+export function csrfFor(cookies: CookieJar, profile: WebProfile = 'development'): string {
+	return establishCsrfToken(cookies, profile);
 }
 
 /** A cookie jar shared across the requests of one simulated browser. */
@@ -39,28 +53,42 @@ export interface RequestOptions {
 	 * added without a policy.
 	 */
 	readonly routeId?: string | null;
+	readonly method?: string;
+	/** `null` sends no `Origin` header at all, as a forged post would not. */
+	readonly origin?: string | null;
+	readonly headers?: Record<string, string>;
+	readonly address?: string;
 }
 
+/**
+ * A request built from a real `Request`.
+ *
+ * The hook reads the method, the headers and a clone of the body, so a stubbed
+ * object with a `formData` method would not exercise what production does.
+ */
 export function request(
 	path: string,
 	cookies: Cookies,
 	options: RequestOptions = {}
 ): RequestEvent {
 	const url = new URL(`http://localhost${path}`);
+	const method = options.method ?? (options.form === undefined ? 'GET' : 'POST');
+	const headers = new Headers(options.headers);
+	const origin = options.origin === undefined ? url.origin : options.origin;
+	if (origin !== null) {
+		headers.set('origin', origin);
+	}
+
+	const body =
+		options.form === undefined ? undefined : new URLSearchParams(Object.entries(options.form));
+
 	return {
 		cookies,
 		url,
 		route: { id: options.routeId === undefined ? url.pathname : options.routeId },
 		locals: {},
-		request: {
-			formData: async () => {
-				const data = new FormData();
-				for (const [key, value] of Object.entries(options.form ?? {})) {
-					data.set(key, value);
-				}
-				return data;
-			}
-		}
+		getClientAddress: () => options.address ?? '10.0.0.2',
+		request: new Request(url, { method, headers, body })
 	} as unknown as RequestEvent;
 }
 

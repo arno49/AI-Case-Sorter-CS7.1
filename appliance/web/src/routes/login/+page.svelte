@@ -17,6 +17,9 @@
 	{/if}
 
 	<form method="POST">
+		<!-- The server refuses this post without the token it issued. -->
+		<input type="hidden" name="csrf_token" value={data.csrfToken} />
+
 		<label for="username">Username</label>
 		<input id="username" name="username" autocomplete="username" required />
 

@@ -10,6 +10,7 @@ export const load: ServerLoad = ({ locals }) => {
 	return {
 		username: locals.user?.username ?? null,
 		role: locals.user?.role ?? null,
-		capabilities: locals.user === null ? [] : capabilitiesFor(locals.user.role)
+		capabilities: locals.user === null ? [] : capabilitiesFor(locals.user.role),
+		csrfToken: locals.csrfToken
 	};
 };

@@ -12,10 +12,17 @@
 
 import { openWebDatabase, type WebDatabase } from './auth/database';
 import { loadWebConfig, type WebConfig } from './config';
+import { createWebLimits, type WebLimits } from './limits';
 
 export interface WebRuntime {
 	readonly config: Readonly<WebConfig>;
 	readonly database: WebDatabase;
+	/**
+	 * Rate and concurrency budgets. They live here rather than at module scope
+	 * so that they start empty with the process, and so a test can discard them
+	 * with the rest of the runtime instead of leaking counts into the next one.
+	 */
+	readonly limits: WebLimits;
 }
 
 let runtime: WebRuntime | undefined;
@@ -32,7 +39,7 @@ function start(): WebRuntime {
 	const database = openWebDatabase(config.databasePath, {
 		createDirectory: config.profile !== 'production'
 	});
-	return { config, database };
+	return { config, database, limits: createWebLimits() };
 }
 
 export function closeWebRuntime(): void {

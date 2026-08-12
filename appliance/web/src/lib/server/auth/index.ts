@@ -97,6 +97,19 @@ export {
 
 export { CAPABILITIES, can, capabilitiesFor, type Capability } from './capabilities';
 
+export {
+	CSRF_FIELD,
+	CSRF_HEADER,
+	clearAnonymousCsrfCookie,
+	csrfCookieName,
+	csrfTokenFor,
+	csrfTokenMatches,
+	establishCsrfToken,
+	isStateChanging,
+	originIsTrusted,
+	presentedCsrfToken
+} from './csrf';
+
 export { ROUTE_POLICIES, routePolicy, type RoutePolicies, type RoutePolicy } from './policy';
 
 export { FORBIDDEN, UNAUTHENTICATED, requireCapability, requireRouteAccess } from './authorization';
