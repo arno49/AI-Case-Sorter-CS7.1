@@ -11,8 +11,11 @@ history (never `machine.db` directly) to learn which slot a completed sort
 actually reached, and pairs that with a frame it already captured.
 PI-VISION-003 gives `cs71-vision` its first HTTP surface of its own — a
 single read-only resource the web BFF queries for dataset review — so it now
-talks to the web side, but only ever to answer that one read. It still
-classifies nothing; that is PI-VISION-004 onward.
+talks to the web side, but only ever to answer that one read. PI-VISION-004
+adds the training pipeline itself: a candidate classifier can now be trained
+from the recorded dataset and stored as a new version, but nothing yet
+triggers it operator-side (PI-VISION-005) and nothing yet classifies a live
+frame (PI-VISION-006) — this is the pipeline, not the product.
 
 ## Self-labeled dataset (PI-VISION-002)
 
@@ -96,6 +99,62 @@ secret `cs71-web` already presents to `cs71d`, no new credential to
 provision. The operator-facing page is `/dataset`
 (`appliance/web/src/routes/dataset/`), gated by the same `machine.read`
 capability `/system` uses.
+
+## Training pipeline (PI-VISION-004)
+
+Trains one candidate classifier from the examples `vision.db` already holds,
+and stores it as a new version - nothing more yet: no operator-facing
+trigger, no activation, no live suggestion. Those are PI-VISION-005/006.
+
+- `cs71vision.training.extract_features` turns a captured frame into a
+  fixed-length, deterministic feature vector: decode to grayscale, resize to
+  32x32 regardless of the frame's own resolution, normalize to `[0, 1]`. No
+  learned embedding and no claim that this is the best feature set - it is a
+  bootstrap one, free to be replaced later without touching anything
+  downstream of it.
+- `cs71vision.training.train_candidate` groups examples by slot, excludes
+  any class below `minimum_examples_per_class` **outright** (it never
+  reaches feature extraction, not merely a UI flag), and refuses to train at
+  all when fewer than two classes clear the floor. Each included class is
+  deterministically split into a training pool and a held-out subset (a
+  `random.Random(seed)` local to the call - never wall-clock or global
+  random state); held-out accuracy is computed strictly from examples the
+  classifier never trained on.
+- The classifier is `scikit-learn`'s `RandomForestClassifier`
+  (BSD-3-Clause) - the same well-tested-over-hand-rolled, permissive-license
+  reasoning that put OpenCV over a hand-rolled V4L2 implementation in
+  PI-VISION-001, sized for a background job training on tens to a few
+  hundred examples per class on a Pi 5 CPU, not a deep-learning framework
+  sized for a workload this is not. The fitted classifier is serialized with
+  `pickle`; no new on-disk model-file format was introduced.
+- Storage extends `vision.db` itself (schema version 2, a `models` table),
+  not a new file or directory: `DatasetStore.record_candidate` is a plain
+  `INSERT` against an `AUTOINCREMENT` primary key, so a previously recorded
+  candidate is never overwritten - there is no `UPDATE`/`DELETE` path onto
+  that table anywhere in this codebase. `DatasetStore.candidates()` reads
+  every recorded candidate's metadata (no model blobs);
+  `candidate_model(version)` reads one blob by version. This needed zero
+  `appliance/ops/` changes: `vision.db` is already backed up and restored
+  wholesale, table-agnostic.
+- `cs71vision.runtime.TrainingJob` is a trigger, not a schedule:
+  `trigger()` starts one run on its own thread and returns immediately; a
+  second `trigger()` while one is in flight returns `False` rather than
+  stacking a second pass behind the first. `build_training_job` shares
+  `build_correlation_loop`'s/`build_api_server`'s own gate on
+  `daemon_service_token_path`: without a token, correlation never runs, so
+  `vision.db` never receives an example in the first place and there is
+  structurally nothing to ever train from.
+
+Nothing in this codebase calls `TrainingJob.trigger()` yet. PI-VISION-005 is
+what decides *when* to (an operator-facing `vision.train` capability) -
+wiring a trigger before the capability that is supposed to gate it exists
+would let any caller train before RBAC does.
+
+What remains genuinely hardware-gated: `RandomForestClassifier`'s wall-clock
+training time on real captured frames, at real dataset sizes, on a real
+Pi 5 CPU is unmeasured here - every test runs against small, fast synthetic
+images on ordinary CI hardware. The same class of gap `V4L2Camera`'s
+real-hardware behavior and the DTR gate already are for this workspace.
 
 ## Camera
 

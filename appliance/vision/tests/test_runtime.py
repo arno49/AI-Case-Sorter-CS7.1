@@ -3,27 +3,54 @@ from __future__ import annotations
 import shutil
 import tempfile
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
 from cs71vision.api import DatasetApiServer
 from cs71vision.camera import CameraError, Frame
 from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
-from cs71vision.dataset import IN_MEMORY, DatasetStore
+from cs71vision.dataset import IN_MEMORY, DatasetExample, DatasetStore, TrainedCandidate
 from cs71vision.runtime import (
     CaptureLoop,
     CorrelationLoop,
+    TrainingJob,
     build_api_server,
     build_camera,
     build_correlation_loop,
+    build_training_job,
     read_service_token,
 )
+from cs71vision.training import TrainingError
 
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+
+
+def _png(value: int, *, size: int = 4) -> bytes:
+    image = np.full((size, size, 3), value, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def _wait_until_not_running(job: TrainingJob, *, timeout: float = 2.0) -> None:
+    """Wait for a triggered run to finish without closing the job's store.
+
+    `TrainingJob.close()` releases the store as well as joining the thread
+    (the same shape `CorrelationLoop.close()` uses), so a test that still
+    wants to inspect the store afterward waits this way instead.
+    """
+    deadline = time.monotonic() + timeout
+    while job.running:
+        if time.monotonic() > deadline:
+            raise AssertionError("the training job never finished")
+        time.sleep(0.01)
 
 
 class CountingCamera:
@@ -331,3 +358,221 @@ def test_build_api_server_builds_a_working_server_given_a_token_path(
     assert server is not None
     assert isinstance(server, DatasetApiServer)
     server.close()
+
+
+def _candidate(**overrides: object) -> TrainedCandidate:
+    defaults: dict[str, object] = {
+        "model_blob": b"model",
+        "included_classes": (3, 5),
+        "excluded_classes": (),
+        "accuracy_by_class": {3: 1.0, 5: 1.0},
+        "minimum_examples_per_class": 5,
+        "training_example_count": 10,
+        "holdout_example_count": 2,
+    }
+    defaults.update(overrides)
+    return TrainedCandidate(**defaults)  # type: ignore[arg-type]
+
+
+class RecordingTrainer:
+    """A `Trainer` the test can inspect: what it was called with, what it returns."""
+
+    def __init__(
+        self, candidate: TrainedCandidate | None = None, *, error: Exception | None = None
+    ) -> None:
+        self.calls: list[tuple[DatasetExample, ...]] = []
+        self._candidate = candidate if candidate is not None else _candidate()
+        self._error = error
+
+    def __call__(self, examples: Sequence[DatasetExample]) -> TrainedCandidate:
+        self.calls.append(tuple(examples))
+        if self._error is not None:
+            raise self._error
+        return self._candidate
+
+
+class BlockingTrainer:
+    """A `Trainer` that blocks until released, so a test can observe it mid-run."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, examples: Sequence[DatasetExample]) -> TrainedCandidate:
+        self.started.set()
+        if not self.release.wait(2.0):
+            raise AssertionError("the test never released the blocking trainer")
+        return _candidate()
+
+
+def test_trigger_runs_the_trainer_on_the_current_examples_and_records_the_result() -> None:
+    store = DatasetStore.open(IN_MEMORY, now=lambda: START)
+    store.record_example(
+        operation_id="op-1",
+        slot=3,
+        frame_png=b"x",
+        frame_captured_at=START,
+        operation_created_at=START,
+    )
+    trainer = RecordingTrainer(_candidate(model_blob=b"trained-model"))
+    job = TrainingJob(store, trainer, now=lambda: START)
+
+    assert job.trigger() is True
+    _wait_until_not_running(job)
+
+    assert trainer.calls == [(DatasetExample(slot=3, frame_png=b"x"),)]
+    [summary] = store.candidates()
+    assert summary.trained_at == START.isoformat()
+    job.close()
+
+
+def test_trigger_returns_false_while_a_run_is_already_in_flight() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    trainer = BlockingTrainer()
+    job = TrainingJob(store, trainer)
+
+    assert job.trigger() is True
+    assert trainer.started.wait(2.0)
+    assert job.trigger() is False
+
+    trainer.release.set()
+    job.close()
+
+
+def test_running_reflects_an_in_flight_run_only() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    trainer = BlockingTrainer()
+    job = TrainingJob(store, trainer)
+
+    assert job.running is False
+    job.trigger()
+    assert trainer.started.wait(2.0)
+    assert job.running is True
+
+    trainer.release.set()
+    job.close()
+    assert job.running is False
+
+
+def test_a_training_error_records_nothing_and_does_not_crash() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    trainer = RecordingTrainer(error=TrainingError("not enough classes"))
+    job = TrainingJob(store, trainer)
+
+    job.trigger()
+    _wait_until_not_running(job)  # must not raise or hang
+
+    assert store.candidates() == ()
+    job.close()
+
+
+def test_an_unexpected_trainer_failure_does_not_crash_the_job() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    trainer = RecordingTrainer(error=RuntimeError("the classifier library blew up"))
+    job = TrainingJob(store, trainer)
+
+    job.trigger()
+    _wait_until_not_running(job)  # must not raise or hang
+
+    assert store.candidates() == ()
+    job.close()
+
+
+def test_close_waits_for_an_in_flight_run_to_finish_before_returning(tmp_path: Path) -> None:
+    db_path = tmp_path / "vision.db"
+    store = DatasetStore.open(db_path)
+    trainer = BlockingTrainer()
+    job = TrainingJob(store, trainer)
+    job.trigger()
+    assert trainer.started.wait(2.0)
+
+    def release_shortly() -> None:
+        time.sleep(0.05)
+        trainer.release.set()
+
+    threading.Thread(target=release_shortly, daemon=True).start()
+    job.close()
+
+    # close() only returns after the thread it joined has finished and the
+    # store it owned is released - reopening it here is the proof the
+    # candidate that thread recorded actually reached disk before close()
+    # returned control to this test.
+    reopened = DatasetStore.open(db_path)
+    try:
+        assert len(reopened.candidates()) == 1
+    finally:
+        reopened.close()
+
+
+def test_close_releases_the_store() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    job = TrainingJob(store, RecordingTrainer())
+
+    job.close()
+
+    with pytest.raises(Exception, match="closed"):
+        store.total_examples()
+
+
+def test_reading_the_store_is_not_blocked_while_a_training_run_is_in_flight() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    trainer = BlockingTrainer()
+    job = TrainingJob(store, trainer)
+
+    job.trigger()
+    assert trainer.started.wait(2.0)
+    # The trainer already has its snapshot of examples() and is blocked
+    # inside the trainer call itself, not inside the store's lock - a read
+    # here must return immediately, not wait for the training thread.
+    assert store.total_examples() == 0
+
+    trainer.release.set()
+    job.close()
+
+
+def test_build_training_job_is_none_without_a_token_path() -> None:
+    config = VisionConfig.development()
+
+    assert build_training_job(config) is None
+
+
+def test_build_training_job_trains_a_real_candidate_end_to_end(token_workspace: Path) -> None:
+    token_path = _token_file(token_workspace)
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=str(token_workspace / "vision.db"),
+        daemon_service_token_path=str(token_path),
+        minimum_examples_per_class=2,
+    )
+    seed_store = DatasetStore.open(config.dataset_path)
+    for index, (slot, value) in enumerate([(3, 10), (3, 12), (5, 240), (5, 238)]):
+        seed_store.record_example(
+            operation_id=f"op-{index}",
+            slot=slot,
+            frame_png=_png(value),
+            frame_captured_at=START,
+            operation_created_at=START,
+        )
+    seed_store.close()
+
+    job = build_training_job(config)
+    assert job is not None
+    try:
+        assert job.trigger() is True
+        job.close()
+
+        store = DatasetStore.open(config.dataset_path)
+        try:
+            candidates = store.candidates()
+        finally:
+            store.close()
+        assert len(candidates) == 1
+        assert candidates[0].included_classes == (3, 5)
+    finally:
+        job.close()
