@@ -71,8 +71,13 @@ a dashboard that reads the machine snapshot and submits the software stop,
 recording every attempt in the web audit. The dashboard also watches the machine
 live: one reader of the daemon's event stream is fanned out to every open
 browser, and a browser that may have missed something re-reads a snapshot rather
-than presenting a state assembled from a gap. The remaining operator screens have
-not been implemented yet.
+than presenting a state assembled from a gap. What the dashboard says is decided
+in one tested module: acceptance is never worded as completion, a terminal the
+controller did not confirm reads as an outcome that is not known, an unobserved
+axis reads "not known" rather than "not homed", and the software stop — still
+not an emergency stop — is the first control a keyboard reaches. Manual
+controls, feed gating and operation history screens have not been implemented
+yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

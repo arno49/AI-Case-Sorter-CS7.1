@@ -2,7 +2,10 @@
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 
+	import MachineStatus from '$lib/components/MachineStatus.svelte';
+	import StopControl from '$lib/components/StopControl.svelte';
 	import { MachineView } from '$lib/machine-view.svelte';
+	import type { MachineSnapshot } from '$lib/machine';
 
 	let { data, form } = $props();
 
@@ -14,7 +17,7 @@
 	 * way for the browser to read the machine would be a second thing to keep
 	 * honest.
 	 */
-	const view = new MachineView<typeof data.snapshot & object, { generation: number }>(async () => {
+	const view = new MachineView<MachineSnapshot, { generation: number }>(async () => {
 		await invalidateAll();
 		return data.snapshot ?? null;
 	});
@@ -66,6 +69,10 @@
 		}
 	}
 
+	const accepted = $derived(
+		form?.operationId ? { operationId: form.operationId, state: String(form.state) } : null
+	);
+
 	// Labels for what the server said this role may do. The list is a reflection
 	// of the server's decision, not a source of it: hiding an entry here hides a
 	// control, it does not withhold permission.
@@ -86,78 +93,13 @@
 <main>
 	<h1>CS7.1 control appliance</h1>
 
-	<p>Signed in as {data.username} ({data.role}).</p>
+	<StopControl csrfToken={data.csrfToken} error={form?.error} {accepted} />
 
-	<section aria-labelledby="machine">
-		<h2 id="machine">Machine</h2>
-
-		{#if view.stale}
-			<!-- The page owes itself a snapshot. Saying so is the point: a screen
-			     that is behind must not look like one that is current. -->
-			<p role="status">
-				This view may be out of date. Reading the machine{view.refreshing ? '…' : ''}
-			</p>
-		{/if}
-		{#if unavailable}
-			<p role="alert">{unavailable}</p>
-		{:else if machine}
-			<dl>
-				<dt>Connection</dt>
-				<dd>{machine.connection_state}</dd>
-				<dt>Faults</dt>
-				<dd>{machine.fault_state} ({machine.faults?.length ?? 0} recorded)</dd>
-				<dt>Ready</dt>
-				<dd>
-					{machine.ready ? 'yes' : 'no'}
-					{#if machine.readiness_reason}
-						— {machine.readiness_reason}
-					{/if}
-				</dd>
-				<dt>Snapshot generation</dt>
-				<dd>{machine.generation}</dd>
-				<dt>Active operation</dt>
-				<dd>
-					{#if machine.active_operation}
-						{machine.active_operation.type} — {machine.active_operation.state}
-					{:else}
-						none
-					{/if}
-				</dd>
-			</dl>
-			<p>
-				Readiness is the daemon's own session readiness. It is not a statement about physical
-				clearance, homing or energy isolation.
-			</p>
-		{/if}
-	</section>
-
-	<section aria-labelledby="stop">
-		<h2 id="stop">Stop</h2>
-
-		{#if form?.error}
-			<p role="alert">{form.error}</p>
-		{/if}
-		{#if form?.operationId}
-			<!-- Accepted is not finished: the daemon has taken the command and given
-			     it an identity, and the machine may still be moving. -->
-			<p role="status">
-				Stop accepted as operation {form.operationId} ({form.state}). This is an acceptance, not a
-				completion — watch the machine.
-			</p>
-		{/if}
-
-		<form method="POST" action="?/stop">
-			<input type="hidden" name="csrf_token" value={data.csrfToken} />
-			<button type="submit">Stop the machine</button>
-		</form>
-		<p>
-			This is a software stop. It is not an emergency stop and is no substitute for the physical
-			emergency stop and the guarded motor-power path.
-		</p>
-	</section>
+	<MachineStatus snapshot={machine} {unavailable} stale={view.stale} refreshing={view.refreshing} />
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>
+		<p>Signed in as {data.username} ({data.role}).</p>
 		<ul>
 			{#each data.capabilities as capability (capability)}
 				<li>{LABELS[capability] ?? capability}</li>

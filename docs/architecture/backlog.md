@@ -535,12 +535,26 @@ why it can neither cancel nor duplicate an operation `cs71d` is running.
 
 **Goal:** deliver status, command and history screens. **Implementation notes:** pages are SSR first and capability-driven; expose snapshot generation to command forms. **Dependencies:** PI-BFF-002. **Hardware required:** No. **Size:** L.
 
-- Dashboard shows connection, homing, active operation, faults and snapshot generation from daemon snapshot.
-- Manual controls validate capability/slot and submit idempotency/generation-protected intent.
-- Feed controls are capability-driven and remain unavailable with an explicit reason until the firmware feed lifecycle gate is qualified.
-- Operation history shows accepted, progress and terminal states with trusted-terminal status.
-- UI never labels HTTP acceptance as machine completion.
-- Keyboard-only automated flow can find and activate software stop.
+In progress. The dashboard is delivered: `machine-status.ts` decides every
+sentence a screen may say about the machine — acceptance is never worded as
+completion (`COMPLETION_WORDS` is the testable form of that rule), a terminal
+without `trusted_terminal` is presented as an outcome that is not known rather
+than repeated by its state name, and an axis the session has never observed
+reads "not known" rather than "not homed", because the wire has no third value
+and a guess in the safe-looking direction is still a guess. `UNCERTAIN` carries
+its own tone, distinct from ordinary attention. The software stop renders first
+in document order with no positive `tabindex` anywhere, and
+`dashboard-page.spec.ts` drives the keyboard flow end to end: the real load
+renders the page, the first focusable control is the stop, and submitting
+exactly the fields its form carries reaches the daemon as a stop command.
+Manual controls, feed gating and operation history remain.
+
+- [x] Dashboard shows connection, homing, active operation, faults and snapshot generation from daemon snapshot.
+- [ ] Manual controls validate capability/slot and submit idempotency/generation-protected intent.
+- [ ] Feed controls are capability-driven and remain unavailable with an explicit reason until the firmware feed lifecycle gate is qualified.
+- [ ] Operation history shows accepted, progress and terminal states with trusted-terminal status.
+- [x] UI never labels HTTP acceptance as machine completion.
+- [x] Keyboard-only automated flow can find and activate software stop.
 
 ### PI-UI-002 — Build fault, recovery and system views
 
