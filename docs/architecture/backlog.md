@@ -336,8 +336,9 @@ single segment, which keeps every previously valid value valid.
 
 **Goal:** secure local user lifecycle and server sessions. **Implementation notes:** Argon2id hashes, opaque server-side sessions, one-time bootstrap admin. **Dependencies:** PI-FOUNDATION-002. **Hardware required:** No. **Size:** L.
 
-**Status:** In progress. The runtime dependencies are chosen and verified,
-which the web workspace previously had none of.
+**Status:** In progress. The server-side core is implemented; the browser-facing
+request boundary is not. The runtime dependencies were chosen and verified
+first, which the web workspace previously had none of.
 
 `@node-rs/argon2` provides the Argon2id hashes. It ships prebuilt arm64 and x64
 binaries, so nothing compiles on the appliance; the alternative `argon2`
@@ -350,15 +351,32 @@ releases.
 
 Both were installed and exercised on a development machine: Argon2id hashes
 verify, SQLite reads and writes, and `npm audit --omit=dev` reports no
-vulnerabilities in the runtime tree. The remaining acceptance criteria —
-provisioning, hashing policy, cookies, revocation and `web.db` ownership — are
-not implemented yet.
+vulnerabilities in the runtime tree.
 
-- Fresh installation has no usable default password and requires expiry-bound bootstrap provisioning.
-- Password storage uses Argon2id; plaintext passwords/tokens never appear in database/log tests.
-- Cookies are Secure/HttpOnly/SameSite according to production origin policy and sessions rotate on login.
-- Logout, expiry, disable and password-change revoke existing sessions.
-- `web.db` access is exclusive to web service identity.
+The server-side authentication core is now implemented in
+`appliance/web/src/lib/server/auth/`: `web.db` with forward-only checksummed
+migrations, the Argon2id policy, opaque server-side sessions, local accounts
+and one-time expiry-bound bootstrap provisioning. Evidence class is software
+only; 98 vitest tests pass, alongside `check:api`, `lint`, `check` and `build`.
+
+Several invariants are enforced by SQLite itself rather than by application
+convention, so a future bug cannot quietly violate them: a stored password must
+be an Argon2id encoding, a revoked session cannot be restored, a session cannot
+be rebound to another account or token, a bootstrap token can be claimed once,
+and provisioning cannot be re-opened in place.
+
+The browser-facing request boundary — the session cookie, the request hook and
+the login and logout routes — is deliberately not in this change; RBAC and CSRF
+remain PI-WEB-002. The operator-facing command that prints a bootstrap token
+belongs with the installer in the PI-DEPLOY epic; until it exists, a bootstrap
+token can only be issued programmatically.
+
+- [x] Fresh installation has no usable default password and requires expiry-bound bootstrap provisioning.
+- [x] Password storage uses Argon2id; plaintext passwords/tokens never appear in database/log tests.
+- [ ] Cookies are Secure/HttpOnly/SameSite according to production origin policy and sessions rotate on login.
+      Rotation is implemented and tested; the cookie policy arrives with the request boundary.
+- [x] Logout, expiry, disable and password-change revoke existing sessions.
+- [x] `web.db` access is exclusive to web service identity.
 
 ### PI-WEB-002 — Enforce server-side RBAC and CSRF
 

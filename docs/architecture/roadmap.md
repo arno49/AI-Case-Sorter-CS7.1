@@ -79,7 +79,16 @@ graph LR
   disconnected consumer cannot stall the serial worker. Event retention is in
   memory only, so durable replay across a restart remains outstanding. M3 is
   therefore substantially complete and M5 is unblocked.
-  PI-WEB-001 remains independently available in parallel.
+- PI-WEB-001 is partially complete. The server-side authentication core exists:
+  `web.db` is owner-only with forward-only checksummed migrations, passwords are
+  Argon2id under a single policy, sessions are opaque and server-side with idle
+  and absolute bounds, rotation on login and revocation on logout, expiry,
+  disable and password change, and the first administrator can only be created
+  by claiming a one-time expiry-bound bootstrap token. A stolen `web.db` yields
+  no usable credential. The browser-facing request boundary — session cookie,
+  request hook and login and logout routes — is still outstanding, as is the
+  installer command that prints a bootstrap token, so M5 is open rather than
+  met.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 
