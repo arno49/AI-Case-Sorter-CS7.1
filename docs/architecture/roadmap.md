@@ -112,7 +112,13 @@ graph LR
   rather than a completion, and writing a `web_audit` row in `web.db` for every
   attempt without a transaction across the two databases. Connect, home, sort,
   feed, recovery and configuration have clients but no screens, which is
-  PI-UI-001, and the browser event bridge remains PI-BFF-002.
+  PI-UI-001.
+- PI-BFF-002 has its daemon-side event reader but no browser route consuming it,
+  so none of its criteria are claimed. It resumes from the daemon's own
+  `event_id`, announces a `resync` on every reconnection and whenever the daemon
+  rejects a cursor, passes daemon identifiers through unrenumbered, and
+  reconnects only a reader — never a command. The browser SSE route, its fan-out
+  and the restart-isolation evidence remain.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

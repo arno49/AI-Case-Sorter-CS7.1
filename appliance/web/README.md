@@ -178,6 +178,7 @@ writing code.
 | `transport.ts`   | One HTTP exchange over the Unix domain socket                           |
 | `credentials.ts` | Reading the service credential from its protected file                  |
 | `errors.ts`      | What went wrong, and what the operator is told about it                 |
+| `events.ts`      | Reading the daemon's event stream, and staying attached to it           |
 
 There is no host, no port and no URL in any of it: the socket path comes from
 configuration and the request path is a literal the client builds, so a browser
@@ -257,6 +258,36 @@ describes.
 
 The remaining commands — connect, home, sort, feed, recovery and configuration
 — have clients but no screens; those are PI-UI-001.
+
+### The event stream
+
+`events.ts` is the only place that reconnects to `cs71d` on its own. That is
+safe here and nowhere else, because reading is the only thing that can be
+retried without asking whether the machine already did it: a command that timed
+out may have moved the machine, and nothing in this workspace resends one. A
+reconnection re-attaches a reader; the daemon owns the operation and keeps
+running it whether or not this service is listening.
+
+Resumption is honest about gaps. Each event carries the daemon's monotonic
+`event_id`; a reconnection asks to continue after the last one this process
+actually delivered, and the daemon answers either with what came next or with
+`snapshot.required` when that cursor is too old. Both cases surface as a
+`resync` message, and so does every reconnection even when the cursor was
+honoured — a browser that redraws from a snapshot after a gap is correct where
+one that keeps applying increments is guessing. A cursor the daemon has rejected
+is forgotten rather than presented again, which would loop.
+
+Nothing here interprets an event. The `event_id`, `operation_id` and
+`generation` a browser will be shown are the daemon's own, unrenumbered: a
+bridge that invented its own sequence would make the two ends impossible to line
+up when something goes wrong. An event type this build does not know is passed
+through, because ignoring it is the consumer's decision under the v1 contract,
+not something to lose in transit. A single event is size-capped, and silence
+past the idle window counts as a disconnection — the daemon sends heartbeats
+precisely so a quiet stream can be told from a dead socket.
+
+No browser route consumes this yet. The SSE bridge to the browser, its fan-out
+and its restart isolation are the rest of PI-BFF-002.
 
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.

@@ -498,6 +498,22 @@ have clients but no screens.
 
 **Goal:** maintain browser view from daemon events/snapshots. **Implementation notes:** BFF fans out/reconnects; it does not own/retry machine operations. **Dependencies:** PI-BFF-001. **Hardware required:** No. **Size:** M.
 
+The daemon side exists; no browser route consumes it yet, so none of the
+criteria below are claimed. `appliance/web/src/lib/server/daemon/events.ts` is
+the only place that reconnects to `cs71d` on its own, which is safe because
+reading is the only thing that can be retried without asking whether the machine
+already acted; it re-attaches a reader and never resends a command. Resumption
+uses the daemon's own `event_id`: a reconnection continues after the last event
+actually delivered, a `snapshot.required` answer drops that cursor rather than
+presenting it again, and every reconnection surfaces a `resync` so a consumer
+re-reads a snapshot instead of applying increments across a gap. Daemon
+`event_id`, `operation_id` and `generation` are passed through unrenumbered, an
+unknown event type is passed through as the contract requires, a single event is
+size-capped, and silence past the idle window counts as a disconnection.
+
+Remaining: the browser SSE route, its fan-out and per-browser cursor, and the
+restart-isolation evidence.
+
 - Browser reconnect after event overflow fetches snapshot before presenting incremental updates.
 - BFF restart during a simulated daemon operation neither cancels nor duplicates it.
 - Browser event disconnect does not block daemon event production or serial worker.

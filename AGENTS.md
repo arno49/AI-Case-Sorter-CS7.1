@@ -47,7 +47,7 @@ qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 349 passing vitest tests.
+- `appliance/web` workspace: 362 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -295,6 +295,15 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   never written in one transaction, and `operation_id` is the join key. Audit
   rows cannot be edited and the table has no column for a credential or a form
   body.
+- The event stream is the only thing the web workspace reconnects to on its own.
+  Reading may be retried; a command may not, because one that timed out may have
+  moved the machine. Every reconnection announces a `resync` so a consumer
+  re-reads a snapshot rather than applying increments across a gap, and a cursor
+  the daemon has rejected is forgotten rather than presented again.
+- Daemon `event_id`, `operation_id` and `generation` reach the browser
+  unrenumbered. A bridge with its own sequence would make the two ends
+  impossible to line up. An unknown event type is passed through; ignoring it is
+  the consumer's decision under the v1 contract.
 - SQL lives only in `appliance/web/src/lib/server/auth/` and
   `appliance/web/src/lib/server/audit.ts`. Adding a module to that list is a
   reviewed change; `boundaries.spec.ts` fails otherwise.

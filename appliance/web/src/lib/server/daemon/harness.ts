@@ -86,6 +86,75 @@ export async function startFakeDaemon(): Promise<FakeDaemon> {
 	};
 }
 
+export interface FakeEventStream {
+	readonly handler: DaemonHandler;
+	/** The `Last-Event-ID` header each connection arrived with, in order. */
+	readonly cursors: (string | undefined)[];
+	/**
+	 * Resolves when the *next* reader attaches.
+	 *
+	 * Call it before starting the reader: a frame written while nothing is
+	 * attached goes nowhere, and a spec that raced that would hang rather than
+	 * fail.
+	 */
+	nextConnection: () => Promise<void>;
+	/** Push one event to every attached reader. */
+	send: (event: Record<string, unknown>) => void;
+	/** Push a raw frame, for the shapes a well-behaved daemon would not send. */
+	raw: (frame: string) => void;
+	/** End the response, as a daemon that is shutting down would. */
+	end: () => void;
+}
+
+/** A daemon that holds the connection open and streams events on demand. */
+export function eventStream(): FakeEventStream {
+	const open: ServerResponse[] = [];
+	const cursors: (string | undefined)[] = [];
+	const waiting: (() => void)[] = [];
+
+	return {
+		handler: (request, response) => {
+			cursors.push(request.headers['last-event-id']);
+			response.writeHead(200, {
+				'content-type': 'text/event-stream',
+				'cache-control': 'no-store'
+			});
+			open.push(response);
+			for (const resolve of waiting.splice(0)) {
+				resolve();
+			}
+		},
+		cursors,
+		nextConnection: () => new Promise<void>((resolve) => waiting.push(resolve)),
+		send(event) {
+			this.raw(`data: ${JSON.stringify(event)}\n\n`);
+		},
+		raw: (frame) => {
+			for (const response of open) {
+				response.write(frame);
+			}
+		},
+		end: () => {
+			for (const response of open.splice(0)) {
+				response.end();
+			}
+		}
+	};
+}
+
+/** A minimal daemon event, for specs that care about the stream rather than it. */
+export function daemonEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		api_version: 'v1',
+		event_id: 1,
+		occurred_at: '2026-08-11T12:00:00.000Z',
+		generation: 7,
+		type: 'snapshot.changed',
+		data: {},
+		...overrides
+	};
+}
+
 /** A minimal accepted-operation body, for specs that care about the headers. */
 export function acceptedOperation(
 	overrides: Record<string, unknown> = {}
