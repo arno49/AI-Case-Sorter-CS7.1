@@ -95,6 +95,12 @@ export {
 	type RequestAuthentication
 } from './boundary';
 
+export { CAPABILITIES, can, capabilitiesFor, type Capability } from './capabilities';
+
+export { ROUTE_POLICIES, routePolicy, type RoutePolicies, type RoutePolicy } from './policy';
+
+export { FORBIDDEN, UNAUTHENTICATED, requireCapability, requireRouteAccess } from './authorization';
+
 export {
 	BOOTSTRAP_TOKEN_LIFETIME_MS,
 	ProvisioningError,

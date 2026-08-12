@@ -390,10 +390,36 @@ reachable only through that packaging work.
 
 **Goal:** protect all BFF state-changing routes. **Implementation notes:** roles map to documented matrix; UI visibility is supplementary only. **Dependencies:** PI-WEB-001. **Hardware required:** No. **Size:** M.
 
-- Tests exercise each allowed and denied role/action pair, including Viewer software stop.
-- State-changing forms/actions reject missing/invalid CSRF and invalid Origin policy.
-- Server handlers, not client code, perform authorization before daemon call.
-- Login and command endpoints apply documented size/rate controls.
+Role enforcement is implemented. The RBAC matrix in
+`docs/architecture/security-and-safety.md` is transcribed once, as data, in
+`appliance/web/src/lib/server/auth/capabilities.ts`, and routes ask for a
+capability rather than for a role, so the table has exactly one implementation.
+Its spec asserts every role and capability pair against a hand-written copy of
+the documented table rather than against the implementation, and names the two
+rows that are easiest to get wrong: a viewer may stop the machine, and no role
+at all — administrator included — may drive the protocol or the device path.
+
+`policy.ts` declares what each route requires, keyed by route id, and
+`hooks.server.ts` authorizes against it before any page or action runs. A route
+with no declaration is refused rather than resolved, and `policy.spec.ts` scans
+the route directory so a page added without a declaration fails the build
+instead of being discovered in production. A path that matched no route is left
+to answer as missing; a permission error there would only mislead. Handlers
+whose actions differ in privilege from the page call `requireCapability` next to
+the effect, which is where PI-BFF-001 will authorize before the daemon call.
+Pages are told what the role may do so they can show the right controls; that
+list is a reflection of the server's decision and never a substitute for it.
+
+Per-session CSRF tokens, Origin policy and the size, rate and concurrency
+controls are the remainder of this task and are not implemented. SvelteKit's own
+rejection of cross-origin form posts is the only CSRF control in place, and a
+login attempt currently costs the appliance an unbounded number of Argon2id
+hashes.
+
+- [x] Tests exercise each allowed and denied role/action pair, including Viewer software stop.
+- [ ] State-changing forms/actions reject missing/invalid CSRF and invalid Origin policy.
+- [x] Server handlers, not client code, perform authorization before daemon call.
+- [ ] Login and command endpoints apply documented size/rate controls.
 
 ## Epic PI-BFF — BFF integration
 

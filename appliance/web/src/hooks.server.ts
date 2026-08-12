@@ -1,9 +1,12 @@
 /**
- * Resolve the session on every request, and deny by default.
+ * Resolve the session on every request, then authorize it, before any page or
+ * action runs.
  *
- * Authorization is decided here on the server, before any page or action runs.
- * A route is reachable without a session only if it appears in `PUBLIC_ROUTES`,
- * so a new page is protected by omission rather than exposed by it.
+ * Both decisions are made here on the server and both deny by default. A route
+ * is reachable without a session only if its policy says `public`, and a
+ * signed-in account reaches it only if the policy names a capability the role
+ * holds. A route with no policy at all is refused, so a new page is protected
+ * by omission rather than exposed by it.
  *
  * The redirect carries only a fixed reason code and never a return path: an
  * attacker-supplied `next` parameter is how a login page becomes an open
@@ -12,10 +15,10 @@
 
 import { redirect, type Handle } from '@sveltejs/kit';
 
+import { requireRouteAccess } from '$lib/server/auth/authorization';
 import { authenticateRequest } from '$lib/server/auth/boundary';
+import { routePolicy } from '$lib/server/auth/policy';
 import { webRuntime } from '$lib/server/runtime';
-
-const PUBLIC_ROUTES = new Set(['/login']);
 
 export const handle: Handle = async ({ event, resolve }) => {
 	const { config, database } = webRuntime();
@@ -24,9 +27,21 @@ export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.user = authentication.authenticated ? authentication.user : null;
 	event.locals.session = authentication.authenticated ? authentication.session : null;
 
-	if (!authentication.authenticated && !PUBLIC_ROUTES.has(event.url.pathname)) {
+	const policy = routePolicy(event.route.id);
+	if (policy?.access === 'public') {
+		return resolve(event);
+	}
+
+	if (!authentication.authenticated) {
 		const reason = authentication.rejection;
 		redirect(303, reason === undefined ? '/login' : `/login?reason=${reason}`);
+	}
+
+	// A path that matched no route has no handler to authorize; SvelteKit
+	// answers it below. Refusing here would turn every missing page into a
+	// permission problem for the person reading the screen.
+	if (event.route.id !== null) {
+		requireRouteAccess(authentication.user, policy);
 	}
 
 	return resolve(event);

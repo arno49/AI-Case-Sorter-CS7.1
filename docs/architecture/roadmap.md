@@ -87,9 +87,15 @@ graph LR
   expiry-bound bootstrap token. A stolen `web.db` yields no usable credential.
   The request hook denies by default and the session cookie is `HttpOnly`,
   `SameSite=Strict` and root-scoped, `Secure` and `__Host-` prefixed in
-  production. Role enforcement, per-session CSRF tokens and rate limiting remain
-  PI-WEB-002, and the installer command that prints a bootstrap token remains
+  production. The installer command that prints a bootstrap token remains
   PI-OPS-001, so M5 is not yet met.
+- PI-WEB-002 is complete for role enforcement. The documented RBAC matrix is
+  transcribed once as data and asserted role by role and capability by
+  capability, including the viewer's software stop and the protocol path no role
+  holds. Every route declares what it requires, the hook authorizes before any
+  page or action runs, a route with no declaration is refused, and a spec scans
+  the route directory so an undeclared page fails the build. Per-session CSRF
+  tokens and request size, rate and concurrency limits are still outstanding.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

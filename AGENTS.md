@@ -29,10 +29,10 @@ API contract, initial daemon/web workspace scaffolds, a single-owner serial
 worker, published session state with conservative reconnect, and durable
 operations with idempotent admission, fail-closed durability, an attributable
 priority stop, capability-validated home and sort adapters, a socket-only
-internal API with bounded resumable events, and local web authentication
-with opaque server-side sessions. Feed, RBAC, CSRF tokens, rate limiting and
-operator features are not implemented; do not describe it as deployed or
-qualified.
+internal API with bounded resumable events, local web authentication with
+opaque server-side sessions, and server-side role enforcement against the
+documented capability matrix. Feed, CSRF tokens, rate limiting and operator
+features are not implemented; do not describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -44,7 +44,7 @@ qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 124 passing vitest tests.
+- `appliance/web` workspace: 177 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -222,11 +222,24 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   revokes the one it replaces; logout, idle expiry, absolute expiry, account
   disable and password change all revoke. Revocation is final and a session
   may not be rebound to another account or token, both enforced by triggers.
-- `hooks.server.ts` denies by default: a route is reachable without a session
-  only by appearing in its public list, so a new page is protected by
-  omission. A request presenting a token the server will not honour always
-  leaves without that cookie. The login redirect carries a fixed reason code
-  and never a caller-supplied return path.
+- `hooks.server.ts` denies by default in both decisions it makes: a route is
+  reachable without a session only if its policy says `public`, and a signed-in
+  account reaches it only if the policy names a capability the role holds, so a
+  new page is protected by omission. A request presenting a token the server
+  will not honour always leaves without that cookie. The login redirect carries
+  a fixed reason code and never a caller-supplied return path.
+- The RBAC matrix in `docs/architecture/security-and-safety.md` has exactly one
+  implementation, `capabilities.ts`. Routes ask for a capability, never for a
+  role; do not compare a role name in a handler. A viewer may stop the machine,
+  and no role at all may drive the protocol or the device path.
+- Every route declares its access in `policy.ts`, keyed by route id, and a route
+  with no entry is refused rather than resolved. `policy.spec.ts` scans the
+  route directory, so a page added without an entry fails the build. A path that
+  matched no route is left to answer as missing rather than as forbidden.
+- Authorization is decided server-side before the effect. A handler whose action
+  needs more than the page calls `requireCapability` next to the effect; what a
+  page shows is a reflection of the server's decision, never a substitute for
+  it.
 - The session cookie carries an opaque token only -- no role, no user id, no
   signed claims. It is `HttpOnly`, `SameSite=Strict` and root-scoped in every
   profile, and `Secure` with the `__Host-` prefix in production. Ending a
