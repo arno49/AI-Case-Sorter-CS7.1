@@ -371,6 +371,33 @@ submitting exactly the fields its form carries reaches the fake daemon as a
 stop command. It is still a software stop, and the page says so beside the
 button.
 
+### What a page may offer
+
+`src/lib/machine-controls.ts` makes the same move for the manual controls that
+`machine-status.ts` makes for readings: which of connect, home, sort and feed
+may be offered — and the sentence beside a withheld one — is decided in one
+tested module, from the snapshot the operator is looking at. No command form
+exists at all when the machine has not been read, because a command names the
+machine state it was decided against. Motion is withheld without a `READY`
+session or when the daemon reports itself not ready, an axis the firmware does
+not advertise is withheld by that name, and the sorter slot list is exactly
+`slot_count` long. The feed control follows `feed_available` rather than a UI
+opinion: today that means disabled, with the daemon's
+`feed_unavailable_reason` shown verbatim, and it enables only if a qualified
+firmware ever advertises feeding.
+
+A command form is an intent, not a button press. `ManualControls.svelte`
+renders each form with the snapshot generation the operator decided against
+and an idempotency key the server load minted for that render, so the daemon
+refuses a stale page with reload wording, and a resubmitted form is the same
+command rather than a second one — the next render mints fresh keys for the
+next intent. `manual-controls-page.spec.ts` proves it end to end: the real
+load renders the page, and submitting exactly the fields the served home form
+carries reaches the fake daemon with those values as its `If-Match-Generation`
+and `Idempotency-Key` headers. Every attempt lands in `web_audit` under
+`machine.connect|home|sort|feed`, including one this workspace's own form
+checks refused before anything was sent.
+
 ### Restarting this service
 
 A restart drops a database handle and a reader. It reaches nothing else: `cs71d`

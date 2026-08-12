@@ -23,7 +23,11 @@ const ATTRIBUTE = /([a-zA-Z_:@][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]
 export interface RenderedForm {
 	readonly action: string;
 	readonly method: string;
-	/** Hidden and pre-filled values, which is what a submitted body carries. */
+	/**
+	 * What a submitted body carries: hidden and pre-filled inputs, and each
+	 * enabled select's chosen option — the one marked `selected`, else the
+	 * first, which is what a browser submits untouched.
+	 */
 	readonly fields: Readonly<Record<string, string>>;
 }
 
@@ -61,6 +65,9 @@ export function focusOrder(html: string): readonly Focusable[] {
 	const forms: { attributes: Readonly<Record<string, string>>; fields: Record<string, string> }[] =
 		[];
 	const open: OpenElement[] = [];
+	// The select whose options are being read, when one is open. Selects do not
+	// nest, so one slot is the whole state.
+	let select: { name: string; chosen: string | null; sawSelected: boolean } | null = null;
 
 	TAG.lastIndex = 0;
 	for (let match = TAG.exec(source); match !== null; match = TAG.exec(source)) {
@@ -68,11 +75,20 @@ export function focusOrder(html: string): readonly Focusable[] {
 		const tag = rawTag.toLowerCase();
 
 		if (closing === '/') {
-			const started = open.pop();
 			if (tag === 'form') {
 				forms.pop();
 			}
+			if (tag === 'select' && select !== null) {
+				if (forms.length > 0) {
+					forms[forms.length - 1].fields[select.name] = select.chosen ?? '';
+				}
+				select = null;
+			}
+			// Pop only the element this tag closes: a closing tag of something
+			// that was never pushed must not swallow an open control's name.
+			const started = open[open.length - 1];
 			if (started !== undefined && started.tag === tag) {
+				open.pop();
 				found[started.index] = {
 					...found[started.index],
 					name: accessibleName(started.attributes, source.slice(started.textFrom, match.index))
@@ -90,6 +106,24 @@ export function focusOrder(html: string): readonly Focusable[] {
 			const name = attributes.name;
 			if (name !== undefined && forms.length > 0) {
 				forms[forms.length - 1].fields[name] = attributes.value ?? '';
+			}
+		}
+		if (tag === 'select') {
+			const name = attributes.name;
+			// A disabled control submits nothing, so nothing is gathered for it.
+			if (name !== undefined && !('disabled' in attributes)) {
+				select = { name, chosen: null, sawSelected: false };
+			}
+		}
+		if (tag === 'option' && select !== null) {
+			// This reader is over HTML this project writes, and its options always
+			// carry an explicit `value`.
+			const value = attributes.value ?? '';
+			if ('selected' in attributes && !select.sawSelected) {
+				select.chosen = value;
+				select.sawSelected = true;
+			} else if (!select.sawSelected && select.chosen === null) {
+				select.chosen = value;
 			}
 		}
 		if (!isFocusable(tag, attributes)) {
