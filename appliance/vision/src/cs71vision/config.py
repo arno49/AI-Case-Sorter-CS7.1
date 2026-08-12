@@ -34,6 +34,17 @@ class Backend(StrEnum):
 #: The udev-created stable symlink for the approved camera module, the same
 #: shape `cs71d.config.PRODUCTION_DEVICE_PATH` is for the serial adapter.
 PRODUCTION_DEVICE_PATH = "/dev/cs71vision"
+#: Same socket cs71-web already reads from - cs71d has exactly one.
+PRODUCTION_DAEMON_SOCKET_PATH = "/run/cs71/cs71d.sock"
+#: cs71-vision's own copy of the shared service credential, the same
+#: two-file (now three) pattern PI-OPS-001 established for cs71d/cs71-web.
+PRODUCTION_DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71-vision/service-token"
+#: The self-labeled dataset store (PI-VISION-002); cs71-vision exclusively
+#: owns it, the same separate-ownership rule machine.db/web.db follow.
+PRODUCTION_DATASET_PATH = "/var/lib/cs71-vision/vision.db"
+#: Development/test default matching cs71d's and cs71-web's own dev socket.
+_DEVELOPMENT_DAEMON_SOCKET_PATH = "/tmp/cs71/cs71d.sock"
+_DEVELOPMENT_DATASET_PATH = "/tmp/cs71-vision/vision.db"
 
 _ALLOWED_FIELDS = {
     "profile",
@@ -42,6 +53,9 @@ _ALLOWED_FIELDS = {
     "capture_interval_ms",
     "frame_width",
     "frame_height",
+    "daemon_socket_path",
+    "daemon_service_token_path",
+    "dataset_path",
 }
 
 _DEFAULT_INTERVAL_MS = 1_000
@@ -59,6 +73,11 @@ class VisionConfig:
     capture_interval_ms: int
     frame_width: int
     frame_height: int
+    daemon_socket_path: str
+    dataset_path: str
+    #: None means "do not correlate a dataset" - PI-VISION-001's plain
+    #: capture-only mode still works without ever reaching cs71d.
+    daemon_service_token_path: str | None = None
 
     @classmethod
     def development(cls) -> VisionConfig:
@@ -69,6 +88,9 @@ class VisionConfig:
             capture_interval_ms=_DEFAULT_INTERVAL_MS,
             frame_width=_DEFAULT_WIDTH,
             frame_height=_DEFAULT_HEIGHT,
+            daemon_socket_path=_DEVELOPMENT_DAEMON_SOCKET_PATH,
+            dataset_path=_DEVELOPMENT_DATASET_PATH,
+            daemon_service_token_path=None,
         )
 
     @classmethod
@@ -88,6 +110,13 @@ class VisionConfig:
         capture_interval_ms = _positive_int(raw, "capture_interval_ms", _DEFAULT_INTERVAL_MS)
         frame_width = _positive_int(raw, "frame_width", _DEFAULT_WIDTH)
         frame_height = _positive_int(raw, "frame_height", _DEFAULT_HEIGHT)
+        daemon_socket_path = raw.get("daemon_socket_path", _DEVELOPMENT_DAEMON_SOCKET_PATH)
+        if not isinstance(daemon_socket_path, str) or not daemon_socket_path:
+            raise ConfigError("daemon_socket_path must be a non-empty string")
+        dataset_path = raw.get("dataset_path", _DEVELOPMENT_DATASET_PATH)
+        if not isinstance(dataset_path, str) or not dataset_path:
+            raise ConfigError("dataset_path must be a non-empty string")
+        daemon_service_token_path = _optional_string(raw, "daemon_service_token_path")
 
         if backend is Backend.FIXTURE and device_path is not None:
             raise ConfigError("fixture backend cannot specify device_path")
@@ -97,6 +126,17 @@ class VisionConfig:
                 raise ConfigError("production profile requires v4l2 backend")
             if device_path != PRODUCTION_DEVICE_PATH:
                 raise ConfigError(f"production device_path must be {PRODUCTION_DEVICE_PATH}")
+            if daemon_socket_path != PRODUCTION_DAEMON_SOCKET_PATH:
+                raise ConfigError(
+                    f"production daemon_socket_path must be {PRODUCTION_DAEMON_SOCKET_PATH}"
+                )
+            if dataset_path != PRODUCTION_DATASET_PATH:
+                raise ConfigError(f"production dataset_path must be {PRODUCTION_DATASET_PATH}")
+            if daemon_service_token_path != PRODUCTION_DAEMON_SERVICE_TOKEN_PATH:
+                raise ConfigError(
+                    "production daemon_service_token_path must be"
+                    f" {PRODUCTION_DAEMON_SERVICE_TOKEN_PATH}"
+                )
         elif backend is Backend.V4L2:
             raise ConfigError("v4l2 backend is reserved for the production profile")
 
@@ -107,6 +147,9 @@ class VisionConfig:
             capture_interval_ms=capture_interval_ms,
             frame_width=frame_width,
             frame_height=frame_height,
+            daemon_socket_path=daemon_socket_path,
+            dataset_path=dataset_path,
+            daemon_service_token_path=daemon_service_token_path,
         )
 
 

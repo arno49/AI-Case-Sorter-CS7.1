@@ -29,6 +29,7 @@ DAEMON_CONFIG_PATH = "/etc/cs71/cs71d.toml"
 BACKUP_MARKER_PATH = "/var/lib/cs71d/backup-status.json"
 PRODUCTION_CAMERA_DEVICE_PATH = "/dev/cs71vision"
 VISION_CONFIG_PATH = "/etc/cs71/cs71vision.toml"
+VISION_SERVICE_TOKEN_PATH = "/etc/cs71-vision/service-token"
 
 
 def parse_unit(path: Path) -> dict[str, list[str]]:
@@ -182,10 +183,19 @@ class VisionServiceIsConsistentWithTheInstaller(unittest.TestCase):
         self.assertEqual(directive(self.vision, "Service", "NoNewPrivileges"), "yes")
         self.assertEqual(directive(self.vision, "Service", "CapabilityBoundingSet"), "")
 
-    def test_opens_no_socket_at_all_yet(self) -> None:
-        # Tighter than cs71d's AF_UNIX: this slice has no API surface of its
-        # own yet, so it needs no address family whatsoever.
-        self.assertEqual(directive(self.vision, "Service", "RestrictAddressFamilies"), "")
+    def test_can_only_reach_cs71d_over_af_unix(self) -> None:
+        # Same restriction cs71d.service itself carries; unlike cs71-web,
+        # this service has no loopback port of its own, so no AF_INET/AF_INET6.
+        self.assertEqual(directive(self.vision, "Service", "RestrictAddressFamilies"), "AF_UNIX")
+
+    def test_reaches_cs71ds_socket_through_the_shared_group_only(self) -> None:
+        self.assertEqual(directive(self.vision, "Service", "SupplementaryGroups"), "cs71-api")
+        # Its own primary Group is its own identity, not cs71d's - sharing
+        # only the one group above is the point.
+        self.assertEqual(directive(self.vision, "Service", "Group"), "cs71-vision")
+
+    def test_owns_its_own_dataset_state_directory(self) -> None:
+        self.assertEqual(directive(self.vision, "Service", "StateDirectory"), "cs71-vision")
 
     def test_start_limit_directives_are_in_the_unit_section(self) -> None:
         self.assertIn("Unit/StartLimitIntervalSec", self.vision)
@@ -232,17 +242,20 @@ class VisionServiceIsConsistentWithTheInstaller(unittest.TestCase):
 
 
 class VisionConfigAgreesWithTheProductionPath(unittest.TestCase):
-    def test_vision_config_module_still_uses_the_path_this_suite_assumes(self) -> None:
+    def test_vision_config_module_still_uses_the_paths_this_suite_assumes(self) -> None:
         text = (REPO_ROOT / "appliance/vision/src/cs71vision/config.py").read_text(
             encoding="utf-8"
         )
         self.assertIn(f'"{PRODUCTION_CAMERA_DEVICE_PATH}"', text)
+        self.assertIn(f'"{PRODUCTION_SOCKET_PATH}"', text)
+        self.assertIn(f'"{VISION_SERVICE_TOKEN_PATH}"', text)
 
-    def test_vision_production_example_toml_matches_the_fixed_path(self) -> None:
+    def test_vision_production_example_toml_matches_the_fixed_paths(self) -> None:
         text = (REPO_ROOT / "appliance/vision/config/production.example.toml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(PRODUCTION_CAMERA_DEVICE_PATH, text)
+        for path in (PRODUCTION_CAMERA_DEVICE_PATH, PRODUCTION_SOCKET_PATH, VISION_SERVICE_TOKEN_PATH):
+            self.assertIn(path, text)
 
 
 class CaddyDropInOrdersAfterWeb(unittest.TestCase):
@@ -335,10 +348,11 @@ class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_writes_the_service_token_to_both_of_the_paths_the_code_reads(self) -> None:
+    def test_writes_the_service_token_to_every_path_the_code_reads(self) -> None:
         common = (OPS_DIR / "lib/common.sh").read_text(encoding="utf-8")
         self.assertIn(DAEMON_SERVICE_TOKEN_PATH, common)
         self.assertIn(WEB_SERVICE_TOKEN_PATH, common)
+        self.assertIn(VISION_SERVICE_TOKEN_PATH, common)
 
     def test_names_every_production_path_it_actually_needs_to_write(self) -> None:
         # The socket path and the device path are never installer-supplied:
@@ -447,7 +461,7 @@ class BackupRestoreUpgradeScriptsAgreeWithTheDaemonsDurabilityMonitor(unittest.T
         self.assertNotIn(WEB_SERVICE_TOKEN_PATH, self.backup_text)
 
     def test_restore_sh_stops_web_before_daemon_and_starts_daemon_before_web(self) -> None:
-        stop_index = self.restore_text.index("systemctl stop cs71-web.service cs71d.service")
+        stop_index = self.restore_text.index("systemctl stop cs71-web.service")
         start_daemon_index = self.restore_text.index("systemctl start cs71d.service")
         start_web_index = self.restore_text.index("systemctl start cs71-web.service")
         self.assertLess(stop_index, start_daemon_index)
@@ -473,13 +487,36 @@ class BackupRestoreUpgradeScriptsAgreeWithTheDaemonsDurabilityMonitor(unittest.T
         # before any backup is taken (missing install, failed backup) must
         # not, since there is nothing yet to roll back.
         paired = len(re.findall(r"\n\trollback\n\texit 1\n", self.upgrade_text))
-        self.assertEqual(paired, 4)
+        self.assertEqual(paired, 5)
         self.assertIn('"$OPS_DIR/restore.sh" --from', self.upgrade_text)
 
     def test_upgrade_sh_starts_daemon_before_web_on_the_new_release(self) -> None:
         daemon_index = self.upgrade_text.index("systemctl start cs71d.service")
         web_index = self.upgrade_text.index("systemctl start cs71-web.service")
         self.assertLess(daemon_index, web_index)
+
+    def test_upgrade_sh_also_rebuilds_cs71_vision(self) -> None:
+        self.assertIn("build_vision_venv", self.upgrade_text)
+
+    def test_backup_sh_includes_vision_db_only_when_it_exists(self) -> None:
+        self.assertIn("VISION_DB", self.backup_text)
+        self.assertIn('[ -f "$VISION_DB" ]', self.backup_text)
+
+    def test_restore_sh_restores_vision_db_only_when_present_in_the_backup(self) -> None:
+        self.assertIn('[ -f "$FROM/vision.db" ]', self.restore_text)
+
+    def test_restore_sh_stops_and_starts_cs71_vision_alongside_the_other_services(self) -> None:
+        self.assertIn("cs71-vision.service", self.restore_text)
+
+    def test_manifest_py_treats_vision_db_as_optional(self) -> None:
+        manifest_text = (OPS_DIR / "lib/manifest.py").read_text(encoding="utf-8")
+        self.assertIn('"vision.db"', manifest_text)
+        # REQUIRED_FILES itself must not name vision.db - only machine.db and
+        # web.db are mandatory for a backup to verify.
+        required_line = next(
+            line for line in manifest_text.splitlines() if line.startswith("REQUIRED_FILES")
+        )
+        self.assertNotIn("vision.db", required_line)
 
 
 class DaemonAndWebConfigAgreeOnTheProductionPaths(unittest.TestCase):

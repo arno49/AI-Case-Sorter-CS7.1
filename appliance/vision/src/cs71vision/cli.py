@@ -10,8 +10,10 @@ import threading
 from collections.abc import Sequence
 from types import FrameType
 
+from .camera import Frame
 from .config import ConfigError, load_config
-from .runtime import CaptureLoop, build_camera
+from .correlator import FrameBuffer
+from .runtime import CaptureLoop, build_camera, build_correlation_loop, log_sink
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -48,14 +50,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    buffer = FrameBuffer()
     try:
         camera = build_camera(config)
+        correlation_loop = build_correlation_loop(config, buffer)
     except Exception as exc:  # noqa: BLE001 - startup failure paths are device-specific
         print(f"cs71vision: startup failed: {exc}", file=sys.stderr)
         return 1
 
-    loop = CaptureLoop(camera, interval_ms=config.capture_interval_ms)
-    loop.start()
+    def sink(frame: Frame) -> None:
+        log_sink(frame)
+        buffer.add(frame)
+
+    capture_loop = CaptureLoop(camera, interval_ms=config.capture_interval_ms, sink=sink)
+    capture_loop.start()
+    if correlation_loop is not None:
+        correlation_loop.start()
+        logging.getLogger("cs71vision").info("dataset correlation is running against cs71d")
+    else:
+        logging.getLogger("cs71vision").info(
+            "no daemon_service_token_path configured; capturing only, no dataset correlation"
+        )
 
     stopped = threading.Event()
 
@@ -68,7 +83,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         stopped.wait()
     finally:
-        loop.close()
+        capture_loop.close()
+        if correlation_loop is not None:
+            correlation_loop.close()
     return 0
 
 

@@ -107,6 +107,28 @@ class BuildManifest(unittest.TestCase):
             self.assertEqual(built["source_commit"], "unknown")
             self.assertEqual(built["daemon_version"], "unknown")
 
+    def test_vision_db_is_included_only_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backup_dir = Path(directory) / "backup"
+            backup_dir.mkdir()
+            _write(backup_dir / "machine.db", "m")
+            _write(backup_dir / "web.db", "w")
+
+            without_vision = manifest.build_manifest(
+                backup_dir, Path(directory) / "absent.json", "2026-08-12T00:00:00Z"
+            )
+            self.assertNotIn("vision.db", without_vision["files"])
+
+            _write(backup_dir / "vision.db", "v")
+            with_vision = manifest.build_manifest(
+                backup_dir, Path(directory) / "absent.json", "2026-08-12T00:00:00Z"
+            )
+            self.assertIn("vision.db", with_vision["files"])
+            self.assertEqual(
+                with_vision["files"]["vision.db"]["sha256"],
+                manifest.sha256_of(backup_dir / "vision.db"),
+            )
+
 
 class Verify(unittest.TestCase):
     def _backup(self, directory: Path) -> Path:
@@ -137,6 +159,23 @@ class Verify(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backup_dir = self._backup(Path(directory))
             manifest.verify(backup_dir)  # must not raise
+
+    def test_a_manifest_that_includes_vision_db_verifies_it_too(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backup_dir = self._backup(Path(directory))
+            _write(backup_dir / "vision.db", "vision-db-contents")
+            document = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+            document["files"]["vision.db"] = {
+                "sha256": manifest.sha256_of(backup_dir / "vision.db"),
+                "bytes": (backup_dir / "vision.db").stat().st_size,
+            }
+            _write(backup_dir / "manifest.json", json.dumps(document))
+
+            manifest.verify(backup_dir)  # must not raise
+
+            (backup_dir / "vision.db").write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(manifest.ManifestError, "does not match"):
+                manifest.verify(backup_dir)
 
     def test_a_tampered_file_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

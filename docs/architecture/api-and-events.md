@@ -61,7 +61,7 @@ Representative request and snapshot schemas:
 | Schema | Required fields | Semantics |
 | --- | --- | --- |
 | `OperationAccepted` | `operation_id`, `state`, `generation`, `accepted_at`, `status_url` | 202 means admitted or deduplicated; never firmware completion. |
-| `Operation` | `operation_id`, `state`, `created_at`, `deadline_at`, `generation` | Durable lifecycle view; terminal form adds `terminal_at`, `outcome` and `trusted_terminal`. |
+| `Operation` | `operation_id`, `state`, `created_at`, `deadline_at`, `generation` | Durable lifecycle view; terminal form adds `terminal_at`, `outcome` and `trusted_terminal`, plus `terminal_fields` when the trusted terminal carried protocol fields (e.g. `{"slot": "3"}` for a `SUCCEEDED` sort). |
 | `MachineSnapshot` | `generation`, `connection_state`, `fault_state`, `machine`, `observed_at` | Complete immutable reconciliation view. |
 | `Error` | `code`, `message`, `request_id`, `generation` when known | Sanitized machine-readable rejection/failure. |
 

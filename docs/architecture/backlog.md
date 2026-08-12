@@ -874,10 +874,59 @@ the DTR gate already is for `cs71d`.
 
 **Goal:** correlate each captured frame with the slot the operator actually chose, with zero extra operator effort. **Implementation notes:** own SQLite store, following the existing separate-ownership pattern; correlate via `operation_id`, never a second write into `machine.db`/`web.db`. **Dependencies:** PI-VISION-001, PI-API-002. **Hardware required:** Pi and camera; controller optional, since the simulator already produces trusted terminals to correlate against. **Size:** M.
 
-- Every sort operation's trusted terminal correlates to exactly one stored frame and label, keyed by `operation_id`.
-- Per-class example counts are queryable without scanning raw frames.
-- No frame is ever stored without a corresponding durable operation record; a frame with no matching terminal is discarded, not guessed at.
-- The store's backup/ownership discipline matches `machine.db`/`web.db`'s (PI-OPS-002): SQLite-consistent, included in `backup.sh`'s manifest once this ships.
+Delivered for the evidence class achievable without a Pi or real camera.
+A real gap surfaced while implementing this: `cs71d`'s operation contract
+exposed no durable, externally readable trace of "which slot" a sort
+reached — `terminal_fields` (which the protocol layer already populates,
+`{"slot": "3"}`, per `ArduinoCode/PROTOCOL_V2.md`'s `sortto:`/`done:slot=`
+exchange) was recorded in `machine.db` but never returned by the API. This
+PR adds it to the `Operation` schema and `_operation_body()` as an additive,
+optional field — the same discipline PI-UI-002's `/v1/system` addition
+already established — with a daemon test driving a real sort to a trusted
+terminal through the HTTP API and asserting the field is present
+(`appliance/daemon/tests/test_api.py`).
+
+`cs71vision.daemon_client.DaemonClient` is a minimal, read-only Unix-socket
+HTTP client — `GET /v1/operations` only, authenticated with its own service
+credential (a third copy of the shared secret, `/etc/cs71-vision/service-token`,
+extending PI-OPS-001's two-file pattern to three). `cs71vision.correlator.FrameBuffer`
+keeps the last 64 captured frames; `Correlator.poll_once()` asks `cs71d` for
+newly `SUCCEEDED` sorts, matches each one to the frame captured at-or-before
+its `created_at`, and discards — never guesses — when no frame qualifies.
+`cs71vision.dataset.DatasetStore` owns `vision.db` exclusively, mirroring
+`cs71d.journal.Journal`'s exact shape: forward-only checksummed migrations,
+WAL mode, owner-only file mode, `operation_id` as primary key so a repeated
+poll is a no-op, never a duplicate. `cs71vision.runtime.CorrelationLoop`
+polls on its own thread and interval, independent of capture.
+
+`appliance/ops/backup.sh`, `restore.sh`, `upgrade.sh` and `lib/manifest.py`
+now handle `vision.db` the same way `machine.db`/`web.db` already are, but
+optionally: an appliance upgraded from a pre-PI-VISION install may not have
+one yet, and that must not fail a backup or restore that never needed it.
+`cs71-vision.service` gained `SupplementaryGroups=cs71-api` and
+`RestrictAddressFamilies=AF_UNIX` (was empty in PI-VISION-001, since it had
+no socket to reach yet) and `StateDirectory=cs71-vision` for `vision.db`.
+`tests/smoke-test.sh` points the derived `cs71-vision-smoke.service` at the
+real, already-running `cs71d-smoke.service` and confirms it reaches it for
+real (no "could not reach cs71d" error logged, `vision.db` actually created
+and correctly owned) — real evidence for the socket/group wiring, not just
+the fixture camera in isolation.
+
+What remains genuinely hardware-gated, and is not claimed here: this smoke
+test does not drive an actual sort operation through `cs71d-smoke` to prove
+a labeled example gets recorded end to end on a real Linux host — the
+`Correlator`/`DaemonClient` logic itself already has thorough unit and
+integration coverage (including a real fake HTTP server over a real
+`AF_UNIX` socket) that does not need real hardware to be genuine evidence,
+so a live end-to-end drill was judged to add packaging-layer risk without
+adding real coverage of anything not already proven. `V4L2Camera` real
+camera evidence remains PI-HIL/hardware-evidence territory (PI-VISION-001's
+own gap, unchanged here).
+
+- [x] Every sort operation's trusted terminal correlates to exactly one stored frame and label, keyed by `operation_id`.
+- [x] Per-class example counts are queryable without scanning raw frames.
+- [x] No frame is ever stored without a corresponding durable operation record; a frame with no matching terminal is discarded, not guessed at.
+- [x] The store's backup/ownership discipline matches `machine.db`/`web.db`'s (PI-OPS-002): SQLite-consistent, included in `backup.sh`'s manifest once this ships.
 
 ### PI-VISION-003 — Operator UI: dataset review and per-class counts
 

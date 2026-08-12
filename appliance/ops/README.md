@@ -23,28 +23,31 @@ and "Backups, observability and runbooks" sections.
 /etc/cs71/web.env              web PORT/HOST/ORIGIN — world-readable, nothing secret in it
 /etc/cs71d/service-token       the daemon's own copy of the shared credential, cs71d:cs71d 0600
 /etc/cs71-web/service-token    the web's own copy of the same credential, cs71-web:cs71-web 0600
+/etc/cs71-vision/service-token the vision service's own copy of the same credential, cs71-vision:cs71-vision 0600
 /var/lib/cs71d/machine.db      daemon-owned SQLite, cs71d:cs71d 0700 directory, 0600 file
 /var/lib/cs71d/backup-status.json  the daemon's own BackupFreshnessMonitor reads this, cs71d:cs71d 0600
 /var/lib/cs71-web/web.db       web-owned SQLite, cs71-web:cs71-web 0700 directory, 0600 file
-/var/lib/cs71-backups/<stamp>/ one backup.sh snapshot: both databases, config and a manifest, root:root 0700
+/var/lib/cs71-vision/vision.db the self-labeled dataset (PI-VISION-002), cs71-vision:cs71-vision 0700 directory, 0600 file
+/var/lib/cs71-backups/<stamp>/ one backup.sh snapshot: all three databases, config and a manifest, root:root 0700
 /run/cs71/cs71d.sock           systemd RuntimeDirectory=; recreated on every start, not persisted
 ```
 
-**Two service-token files, not one.** `cs71d` and `cs71-web` are separate,
-mutually distrusting identities that happen to need to agree on one shared
-secret: the daemon reads its own copy to know what to accept
-(`cs71d.device`'s `service_token_path`), the web reads its own copy to know
-what to present (`CS71_WEB_SERVICE_TOKEN_PATH`). `deployment-and-operations.md`'s
-layout table only shows the web's copy; this is the place that says there
-are two.
+**Three service-token files, not one.** `cs71d`, `cs71-web` and
+`cs71-vision` are separate, mutually distrusting identities that happen to
+need to agree on one shared secret: the daemon reads its own copy to know
+what to accept (`cs71d.device`'s `service_token_path`), the web and vision
+services each read their own copy to know what to present
+(`CS71_WEB_SERVICE_TOKEN_PATH`, `cs71vision.config`'s
+`daemon_service_token_path`). `deployment-and-operations.md`'s layout table
+only shows the web's copy; this is the place that says there are three.
 
-**`/etc/cs71/cs71d.toml` and `/etc/cs71/web.env` are root-owned and
-world-readable**, deliberately. Every value in them is already fixed by the
-production profile (`config.py`/`config.ts` refuse anything else) or is not
-secret in the first place (a LAN hostname, a port number). The credential
-lives in the two files above instead, each mode 0600 and readable only by
-matching UID — not by group membership, so it does not depend on which
-supplementary groups a service ends up with.
+**`/etc/cs71/cs71d.toml`, `/etc/cs71/cs71vision.toml` and `/etc/cs71/web.env`
+are root-owned and world-readable**, deliberately. Every value in them is
+already fixed by the production profile (`config.py`/`config.ts` refuse
+anything else) or is not secret in the first place (a LAN hostname, a port
+number). The credential lives in the three files above instead, each mode
+0600 and readable only by matching UID — not by group membership, so it
+does not depend on which supplementary groups a service ends up with.
 
 ## Users and groups
 
@@ -52,8 +55,8 @@ supplementary groups a service ends up with.
 | --- | --- | --- | --- |
 | `cs71d` (user) | `/var/lib/cs71d`, `/etc/cs71d/service-token` | Yes — the only one | Creates it |
 | `cs71-web` (user) | `/var/lib/cs71-web`, `/etc/cs71-web/service-token` | No | Via the `cs71-api` group |
-| `cs71-api` (group) | nothing | — | `cs71d.service` runs with this as its effective group, so the socket it creates is `cs71d:cs71-api` 0660; `cs71-web.service` carries this as a supplementary group to reach it |
-| `cs71-vision` (user) | `/var/lib/cs71-vision` (unused until PI-VISION-002), `/dev/cs71vision` | No | No socket of its own yet |
+| `cs71-vision` (user) | `/var/lib/cs71-vision`, `/etc/cs71-vision/service-token`, `/dev/cs71vision` | No | Via the `cs71-api` group |
+| `cs71-api` (group) | nothing | — | `cs71d.service` runs with this as its effective group, so the socket it creates is `cs71d:cs71-api` 0660; `cs71-web.service` and `cs71-vision.service` each carry this as a supplementary group to reach it |
 
 `cs71d.service` sets `Group=cs71-api` (not its own `cs71d` group) specifically
 so the socket comes out group-owned `cs71-api`; everything else the daemon
@@ -89,15 +92,21 @@ controller optional" — the controller is the part still missing).
 hardened unit; this only adds `After=`/`Wants=cs71-web.service` so it starts
 once SvelteKit is up.
 
-`systemd/cs71-vision.service` (PI-VISION-001, ADR-0013) follows the same
-design, tightened further: `RestrictAddressFamilies=` is empty rather than
-`AF_UNIX` — this slice has no API surface of its own yet, so it needs no
-socket at all — and `DeviceAllow=/dev/cs71vision rw` is its own camera
-symlink, disjoint from the controller's. It gates on its own camera the same
-way `cs71d.service` gates on the controller: `BindsTo=dev-cs71vision.device`
-plus `ConditionPathExists=/dev/cs71vision`. `tests/smoke-test.sh` runs the
-same derived-unit trick against the fixture backend, since there is no real
-camera on the CI runner either.
+`systemd/cs71-vision.service` (PI-VISION-001/002, ADR-0013) follows the same
+design: `RestrictAddressFamilies=AF_UNIX` (it reaches `cs71d`'s socket to
+read operation outcomes, PI-VISION-002 — nothing more, so no
+`AF_INET`/`AF_INET6` the way `cs71-web` needs for its loopback port), and
+`DeviceAllow=/dev/cs71vision rw` is its own camera symlink, disjoint from the
+controller's. It carries `SupplementaryGroups=cs71-api`, the same grant
+`cs71-web.service` has, to reach `cs71d`'s socket — its own primary `Group=`
+stays `cs71-vision`. `StateDirectory=cs71-vision` is where `vision.db`
+lives. It gates on its own camera the same way `cs71d.service` gates on the
+controller: `BindsTo=dev-cs71vision.device` plus
+`ConditionPathExists=/dev/cs71vision`. `tests/smoke-test.sh` runs the same
+derived-unit trick against the fixture backend, since there is no real
+camera on the CI runner either — and, once cs71d-smoke is up, points the
+derived unit's `daemon_socket_path` at that real running instance, so the
+`cs71-api` group grant is proven for real, not just declared.
 
 ## udev
 
@@ -180,7 +189,8 @@ migrate the same empty file.
 
 ## Backup, restore and upgrade
 
-`backup.sh` takes a SQLite-consistent online backup of both databases
+`backup.sh` takes a SQLite-consistent online backup of `machine.db`,
+`web.db` and — when it exists — `vision.db`
 (`sqlite3 ... .backup`, which needs neither service stopped) plus
 `cs71d.toml`/`web.env`, into a timestamped directory under
 `/var/lib/cs71-backups`, with a checksummed `manifest.json`
@@ -188,7 +198,10 @@ migrate the same empty file.
 version — read from `/opt/cs71/ops/release-info.json`, which `install.sh` and
 `upgrade.sh` write once at build time rather than `backup.sh` introspecting a
 checkout that a periodic timer run has no guarantee is even still there.
-Neither service-token file is ever included: a restored backup should bring
+`vision.db` is optional in both the backup and the manifest: an appliance
+upgraded from a pre-PI-VISION install may not have one yet, and that must
+never fail a backup that only ever needed `machine.db`/`web.db` to work.
+No service-token file is ever included: a restored backup should bring
 back data and configuration, never a credential, and a restore never needs
 one — the credential files already on the box are untouched by it. Every
 attempt, success or failure, writes exactly one
@@ -204,27 +217,32 @@ after the checkout that installed it moves, updates or is deleted —
 from an up-to-date checkout, the same way `install.sh` itself is.
 
 `restore.sh --from <backup dir>` verifies the manifest's checksums and each
-database's `PRAGMA integrity_check` *before* touching anything live, stops
-`cs71-web.service` then `cs71d.service`, installs the databases and
-configuration, then starts the daemon and proves it actually answers
+present database's `PRAGMA integrity_check` *before* touching anything live,
+stops `cs71-web.service`/`cs71-vision.service` then `cs71d.service`, installs
+the databases and configuration (`vision.db` too, when the backup has one),
+then starts the daemon and proves it actually answers
 (`GET /v1/health/live` through its own socket, with its own credential)
 before starting the web service and proving the same
 (`GET /login` on its loopback port) — the "restore is validated by integrity
 check and application read-only smoke test" contract in
 [data-and-persistence.md](../../docs/architecture/data-and-persistence.md).
-Any failure stops the script rather than declaring success; the runbooks in
-`deployment-and-operations.md` take over from there.
+`cs71-vision.service` is started too, best-effort: it has no socket or HTTP
+endpoint of its own yet to smoke-test through. Any failure stops the script
+rather than declaring success; the runbooks in `deployment-and-operations.md`
+take over from there.
 
-`upgrade.sh` backs up first, stops web then daemon, rebuilds the web
-workspace and the daemon venv from the current checkout (the same
-`build_web_workspace`/`build_daemon_venv` `install.sh` itself calls, in
-`lib/common.sh`, so the two never drift apart), then starts the daemon and
-the web service the same validated way `restore.sh` does. There is no
-separate migration-runner command: opening `machine.db`/`web.db` *is* the
-forward-only, checksummed migration, so "apply migrations" and "start the
-daemon"/"start the web service" are the same step here, not two. Any failure
-before the web service is confirmed healthy on the new build rolls back: the
-previous `/opt/cs71/web` and `/opt/cs71/daemon` are swapped back in, and
+`upgrade.sh` backs up first, stops web and vision then daemon, rebuilds the
+web workspace, the daemon venv and the vision venv from the current checkout
+(the same `build_web_workspace`/`build_daemon_venv`/`build_vision_venv`
+`install.sh` itself calls, in `lib/common.sh`, so none of the three ever
+drift apart), then starts the daemon and the web service the same validated
+way `restore.sh` does, and the vision service best-effort. There is no
+separate migration-runner command: opening `machine.db`/`web.db`/`vision.db`
+*is* the forward-only, checksummed migration, so "apply migrations" and
+"start the daemon"/"start the web service" are the same step here, not two.
+Any failure before the web service is confirmed healthy on the new build
+rolls back: the previous `/opt/cs71/web`, `/opt/cs71/daemon` and (if it
+existed before the upgrade) `/opt/cs71/vision` are swapped back in, and
 `restore.sh` is called against the pre-upgrade backup to bring the data back
 too — reusing its own stop → verify → install → start → smoke-test sequence
 rather than a second copy of it. If the rollback itself fails, the script
@@ -281,11 +299,21 @@ backup-before-anything-else sequencing are checked structurally instead, in
 `tests/test_artifacts.py`.
 
 It also derives a `cs71-vision-smoke.service` the same way, on the fixture
-camera backend, and checks it stays active, actually logs a captured frame
-(not just "active" — `systemctl is-active` alone would not prove the
-capture loop is really running), and that its own sandbox refuses to open
-even an `AF_UNIX` socket, tighter than `cs71d`'s own `AF_UNIX`-only
-allowance.
+camera backend, and checks it stays active and actually logs a captured
+frame (not just "active" — `systemctl is-active` alone would not prove the
+capture loop is really running). Its `daemon_socket_path` points at the
+real, already-running `cs71d-smoke.service` from earlier in the script —
+real proof the `SupplementaryGroups=cs71-api` grant and `RestrictAddressFamilies=AF_UNIX`
+actually let it reach the daemon, not just that the fixture camera works in
+isolation: the check confirms no "could not reach cs71d" error was logged
+and that `vision.db` was actually created, `cs71-vision:cs71-vision` owned,
+proving `DatasetStore.open()` succeeded for real. It does not drive an
+actual sort operation through `cs71d-smoke` to prove a labeled example gets
+recorded end to end — `Correlator`/`DaemonClient` already have thorough
+unit/integration coverage of that logic (`appliance/vision/tests/`,
+including a real fake HTTP server over a real `AF_UNIX` socket), and this
+smoke test's job is the sandbox/packaging layer underneath it, not a second
+copy of that coverage.
 
 What it cannot prove, and does not claim to: that the production profile
 (`backend = "serial"`) starts at all. It does not, on any Linux host,

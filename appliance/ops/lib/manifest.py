@@ -27,7 +27,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-MANIFEST_FILES = ("machine.db", "web.db", "cs71d.toml", "web.env")
+MANIFEST_FILES = ("machine.db", "web.db", "vision.db", "cs71d.toml", "web.env")
+#: vision.db is optional: cs71-vision may not have run yet on an appliance
+#: upgraded from a pre-PI-VISION install, and that must not fail a backup or
+#: restore that only ever needed machine.db/web.db to work.
 REQUIRED_FILES = ("machine.db", "web.db")
 
 

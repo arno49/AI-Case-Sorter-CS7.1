@@ -2,3 +2,6 @@
 profile = "production"
 backend = "v4l2"
 device_path = "/dev/cs71vision"
+daemon_socket_path = "/run/cs71/cs71d.sock"
+dataset_path = "/var/lib/cs71-vision/vision.db"
+daemon_service_token_path = "/etc/cs71-vision/service-token"

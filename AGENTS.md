@@ -69,8 +69,14 @@ write failure already does. A third appliance service, `cs71-vision`
 abstraction (`FixtureCamera`, deterministic and dependency-free; `V4L2Camera`,
 opened through OpenCV's V4L2 backend rather than a hand-rolled ioctl
 implementation to avoid both a real correctness risk and a GPL dependency),
-packaged the same least-privilege way as `cs71d`/`cs71-web`. It does not yet
-store anything, classify anything, or talk to `cs71d` or the web BFF. None of
+packaged the same least-privilege way as `cs71d`/`cs71-web`. It now also
+self-labels a training dataset for free: `Correlator` asks `cs71d` for newly
+`SUCCEEDED` sort operations (a new additive `terminal_fields` field on the
+`Operation` contract, since nothing previously exposed which slot a sort
+reached), matches each to the frame captured nearest its admission, and
+records the pair in its own `vision.db` — never storing a frame without a
+confirmed daemon terminal to attach it to. It still classifies nothing and
+still never talks to the web BFF. None of
 this is deployed or qualified on real hardware.
 
 ## Current validated baseline
@@ -82,11 +88,11 @@ this is deployed or qualified on real hardware.
 - `native`: 89 passing tests.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
-- `cs71d` daemon package: 317 passing pytest tests.
+- `cs71d` daemon package: 318 passing pytest tests.
 - `appliance/web` workspace: 508 passing vitest tests.
-- `appliance/ops` artifact checks: 75 passing static tests (`unittest`), plus
+- `appliance/ops` artifact checks: 84 passing static tests (`unittest`), plus
   a functional smoke test that only runs on Linux (see below).
-- `cs71-vision` package: 31 passing pytest tests. `FixtureCamera` is what
+- `cs71-vision` package: 73 passing pytest tests. `FixtureCamera` is what
   these actually exercise; `V4L2Camera` is unit-tested only against its own
   refusal path — real camera hardware evidence does not exist yet.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.

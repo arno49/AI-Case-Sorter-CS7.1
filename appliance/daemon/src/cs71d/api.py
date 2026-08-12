@@ -697,6 +697,8 @@ def _operation_body(record: OperationRecord) -> dict[str, Any]:
         "generation": record.generation,
         "trusted_terminal": record.trusted_terminal,
     }
+    if record.terminal_fields is not None:
+        body["terminal_fields"] = dict(record.terminal_fields)
     if record.terminal_at is not None:
         body["terminal_at"] = _rfc3339(record.terminal_at)
     outcome = _OUTCOME_FOR_STATE.get(record.state)
