@@ -830,9 +830,45 @@ work.
 
 **Goal:** stand up the third appliance service with least-privilege systemd packaging and a working capture pipeline. **Implementation notes:** plain V4L2 against the USB VGA UVC module in `3DModels/Classifier/CameraV2`; extend `appliance/ops/install.sh`'s pattern rather than duplicating it. **Dependencies:** PI-OPS-001. **Hardware required:** Pi and the camera module for a real capture; not the controller. **Size:** M.
 
-- New systemd unit follows the same least-privilege sandbox pattern as `cs71d.service`/`cs71-web.service`: own identity, no access to the serial device or either existing database.
-- Captures frames from a V4L2 UVC source at a configurable resolution and interval.
-- A fixture/simulated video source lets this be evidenced in CI without real camera hardware, matching this repository's existing simulator-evidence boundary (ADR-0010).
+Delivered for the evidence class achievable without a Pi or real camera.
+`appliance/vision/` is a new Python workspace: `cs71vision.camera.Camera` is
+a two-method protocol with `FixtureCamera` (deterministic, dependency-free —
+the same evidence role `cs71d`'s simulator plays) and `V4L2Camera` (opened
+through OpenCV's V4L2 backend, `cv2.VideoCapture(path, cv2.CAP_V4L2)`, not a
+hand-rolled ioctl implementation — every small "V4L2 Python bindings"
+package that exists to avoid writing that protocol by hand is itself
+GPL-licensed, a direct transcription of the GPL `linux/videodev2.h` kernel
+header, which does not fit this workspace's MIT license; OpenCV is
+Apache-2.0 and removes both that licensing question and the real correctness
+risk of reconstructing exact kernel-ABI struct layouts from memory with no
+real device to test against). `cs71vision.runtime.CaptureLoop` polls one
+`Camera` on its own thread and survives both a camera read failure and a
+sink that raises. `cs71vision.config` mirrors `cs71d.config` exactly: three
+profiles, a fixed production device path (`/dev/cs71vision`), refusal of
+unknown fields. `appliance/ops/systemd/cs71-vision.service` follows
+`cs71d.service`'s sandbox pattern, tightened further — `RestrictAddressFamilies=`
+is empty, not even `AF_UNIX`, since this slice has no socket of its own yet
+— and gates on its own camera symlink the same way `cs71d.service` gates on
+the controller. `appliance/ops/udev/98-cs71-vision.rules` matches vendor and
+product ID only, not a serial number like the controller's rule, because
+this matches one specific already-chosen camera module rather than a broad
+device class, and cheap UVC modules do not reliably program a unique serial
+in the first place; `install.sh`'s `--camera-vendor-id`/`--camera-product-id`
+are optional so every existing caller (`tests/smoke-test.sh` included) keeps
+working unmodified. `tests/smoke-test.sh` now also derives a
+`cs71-vision-smoke.service` on the fixture backend, starts it for real, and
+confirms it is actually capturing (not just active) and that its sandbox
+refuses even an `AF_UNIX` socket.
+
+What remains genuinely hardware-gated, and is not claimed here: `V4L2Camera`
+is unit-tested only against its own refusal path (a device it cannot open);
+nothing in this repository proves it opens a real camera correctly. Real
+camera evidence is PI-HIL/hardware-evidence territory, the same class of gap
+the DTR gate already is for `cs71d`.
+
+- [x] New systemd unit follows the same least-privilege sandbox pattern as `cs71d.service`/`cs71-web.service`: own identity, no access to the serial device or either existing database.
+- [x] Captures frames from a V4L2 UVC source at a configurable resolution and interval.
+- [x] A fixture/simulated video source lets this be evidenced in CI without real camera hardware, matching this repository's existing simulator-evidence boundary (ADR-0010).
 
 ### PI-VISION-002 — Self-labeled dataset from ordinary manual sorting (Phase 0)
 

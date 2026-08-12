@@ -16,8 +16,10 @@ and "Backups, observability and runbooks" sections.
 ```text
 /opt/cs71/web/                 SvelteKit source + a fresh npm ci/build, pruned to dependencies
 /opt/cs71/daemon/venv/         a dedicated Python venv with cs71_protocol + cs71d installed into it
+/opt/cs71/vision/venv/         a dedicated Python venv with cs71vision installed into it
 /opt/cs71/ops/                 backup.sh's own installed copy, plus release-info.json (see below)
 /etc/cs71/cs71d.toml           daemon config — world-readable, nothing secret in it
+/etc/cs71/cs71vision.toml      vision config — world-readable, nothing secret in it
 /etc/cs71/web.env              web PORT/HOST/ORIGIN — world-readable, nothing secret in it
 /etc/cs71d/service-token       the daemon's own copy of the shared credential, cs71d:cs71d 0600
 /etc/cs71-web/service-token    the web's own copy of the same credential, cs71-web:cs71-web 0600
@@ -51,6 +53,7 @@ supplementary groups a service ends up with.
 | `cs71d` (user) | `/var/lib/cs71d`, `/etc/cs71d/service-token` | Yes — the only one | Creates it |
 | `cs71-web` (user) | `/var/lib/cs71-web`, `/etc/cs71-web/service-token` | No | Via the `cs71-api` group |
 | `cs71-api` (group) | nothing | — | `cs71d.service` runs with this as its effective group, so the socket it creates is `cs71d:cs71-api` 0660; `cs71-web.service` carries this as a supplementary group to reach it |
+| `cs71-vision` (user) | `/var/lib/cs71-vision` (unused until PI-VISION-002), `/dev/cs71vision` | No | No socket of its own yet |
 
 `cs71d.service` sets `Group=cs71-api` (not its own `cs71d` group) specifically
 so the socket comes out group-owned `cs71-api`; everything else the daemon
@@ -86,6 +89,16 @@ controller optional" — the controller is the part still missing).
 hardened unit; this only adds `After=`/`Wants=cs71-web.service` so it starts
 once SvelteKit is up.
 
+`systemd/cs71-vision.service` (PI-VISION-001, ADR-0013) follows the same
+design, tightened further: `RestrictAddressFamilies=` is empty rather than
+`AF_UNIX` — this slice has no API surface of its own yet, so it needs no
+socket at all — and `DeviceAllow=/dev/cs71vision rw` is its own camera
+symlink, disjoint from the controller's. It gates on its own camera the same
+way `cs71d.service` gates on the controller: `BindsTo=dev-cs71vision.device`
+plus `ConditionPathExists=/dev/cs71vision`. `tests/smoke-test.sh` runs the
+same derived-unit trick against the fixture backend, since there is no real
+camera on the CI runner either.
+
 ## udev
 
 `udev/99-cs71.rules` matches USB vendor ID, product ID **and serial
@@ -100,6 +113,22 @@ repository invents. The rule tags the device `TAG+="systemd"` with
 `ENV{SYSTEMD_WANTS}="cs71d.service"`, so the service starts the moment the
 adapter is plugged in rather than racing boot-time unit ordering against a
 path that might not exist yet.
+
+`udev/98-cs71-vision.rules` matches the same way for the classifier camera,
+on `SUBSYSTEM=="video4linux"` rather than `tty`, with one deliberate
+difference: vendor ID and product ID only, no serial number. `99-cs71.rules`
+needs a serial number because "any generic USB-serial adapter" is a broad
+class it must not accidentally match; this rule matches one specific camera
+module already chosen for this appliance
+(`3DModels/Classifier/CameraV2`), where exactly one unit is ever expected to
+be attached, and many inexpensive UVC modules do not reliably program a
+unique USB serial string in the first place. `install.sh`'s
+`--camera-vendor-id`/`--camera-product-id` are optional, unlike the
+controller's identity arguments: omitting them installs and enables
+`cs71-vision.service` with a rule that matches no real device yet, the same
+graceful "nothing to do" state the checked-in file is always in before
+substitution — existing `install.sh` callers (`tests/smoke-test.sh`
+included) keep working unmodified.
 
 ## Caddy
 
@@ -119,6 +148,7 @@ buffered.
 sudo appliance/ops/install.sh \
   --hostname cs71.local \
   --vendor-id 0403 --product-id 6001 --serial <adapter-serial> \
+  --camera-vendor-id 0403 --camera-product-id 6002 \
   --web-port 3000 \
   --start
 ```
@@ -127,9 +157,11 @@ Run this from a checkout of the whole repository, on the target machine
 itself — it builds the web workspace's native modules (`better-sqlite3`,
 `@node-rs/argon2`) on that machine on purpose, so they match its actual
 architecture rather than whatever built them. Without `--start` it installs
-and enables both services but does not start them, which is what the
+and enables all three services but does not start them, which is what the
 `appliance-ops` CI job's static checks exercise (it never has a real
-adapter to start against anyway).
+adapter or camera to start against anyway). The two `--camera-*` arguments
+are optional, unlike the controller's own identity — see the udev section
+above.
 
 **`tsx` ships as a real `dependencies` entry, not a devDependency,
 deliberately.** `install.sh` runs a full `npm ci` to get every build tool
@@ -248,6 +280,13 @@ name); its ordering, its rollback path calling `restore.sh`, and its
 backup-before-anything-else sequencing are checked structurally instead, in
 `tests/test_artifacts.py`.
 
+It also derives a `cs71-vision-smoke.service` the same way, on the fixture
+camera backend, and checks it stays active, actually logs a captured frame
+(not just "active" — `systemctl is-active` alone would not prove the
+capture loop is really running), and that its own sandbox refuses to open
+even an `AF_UNIX` socket, tighter than `cs71d`'s own `AF_UNIX`-only
+allowance.
+
 What it cannot prove, and does not claim to: that the production profile
 (`backend = "serial"`) starts at all. It does not, on any Linux host,
 Pi included — Linux DTR is `NOT_EXECUTED`
@@ -255,4 +294,8 @@ Pi included — Linux DTR is `NOT_EXECUTED`
 `cs71d.device.create_transport_factory` refuses to open a real port outright.
 That is not a smoke-test gap; it is the DTR gate doing exactly what it is
 for. Closing it is PI-HIL-001, and needs the physical adapter, wiring and
-instrumentation this backlog item was never scoped to have.
+instrumentation this backlog item was never scoped to have. The same is
+true of `cs71-vision`'s `V4L2Camera`: nothing here proves it opens a real
+camera correctly, only that its own refusal path and the fixture-backed
+service packaging work. Real camera evidence is PI-HIL/hardware-evidence
+territory, the same class of gap.

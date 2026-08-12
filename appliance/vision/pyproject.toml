@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cs71vision"
+version = "0.1.0"
+description = "Camera capture and classification service for the CS7.1 Raspberry Pi appliance"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "CS7.1 maintainers"}]
+dependencies = ["opencv-python-headless==5.0.0.93", "numpy>=1.26,<3"]
+
+[project.scripts]
+cs71vision = "cs71vision.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cs71vision = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests", "scripts"]
+exclude = "^(build|dist)/"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "SIM", "UP"]

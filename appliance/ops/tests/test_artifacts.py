@@ -27,6 +27,8 @@ DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71d/service-token"
 WEB_SERVICE_TOKEN_PATH = "/etc/cs71-web/service-token"
 DAEMON_CONFIG_PATH = "/etc/cs71/cs71d.toml"
 BACKUP_MARKER_PATH = "/var/lib/cs71d/backup-status.json"
+PRODUCTION_CAMERA_DEVICE_PATH = "/dev/cs71vision"
+VISION_CONFIG_PATH = "/etc/cs71/cs71vision.toml"
 
 
 def parse_unit(path: Path) -> dict[str, list[str]]:
@@ -141,6 +143,106 @@ class SystemdUnitsShareOneDesign(unittest.TestCase):
     def test_the_web_service_declares_the_fixed_production_origin_env_file(self) -> None:
         self.assertEqual(directive(self.web, "Service", "EnvironmentFile"), "/etc/cs71/web.env")
         self.assertIn("CS71_WEB_PROFILE=production", self.web["Service/Environment"])
+
+
+class VisionServiceIsConsistentWithTheInstaller(unittest.TestCase):
+    """cs71-vision.service, its udev rule and install.sh's wiring for both."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vision = parse_unit(OPS_DIR / "systemd/cs71-vision.service")
+        cls.udev_text = (OPS_DIR / "udev/98-cs71-vision.rules").read_text(encoding="utf-8")
+        cls.install_text = (OPS_DIR / "install.sh").read_text(encoding="utf-8")
+
+    def test_runs_as_its_own_unprivileged_identity(self) -> None:
+        self.assertEqual(directive(self.vision, "Service", "User"), "cs71-vision")
+
+    def test_has_no_access_to_the_controller_or_either_database(self) -> None:
+        # PRODUCTION_DEVICE_PATH ("/dev/cs71") is deliberately not checked
+        # with a raw substring test here: it is a prefix of the camera's own
+        # "/dev/cs71vision" and would false-fail on that alone.
+        allow = self.vision.get("Service/DeviceAllow", [])
+        self.assertNotIn(f"{PRODUCTION_DEVICE_PATH} rw", allow)
+        text = (OPS_DIR / "systemd/cs71-vision.service").read_text(encoding="utf-8")
+        self.assertNotIn(PRODUCTION_DAEMON_DATABASE_PATH, text)
+        self.assertNotIn(PRODUCTION_WEB_DATABASE_PATH, text)
+
+    def test_can_only_reach_its_own_camera_device(self) -> None:
+        self.assertIn(
+            f"{PRODUCTION_CAMERA_DEVICE_PATH} rw", self.vision["Service/DeviceAllow"]
+        )
+
+    def test_only_starts_once_its_camera_is_present(self) -> None:
+        self.assertEqual(
+            directive(self.vision, "Unit", "ConditionPathExists"), PRODUCTION_CAMERA_DEVICE_PATH
+        )
+        self.assertIn("dev-cs71vision.device", directive_words(self.vision, "Unit", "BindsTo"))
+
+    def test_neither_gains_privileges_nor_carries_capabilities(self) -> None:
+        self.assertEqual(directive(self.vision, "Service", "NoNewPrivileges"), "yes")
+        self.assertEqual(directive(self.vision, "Service", "CapabilityBoundingSet"), "")
+
+    def test_opens_no_socket_at_all_yet(self) -> None:
+        # Tighter than cs71d's AF_UNIX: this slice has no API surface of its
+        # own yet, so it needs no address family whatsoever.
+        self.assertEqual(directive(self.vision, "Service", "RestrictAddressFamilies"), "")
+
+    def test_start_limit_directives_are_in_the_unit_section(self) -> None:
+        self.assertIn("Unit/StartLimitIntervalSec", self.vision)
+        self.assertIn("Unit/StartLimitBurst", self.vision)
+        self.assertNotIn("Service/StartLimitIntervalSec", self.vision)
+        self.assertNotIn("Service/StartLimitBurst", self.vision)
+
+    def test_exec_start_matches_its_installed_venv_and_config(self) -> None:
+        exec_start = directive(self.vision, "Service", "ExecStart")
+        self.assertIn("/opt/cs71/vision/venv/bin/cs71vision", exec_start)
+        self.assertIn(VISION_CONFIG_PATH, exec_start)
+
+    def test_udev_rule_matches_video4linux_not_tty(self) -> None:
+        self.assertIn('SUBSYSTEM=="video4linux"', self.udev_text)
+        self.assertIn('SYMLINK+="cs71vision"', self.udev_text)
+        self.assertIn('GROUP="cs71-vision"', self.udev_text)
+
+    def test_udev_rule_matches_no_real_device_until_substituted(self) -> None:
+        for placeholder in ("@@CAMERA_VENDOR_ID@@", "@@CAMERA_PRODUCT_ID@@"):
+            self.assertIn(placeholder, self.udev_text)
+
+    def test_udev_rule_starts_the_service_the_moment_the_camera_is_present(self) -> None:
+        self.assertIn('TAG+="systemd"', self.udev_text)
+        self.assertIn('ENV{SYSTEMD_WANTS}="cs71-vision.service"', self.udev_text)
+
+    def test_install_sh_accepts_optional_camera_identity_arguments(self) -> None:
+        for flag in ("--camera-vendor-id", "--camera-product-id"):
+            self.assertIn(flag, self.install_text)
+
+    def test_install_sh_never_makes_camera_identity_mandatory(self) -> None:
+        # The existing mandatory-argument check must still name only the
+        # controller's identity; adding the camera there would break every
+        # caller that installed before cs71-vision existed, smoke-test.sh
+        # included.
+        match = re.search(r'\[ -n "\$HOSTNAME_ARG" \].*\|\| usage', self.install_text)
+        self.assertIsNotNone(match, "could not find install.sh's mandatory-argument check")
+        assert match is not None
+        self.assertNotIn("CAMERA_VENDOR_ID", match.group(0))
+        self.assertNotIn("CAMERA_PRODUCT_ID", match.group(0))
+
+    def test_install_sh_installs_and_enables_the_vision_service(self) -> None:
+        self.assertIn("cs71-vision.service", self.install_text)
+        self.assertIn("build_vision_venv", self.install_text)
+
+
+class VisionConfigAgreesWithTheProductionPath(unittest.TestCase):
+    def test_vision_config_module_still_uses_the_path_this_suite_assumes(self) -> None:
+        text = (REPO_ROOT / "appliance/vision/src/cs71vision/config.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f'"{PRODUCTION_CAMERA_DEVICE_PATH}"', text)
+
+    def test_vision_production_example_toml_matches_the_fixed_path(self) -> None:
+        text = (REPO_ROOT / "appliance/vision/config/production.example.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(PRODUCTION_CAMERA_DEVICE_PATH, text)
 
 
 class CaddyDropInOrdersAfterWeb(unittest.TestCase):
