@@ -164,9 +164,22 @@ the declared `Content-Length` as an early, cheap refusal; the enforcement that
 cannot be lied to is the adapter's own `BODY_SIZE_LIMIT`, which counts bytes as
 they arrive.
 
-There is no operator-facing command to print a bootstrap token until the
-installer provides one, so a fresh appliance cannot yet be provisioned without
-writing code.
+`scripts/issue-bootstrap-token.ts` (`npm run bootstrap-token`, or
+`appliance/ops/install.sh --start`, which invokes it as the `cs71-web`
+identity) is the operator-facing command: it opens `web.db` directly — the
+same database the running service reads, not a copy — calls
+`issueBootstrapToken`, and prints the token alone on stdout so it can be
+captured cleanly, with everything a human needs to read on stderr instead.
+There is deliberately no route that does this: a fresh admin credential
+reachable over the network, even loopback-only, would be a wider door than
+the local shell already is. It runs via `tsx`
+(`appliance/web/scripts/issue-bootstrap-token.spec.ts` proves the entry
+point itself — the database path, a clean one-line message rather than a
+stack trace, the exit code — as a real subprocess, since `issueBootstrapToken`
+itself is already covered by `provisioning.spec.ts`), which is a
+`dependencies` entry rather than a devDependency for exactly this reason: the
+installer prunes devDependencies from the deployed bundle, and this script
+has to keep working afterward.
 
 ## Talking to the daemon
 

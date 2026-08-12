@@ -183,6 +183,32 @@ jobs:
             appliance/web/reports/
           if-no-files-found: error
 
+  appliance-ops:
+    name: Appliance ops (software/simulator evidence only; no Pi/udev hardware)
+    runs-on: ubuntu-latest
+    env:
+      EVIDENCE_CLASS: SOFTWARE_SIMULATOR_ONLY
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+      - name: Record evidence class
+        run: |
+          printf '### Appliance ops evidence\n\n`%s`: real systemd/users/sockets on this runner; no Pi, udev or real controller.\n' \
+            "$EVIDENCE_CLASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check installer scripts with shellcheck
+        run: |
+          shellcheck --severity=warning \
+            appliance/ops/install.sh appliance/ops/lib/common.sh appliance/ops/tests/smoke-test.sh
+      - name: Run static artifact checks
+        run: python3 -m unittest discover -s appliance/ops/tests -v
+      - name: Run the functional simulated smoke test
+        run: sudo bash appliance/ops/tests/smoke-test.sh
+
   firmware:
     runs-on: ubuntu-latest
     steps:

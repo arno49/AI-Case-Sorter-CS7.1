@@ -635,11 +635,56 @@ caution the daemon has always applied to opening a real serial port on POSIX.
 
 **Goal:** install native systemd services with least privilege. **Implementation notes:** separate users, stable adapter match, Caddy only fronts loopback SvelteKit. **Dependencies:** PI-API-001, PI-WEB-002. **Hardware required:** Pi required; controller optional. **Size:** L.
 
-- Installer creates documented layout, users/groups, ownership and runtime socket directory.
-- udev rule requires approved VID/PID and serial number and creates `/dev/cs71` only for that adapter.
-- `cs71d` has serial-device access; SvelteKit lacks it but can connect to socket.
-- Caddy cannot route to `cs71d`; a network scan confirms daemon has no TCP listener.
-- Service sandbox settings are verified against a functional simulated smoke test.
+Delivered for the evidence class this repository can produce without a Pi:
+`appliance/ops/install.sh` creates the documented users (`cs71d`, `cs71-web`),
+group (`cs71-api`), directories and their ownership, generates one shared
+service credential and writes it to each side's own copy
+(`/etc/cs71d/service-token`, `/etc/cs71-web/service-token` — two files, not
+one, because `deployment-and-operations.md`'s layout table only names the
+web's copy), and installs `cs71d.service`/`cs71-web.service`/a `caddy.service`
+drop-in. `cs71d.service` runs as `cs71d` with effective group `cs71-api`, so
+the socket it creates comes out `cs71d:cs71-api` mode `0660`, reachable by
+`cs71-web` through that one shared group and by nothing else; `machine.db`
+stays protected by its own `0600` file mode regardless of group. Neither
+service can gain privileges, write outside its own state directory, or open
+capabilities; only `cs71d.service` may touch `/dev/cs71`
+(`DeviceAllow=/dev/cs71 rw`); `RestrictAddressFamilies=` is narrowed to
+`AF_UNIX` for the daemon and `AF_UNIX AF_INET AF_INET6` for the web service,
+which needs loopback HTTP for Caddy to reach. The udev rule matches vendor
+ID, product ID *and* serial number — not vendor/product alone — and ships
+with `@@VENDOR_ID@@`/`@@PRODUCT_ID@@`/`@@SERIAL@@` placeholders that match no
+real device until `install.sh` substitutes them from hardware evidence no
+adapter has produced yet (PI-HIL-001). The Caddyfile is one site block
+proxying only to loopback SvelteKit; there is no route to the socket, the
+daemon API or a SQLite file anywhere in it.
+
+`appliance/ops/tests/smoke-test.sh` is a *functional*, not merely structural,
+smoke test: on a real Linux host (the `appliance-ops` CI job, `ubuntu-latest`)
+it runs the real installer, starts the real services under their unmodified
+sandbox directives — against the simulator backend and with the
+udev/device-arrival gate removed, since `backend = "serial"` cannot start on
+any Linux host while Linux DTR is `NOT_EXECUTED` (SAF-07), Pi included — and
+proves for real: the socket's owner and mode; that the `cs71-web` identity
+can reach the daemon through it and get a real answer; that the same identity
+cannot read the serial-device stub; that Node stays up under
+`ProtectSystem=strict` and the rest; and that a process carrying the daemon's
+own sandbox properties is kernel-refused when it tries to open an `AF_INET`
+socket — stronger evidence than an after-the-fact network scan, since it is
+a prevention proof rather than an absence observation.
+`appliance/ops/tests/test_artifacts.py` cross-checks every artifact against
+the paths `cs71d/config.py` and `web/config.ts` actually enforce, so a change
+to either would fail this instead of silently drifting.
+
+What remains genuinely hardware-gated, and is not claimed here: a real Pi
+install/reboot/backup drill (ADR-0009's own revisit trigger), the approved
+adapter's actual VID/PID/serial, and closing the Linux DTR gate — all
+PI-HIL-001 and a future Pi-install drill, not software work.
+
+- [x] Installer creates documented layout, users/groups, ownership and runtime socket directory.
+- [x] udev rule requires approved VID/PID and serial number and creates `/dev/cs71` only for that adapter.
+- [x] `cs71d` has serial-device access; SvelteKit lacks it but can connect to socket.
+- [x] Caddy cannot route to `cs71d`; a network scan confirms daemon has no TCP listener.
+- [x] Service sandbox settings are verified against a functional simulated smoke test.
 
 ### PI-OPS-002 — Implement backup, upgrade and rollback procedures
 

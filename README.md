@@ -39,10 +39,14 @@ pio test -e native && pio test -e native_v2
 python -m unittest discover -s appliance/contracts/tests -v
 (python -m pip install --require-hashes -r appliance/daemon/requirements-dev.txt && python -m pip install --no-build-isolation -e ./host -e ./appliance/daemon && cd appliance/daemon && ruff format --check . && ruff check . && mypy && pytest && python -m build --no-isolation --wheel --sdist)
 (cd appliance/web && npm ci && npm run check:api && npm run lint && npm run check && npm test && npm run build)
+python -m unittest discover -s appliance/ops/tests -v
 ```
 
 These checks do not replace firmware serial parity, HIL, or Windows
-qualification.
+qualification. `appliance/ops/tests/smoke-test.sh` is a further, functional
+check that needs root on a real Linux host — it runs in CI (the
+`appliance-ops` job) but is not part of this no-hardware list, and it does
+not run on a Raspberry Pi either.
 
 ## Raspberry Pi 5 appliance documentation
 
@@ -92,7 +96,11 @@ workspace checks before anything reaches the daemon. A system view shows
 firmware version, journal health inferred from recorded faults, storage
 health explicitly reported as not available, and DTR-gate status read from
 the daemon — presented as the project's own evidence-status legend defines
-it and never as a pass.
+it and never as a pass. `appliance/ops/install.sh` installs both services as
+separate least-privilege systemd units, a udev rule keyed to a specific
+adapter's vendor ID, product ID and serial number together, and a Caddy site
+that proxies only to loopback SvelteKit; its own smoke test proves the real
+sandbox for real on a Linux CI host, though not yet on a Raspberry Pi.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

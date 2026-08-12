@@ -1,0 +1,63 @@
+[Unit]
+Description=cs71-web - SvelteKit browser-facing BFF for the CS7.1 appliance
+Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance/web/README.md
+# Starts after cs71d but does not require it: a daemon that is not answering
+# makes the page report that rather than fail (SAF-06 - the web restarting or
+# starting up is not a serial-ownership dependency, and neither is the
+# reverse).
+After=network.target cs71d.service
+Wants=cs71d.service
+
+[Service]
+Type=simple
+User=cs71-web
+Group=cs71-web
+# Membership only, not the primary group: files this process creates in its
+# own state directory stay group cs71-web, and only the daemon socket - whose
+# group ownership comes from cs71d.service's own Group=, not from this one -
+# is reachable through the shared cs71-api group.
+SupplementaryGroups=cs71-api
+UMask=0077
+WorkingDirectory=/opt/cs71/web
+EnvironmentFile=/etc/cs71/web.env
+Environment=CS71_WEB_PROFILE=production
+ExecStart=/usr/bin/node build/index.js
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StateDirectory=cs71-web
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# AF_UNIX to reach cs71d; AF_INET/AF_INET6 for the loopback HTTP port Caddy
+# proxies to. No route to open the serial device: this identity is never a
+# member of the group DeviceAllow grants it to in cs71d.service.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=512M
+CPUQuota=100%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

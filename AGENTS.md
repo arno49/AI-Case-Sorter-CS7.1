@@ -18,6 +18,7 @@ hardware-evidence boundaries below.
 | `appliance/daemon/` | Python `cs71d` workspace; sole serial owner |
 | `appliance/daemon/src/cs71d/simulator/` | Deterministic no-hardware protocol simulator |
 | `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
+| `appliance/ops/` | Native systemd/udev/Caddy installer and its own functional smoke test |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
 | `3DModels/` | Canonical printable mechanical parts |
@@ -51,8 +52,12 @@ anything reaches the daemon. The system view at `/system` shows firmware
 version, journal health inferred from recorded faults, storage health
 explicitly reported as not available, and DTR-gate status read from a new
 `GET /v1/system` endpoint that serializes `cs71d.device.DTR_GATE_STATUS` —
-`NOT_EXECUTED` today, never presented as a pass. None of this is deployed or
-qualified.
+`NOT_EXECUTED` today, never presented as a pass. `appliance/ops/install.sh`
+installs both services as separate least-privilege systemd units, a udev rule
+matching vendor ID, product ID and serial number together, and a Caddy site
+proxying only to loopback SvelteKit; its own `smoke-test.sh` proves the real
+sandbox on a real Linux CI host, not a Raspberry Pi. None of this is deployed
+or qualified on real hardware.
 
 ## Current validated baseline
 
@@ -64,7 +69,9 @@ qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 299 passing pytest tests.
-- `appliance/web` workspace: 503 passing vitest tests.
+- `appliance/web` workspace: 508 passing vitest tests.
+- `appliance/ops` artifact checks: 30 passing static tests (`unittest`), plus
+  a functional smoke test that only runs on Linux (see below).
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -396,6 +403,16 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - SQL lives only in `appliance/web/src/lib/server/auth/` and
   `appliance/web/src/lib/server/audit.ts`. Adding a module to that list is a
   reviewed change; `boundaries.spec.ts` fails otherwise.
+- `appliance/ops/install.sh` writes the one shared service credential to two
+  files, not one — `/etc/cs71d/service-token` and `/etc/cs71-web/service-token`
+  — because `cs71d` and `cs71-web` are separate identities that happen to
+  agree on one secret; `deployment-and-operations.md`'s layout table only
+  names the web's copy. `cs71d.service` runs with effective group `cs71-api`
+  specifically so the socket it creates comes out group-owned for `cs71-web`
+  to reach — `machine.db` stays protected by its own `0600` file mode
+  regardless of that shared group. `tsx` is a real `dependencies` entry, not
+  a devDependency, because `install.sh` prunes devDependencies from the
+  deployed bundle and the bootstrap-token CLI has to keep working after that.
 - Validate a command against what the controller advertised, not against what
   the daemon assumes. The worker gathers capabilities and status before
   publishing `READY` and re-observes them after each completed movement;

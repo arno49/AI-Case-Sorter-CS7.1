@@ -1,0 +1,17 @@
+# Stable device identity for the CS7.1 controller adapter.
+#
+# Matches on USB vendor ID, product ID *and* serial number - not vendor/product
+# alone - so this rule cannot pick up a different adapter of the same model,
+# and does not match every generic USB-serial device on the bus. No adapter
+# has been approved yet (docs/architecture/deployment-and-operations.md); the
+# three placeholders below are substituted by install.sh from values the
+# installing technician records as hardware evidence, per PI-HIL-001. This
+# file as checked in matches nothing until that substitution happens.
+#
+# The symlink's group and mode are the actual access control: cs71d is the
+# only account ever placed in the cs71d group, so only it can open the real
+# device node this resolves to. TAG+="systemd" plus SYSTEMD_WANTS asks systemd
+# to start cs71d.service the moment the adapter is present, rather than
+# leaving that to boot-time unit ordering against a path that may not exist
+# yet.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="@@VENDOR_ID@@", ATTRS{idProduct}=="@@PRODUCT_ID@@", ATTRS{serial}=="@@SERIAL@@", SYMLINK+="cs71", GROUP="cs71d", MODE="0660", TAG+="systemd", ENV{SYSTEMD_WANTS}="cs71d.service"
