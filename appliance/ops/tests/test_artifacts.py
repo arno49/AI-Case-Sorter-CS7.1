@@ -9,6 +9,7 @@ still function under them - that is smoke-test.sh's job, and it needs a real
 Linux host to run.
 """
 
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -234,6 +235,17 @@ class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
     def test_prunes_dev_dependencies_but_keeps_tsx_for_the_bootstrap_cli(self) -> None:
         self.assertIn("npm prune --omit=dev", self.text)
         self.assertIn("issue-bootstrap-token.ts", self.text)
+
+    def test_every_copied_web_entry_actually_exists(self) -> None:
+        # A renamed or removed file in appliance/web must fail here, not as a
+        # `cp: cannot stat` in the middle of a real install.
+        match = re.search(r"for entry in ([^;]+); do", self.text)
+        self.assertIsNotNone(match, "could not find the web-workspace copy loop")
+        entries = match.group(1).split()
+        self.assertGreaterEqual(len(entries), 5)
+        web_root = REPO_ROOT / "appliance/web"
+        for entry in entries:
+            self.assertTrue((web_root / entry).exists(), f"appliance/web/{entry} does not exist")
 
     def test_binds_the_web_service_to_loopback_only(self) -> None:
         self.assertIn("HOST=127.0.0.1", self.text)

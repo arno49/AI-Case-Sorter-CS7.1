@@ -121,7 +121,7 @@ else
 fi
 
 log "== building the web workspace on this host =="
-for entry in src scripts static package.json package-lock.json svelte.config.js vite.config.ts tsconfig.json; do
+for entry in src scripts static package.json package-lock.json vite.config.ts tsconfig.json; do
 	rm -rf "/opt/cs71/web/${entry:?}"
 	cp -a "$SOURCE_ROOT/appliance/web/$entry" "/opt/cs71/web/$entry"
 done
