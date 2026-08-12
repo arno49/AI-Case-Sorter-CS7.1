@@ -45,7 +45,7 @@ describe it as deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 229 passing vitest tests.
+- `appliance/web` workspace: 328 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -264,6 +264,21 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - `appliance/contracts/cs71d-v1.openapi.json` is the source of truth for the
   API surface. Translate daemon vocabulary at that boundary; never let protocol
   internals, raw serial content or secrets appear in a response body.
+- `appliance/web/src/lib/server/daemon/` is the only way the web workspace
+  speaks to `cs71d`. It exposes named commands with typed arguments and no
+  method that takes a path, a device or a protocol string; the socket path comes
+  from configuration and request paths are literals. Do not add a pass-through.
+- Every daemon command carries an idempotency key, a generation to match and a
+  deadline. The software stop is the only command that may match any generation,
+  and it is never presented as an emergency stop. An accepted command yields an
+  `operation_id` and a pending state, never a claim that the machine acted.
+- Daemon errors are translated, not forwarded: the daemon's code, request id and
+  words stay in the server log, and the browser gets wording this workspace
+  owns. A daemon `401`/`403` is this service's credential being wrong, so it is
+  reported as unavailable and never as the operator's permissions.
+- The web service reads its daemon credential from the file named by
+  `CS71_WEB_SERVICE_TOKEN_PATH`, never from an environment value, and refuses a
+  file other local users can read.
 - Validate a command against what the controller advertised, not against what
   the daemon assumes. The worker gathers capabilities and status before
   publishing `READY` and re-observes them after each completed movement;

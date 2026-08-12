@@ -3,20 +3,43 @@ import { describe, expect, it } from 'vitest';
 import { loadWebConfig } from './config';
 
 describe('loadWebConfig', () => {
-	it('defaults to a local development socket and database', () => {
+	it('defaults to a local development socket, database and credential file', () => {
 		expect(loadWebConfig({})).toEqual({
 			profile: 'development',
 			daemonSocketPath: '/tmp/cs71/cs71d.sock',
-			databasePath: '/tmp/cs71-web/web.db'
+			databasePath: '/tmp/cs71-web/web.db',
+			serviceTokenPath: '/tmp/cs71-web/service-token'
 		});
 	});
 
-	it('uses the fixed production socket and database', () => {
+	it('uses the fixed production socket, database and credential file', () => {
 		expect(loadWebConfig({ CS71_WEB_PROFILE: 'production' })).toEqual({
 			profile: 'production',
 			daemonSocketPath: '/run/cs71/cs71d.sock',
-			databasePath: '/var/lib/cs71-web/web.db'
+			databasePath: '/var/lib/cs71-web/web.db',
+			serviceTokenPath: '/etc/cs71-web/service-token'
 		});
+	});
+
+	it('names the daemon credential file rather than carrying the credential', () => {
+		// An environment value is readable through the process table by any local
+		// user; the file it names is not.
+		expect(Object.keys(loadWebConfig({}))).not.toContain('serviceToken');
+	});
+
+	it('rejects an arbitrary production credential file', () => {
+		expect(() =>
+			loadWebConfig({
+				CS71_WEB_PROFILE: 'production',
+				CS71_WEB_SERVICE_TOKEN_PATH: '/tmp/token'
+			})
+		).toThrow('production CS71_WEB_SERVICE_TOKEN_PATH');
+	});
+
+	it('rejects a relative credential path', () => {
+		expect(() => loadWebConfig({ CS71_WEB_SERVICE_TOKEN_PATH: 'token' })).toThrow(
+			'must be an absolute path'
+		);
 	});
 
 	it('keeps the web database separate from the daemon state directory', () => {

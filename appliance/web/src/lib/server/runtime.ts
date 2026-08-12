@@ -12,6 +12,7 @@
 
 import { openWebDatabase, type WebDatabase } from './auth/database';
 import { loadWebConfig, type WebConfig } from './config';
+import { DaemonClient } from './daemon/client';
 import { createWebLimits, type WebLimits } from './limits';
 
 export interface WebRuntime {
@@ -23,6 +24,12 @@ export interface WebRuntime {
 	 * with the rest of the runtime instead of leaking counts into the next one.
 	 */
 	readonly limits: WebLimits;
+	/**
+	 * The daemon client. Constructing it touches nothing: the socket is dialled
+	 * and the credential is read on the first command, so the web service starts
+	 * even when `cs71d` is not up yet and reports that per request instead.
+	 */
+	readonly daemon: DaemonClient;
 }
 
 let runtime: WebRuntime | undefined;
@@ -39,7 +46,11 @@ function start(): WebRuntime {
 	const database = openWebDatabase(config.databasePath, {
 		createDirectory: config.profile !== 'production'
 	});
-	return { config, database, limits: createWebLimits() };
+	const daemon = new DaemonClient({
+		socketPath: config.daemonSocketPath,
+		serviceTokenPath: config.serviceTokenPath
+	});
+	return { config, database, limits: createWebLimits(), daemon };
 }
 
 export function closeWebRuntime(): void {

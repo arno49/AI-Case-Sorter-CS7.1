@@ -168,5 +168,55 @@ There is no operator-facing command to print a bootstrap token until the
 installer provides one, so a fresh appliance cannot yet be provisioned without
 writing code.
 
+## Talking to the daemon
+
+`src/lib/server/daemon/` is the only way this workspace speaks to `cs71d`.
+
+| Module           | Responsibility                                                          |
+| ---------------- | ----------------------------------------------------------------------- |
+| `client.ts`      | Named commands with typed arguments, and the headers the contract needs |
+| `transport.ts`   | One HTTP exchange over the Unix domain socket                           |
+| `credentials.ts` | Reading the service credential from its protected file                  |
+| `errors.ts`      | What went wrong, and what the operator is told about it                 |
+
+There is no host, no port and no URL in any of it: the socket path comes from
+configuration and the request path is a literal the client builds, so a browser
+has nothing to point somewhere else. The client exposes named operations —
+`snapshot`, `connect`, `recover`, `stop`, `home`, `sort`, `feed`,
+`configuration`, `updateConfiguration`, `operation` — and no method that takes a
+path, a device or a protocol string. Arguments are validated before anything is
+sent, so an out-of-range slot fails here rather than as a daemon rejection.
+
+Types come from the generated contract, so a change to `cs71d-v1.openapi.json`
+this code has not caught up with fails the build rather than a machine.
+
+The credential is read from the file named by `CS71_WEB_SERVICE_TOKEN_PATH`
+(pinned to `/etc/cs71-web/service-token` in production), never from an
+environment value — the process table is readable by any local user. A file
+other users can read is refused rather than repaired, on the same reasoning as
+`web.db`. It is read once per process; rotation is a service restart.
+
+Every command carries an idempotency key, a generation to match and a deadline.
+Those are what stop a resubmitted form from moving the machine twice, a stale
+page from acting on a machine that has changed, and a command from outliving the
+operator's attention. The software stop matches any generation (`*`), which the
+contract allows there and nowhere else: a stop refused because the page was a
+few seconds old would be a stop that did not happen. It is still a software
+stop and never an emergency stop.
+
+An accepted command returns an `operation_id` and a pending state. It is never a
+claim that the machine did anything.
+
+Daemon errors are translated rather than forwarded. The server keeps the
+daemon's code, request id and words for correlation; the browser gets a sentence
+this workspace wrote. A daemon `401` or `403` means this service's own
+credential is wrong, so the operator is told the service is unavailable and
+never that their account was refused. `UNCERTAIN` says the machine may have
+moved and that the recovery procedure comes first.
+
+No route calls any of this yet — wiring the dashboard snapshot and the stop
+action into server actions, with audit entries in `web.db`, is the rest of
+PI-BFF-001.
+
 Set `CS71_WEB_DATABASE_PATH` to move `web.db` in development; the production
 profile pins it to `/var/lib/cs71-web/web.db`.
