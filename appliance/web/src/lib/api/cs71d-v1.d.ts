@@ -323,6 +323,10 @@ export interface components {
             readonly generation: components["schemas"]["Generation"];
             /** @description True only after a trusted correlated firmware terminal. SUCCEEDED requires true. */
             readonly trusted_terminal: boolean;
+            /** @description Protocol fields carried by the trusted terminal response, if any (e.g. the sorted slot for a SUCCEEDED sort operation). Bounded by the daemon; never raw unbounded serial content. */
+            readonly terminal_fields?: {
+                readonly [key: string]: string;
+            };
             readonly started_at?: components["schemas"]["Timestamp"];
             readonly terminal_at?: components["schemas"]["Timestamp"];
             readonly outcome?: components["schemas"]["OperationOutcome"];
