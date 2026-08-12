@@ -28,6 +28,7 @@ from cs71_protocol import Completion, ParseError, ResponseKind, Status
 
 from .adapters import intent_for, require_supported
 from .configuration import ConfigurationChanges, ConfigurationValues
+from .events import EventRing
 from .journal import Journal, JournalError
 from .machine import FirmwareProfile, MachineReadiness, MachineSnapshot, MachineState
 from .operations import (
@@ -126,13 +127,16 @@ class OperationDomain:
         max_deadline_ms: int = MAX_DEADLINE_MS,
         operation_observer: Callable[[OperationRecord], None] | None = None,
         machine_observer: Callable[[MachineSnapshot], None] | None = None,
+        events: EventRing | None = None,
     ) -> None:
         if idempotency_ttl <= timedelta(0):
             raise ValueError("idempotency_ttl must be positive")
         if not 0 < min_deadline_ms <= max_deadline_ms:
             raise ValueError("deadline policy must be a positive ascending range")
         self._journal = journal
-        self._machine = MachineState(observer=machine_observer)
+        self._events = events if events is not None else EventRing()
+        self._machine_observer = machine_observer
+        self._machine = MachineState(observer=self._publish_machine_event)
         self._now = now
         self._idempotency_ttl = idempotency_ttl
         self._min_deadline_ms = min_deadline_ms
@@ -152,6 +156,33 @@ class OperationDomain:
     @property
     def worker(self) -> SerialWorker:
         return self._worker
+
+    @property
+    def events(self) -> EventRing:
+        return self._events
+
+    def _publish_machine_event(self, view: MachineSnapshot) -> None:
+        """Turn a published machine view into a daemon event.
+
+        This runs on whichever thread caused the change, including the serial
+        worker's, so publishing must not block. The ring drops a subscriber
+        that cannot keep up rather than the other way round.
+        """
+        if not view.journal_available and view.fault_id is not None:
+            event_type = "journal.fault"
+        elif view.active_operation_id is not None or view.reason.startswith("operation "):
+            event_type = "operation.progress"
+        else:
+            event_type = "snapshot.changed"
+        self._events.publish(
+            event_type,
+            generation=view.generation,
+            occurred_at=self._now(),
+            operation_id=view.active_operation_id,
+            data={"connection_state": view.connection.name, "fault_state": view.fault.name},
+        )
+        if self._machine_observer is not None:
+            self._machine_observer(view)
 
     @property
     def machine(self) -> MachineState:
@@ -756,6 +787,13 @@ class OperationDomain:
                 f"journal failure recording {state} for operation {operation_id}: {exc}"
             )
             raise
+        self._events.publish(
+            "operation.terminal" if record.is_terminal else "operation.accepted",
+            generation=record.generation,
+            occurred_at=self._now(),
+            operation_id=record.operation_id,
+            data={"type": record.action.name, "state": record.state.name},
+        )
         if self._operation_observer is not None:
             self._operation_observer(record)
         return record
