@@ -31,9 +31,11 @@ operations with idempotent admission, fail-closed durability, an attributable
 priority stop, capability-validated home and sort adapters, a socket-only
 internal API with bounded resumable events, local web authentication with
 opaque server-side sessions, server-side role enforcement against the documented
-capability matrix, and CSRF, origin, rate and concurrency controls on
-state-changing requests. Feed and operator features are not implemented; do not
-describe it as deployed or qualified.
+capability matrix, CSRF, origin, rate and concurrency controls on
+state-changing requests, and a socket-only daemon client behind a dashboard that
+reads the machine snapshot and submits the software stop. Feed and the remaining
+operator screens are not implemented; do not describe it as deployed or
+qualified.
 
 ## Current validated baseline
 
@@ -45,7 +47,7 @@ describe it as deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 328 passing vitest tests.
+- `appliance/web` workspace: 349 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -279,6 +281,23 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - The web service reads its daemon credential from the file named by
   `CS71_WEB_SERVICE_TOKEN_PATH`, never from an environment value, and refuses a
   file other local users can read.
+- A route that commands the machine authorizes in the handler, next to the
+  effect, and never infers permission from the fact that a page rendered a
+  control. A daemon that is not answering makes a page report that rather than
+  fail: the screen is what an operator has when the machine has gone quiet, and
+  the stop control has to stay on it.
+- The stop never reuses an idempotency key. Deduplication is for a resubmitted
+  intent; a second press of stop is a second intent, and a replayed key would
+  let the daemon answer with the first result and turn a stop into a no-op.
+- Every machine command writes a `web_audit` row in `web.db` whether it was
+  accepted, refused or never answered. It is attribution, not the machine's
+  journal of record: `cs71d` owns what the machine did, the two databases are
+  never written in one transaction, and `operation_id` is the join key. Audit
+  rows cannot be edited and the table has no column for a credential or a form
+  body.
+- SQL lives only in `appliance/web/src/lib/server/auth/` and
+  `appliance/web/src/lib/server/audit.ts`. Adding a module to that list is a
+  reviewed change; `boundaries.spec.ts` fails otherwise.
 - Validate a command against what the controller advertised, not against what
   the daemon assumes. The worker gathers capabilities and status before
   publishing `READY` and re-observes them after each completed movement;

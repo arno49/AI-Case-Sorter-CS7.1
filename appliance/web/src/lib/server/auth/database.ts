@@ -106,6 +106,37 @@ export const MIGRATIONS: readonly Migration[] = [
 				SELECT RAISE(ABORT, 'provisioning cannot be re-opened in place');
 			END`
 		]
+	},
+	{
+		version: 2,
+		name: 'web_audit',
+		statements: [
+			// The web audit is attribution, not the machine journal of record:
+			// `cs71d` owns what the machine did in its own database, and these rows
+			// say who asked for it from a browser. `operation_id` is the join key
+			// between the two, and there is no transaction across them.
+			`CREATE TABLE web_audit (
+				audit_id TEXT PRIMARY KEY,
+				occurred_at TEXT NOT NULL,
+				user_id TEXT NOT NULL,
+				role TEXT NOT NULL CHECK (role IN ('viewer', 'operator', 'administrator')),
+				action TEXT NOT NULL,
+				outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'refused', 'failed')),
+				request_id TEXT NOT NULL,
+				operation_id TEXT,
+				daemon_code TEXT,
+				daemon_request_id TEXT
+			)`,
+			// No foreign key to `users`: an audit entry has to outlive the account
+			// it describes, and a deleted account must not take its history away.
+			'CREATE INDEX web_audit_by_time ON web_audit(occurred_at)',
+			'CREATE INDEX web_audit_by_operation ON web_audit(operation_id)',
+			`CREATE TRIGGER web_audit_is_append_only
+			BEFORE UPDATE ON web_audit
+			BEGIN
+				SELECT RAISE(ABORT, 'an audit entry cannot be edited');
+			END`
+		]
 	}
 ];
 

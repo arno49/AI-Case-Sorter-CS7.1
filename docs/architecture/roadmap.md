@@ -102,13 +102,17 @@ graph LR
   passing without daemon access — is met by software evidence. The command
   endpoints those controls will also cover do not exist until PI-BFF-001, and
   the installer command that prints a bootstrap token remains PI-OPS-001.
-- PI-BFF-001 has its daemon client but no route that calls it, so none of its
-  criteria are claimed. The client is socket-only with no host, port or URL,
-  exposes named commands with typed arguments and no protocol pass-through,
-  supplies idempotency, generation and deadline on every command, translates
-  daemon errors into wording this workspace owns, and reads its service
-  credential from a protected file. Server actions, `web_audit` correlation and
-  operator-facing responses remain.
+- PI-BFF-001 is complete for its software criteria. The daemon client is
+  socket-only with no host, port or URL, exposes named commands with typed
+  arguments and no protocol pass-through, supplies idempotency, generation and
+  deadline on every command, translates daemon errors into wording this
+  workspace owns, and reads its service credential from a protected file. The
+  dashboard reads the snapshot and submits the software stop, authorizing in the
+  action before the daemon call, showing an `operation_id` and a pending state
+  rather than a completion, and writing a `web_audit` row in `web.db` for every
+  attempt without a transaction across the two databases. Connect, home, sort,
+  feed, recovery and configuration have clients but no screens, which is
+  PI-UI-001, and the browser event bridge remains PI-BFF-002.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { startSession } from '$lib/server/auth/boundary';
 import { PASSWORD } from '$lib/server/auth/harness';
@@ -40,9 +40,13 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), 'cs71-rbac-'));
 	process.env.CS71_WEB_PROFILE = 'development';
 	process.env.CS71_WEB_DATABASE_PATH = join(directory, 'web.db');
+	// No daemon is running for these specs; the dashboard logs that it could not
+	// reach one, which is not what is under test here.
+	vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	closeWebRuntime();
 	rmSync(directory, { recursive: true, force: true });
 	delete process.env.CS71_WEB_PROFILE;
@@ -93,11 +97,14 @@ describe('what the dashboard tells the browser', () => {
 		const event = request('/', await signedIn('viewer'));
 		await throughHook(event);
 
-		expect(await dashboardLoad(event as unknown as ServerLoadEvent)).toEqual({
+		// The daemon is not running for these specs, so the page reports it as
+		// unavailable; what is under test here is what the role was told it may do.
+		expect(await dashboardLoad(event as unknown as ServerLoadEvent)).toMatchObject({
 			username: 'viewer',
 			role: 'viewer',
 			capabilities: ['machine.read', 'machine.stop'],
-			csrfToken: expect.any(String)
+			csrfToken: expect.any(String),
+			snapshot: null
 		});
 	});
 
