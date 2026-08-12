@@ -5,6 +5,7 @@ export interface WebConfig {
 	daemonSocketPath: string;
 	databasePath: string;
 	serviceTokenPath: string;
+	visionSocketPath: string;
 }
 
 const PRODUCTION_SOCKET_PATH = '/run/cs71/cs71d.sock';
@@ -13,6 +14,9 @@ const PRODUCTION_DATABASE_PATH = '/var/lib/cs71-web/web.db';
 const DEVELOPMENT_DATABASE_PATH = '/tmp/cs71-web/web.db';
 const PRODUCTION_SERVICE_TOKEN_PATH = '/etc/cs71-web/service-token';
 const DEVELOPMENT_SERVICE_TOKEN_PATH = '/tmp/cs71-web/service-token';
+// Matches cs71vision.config.PRODUCTION_API_SOCKET_PATH/development default.
+const PRODUCTION_VISION_SOCKET_PATH = '/run/cs71-vision/cs71vision.sock';
+const DEVELOPMENT_VISION_SOCKET_PATH = '/tmp/cs71-vision/cs71vision.sock';
 
 export function loadWebConfig(
 	env: Readonly<Record<string, string | undefined>>
@@ -29,6 +33,9 @@ export function loadWebConfig(
 	const serviceTokenPath =
 		env.CS71_WEB_SERVICE_TOKEN_PATH ??
 		(profile === 'production' ? PRODUCTION_SERVICE_TOKEN_PATH : DEVELOPMENT_SERVICE_TOKEN_PATH);
+	const visionSocketPath =
+		env.CS71_VISION_SOCKET_PATH ??
+		(profile === 'production' ? PRODUCTION_VISION_SOCKET_PATH : DEVELOPMENT_VISION_SOCKET_PATH);
 
 	if (!daemonSocketPath.startsWith('/') || daemonSocketPath.includes('://')) {
 		throw new Error('CS71D_SOCKET_PATH must be an absolute Unix socket path');
@@ -52,8 +59,20 @@ export function loadWebConfig(
 			`production CS71_WEB_SERVICE_TOKEN_PATH must be ${PRODUCTION_SERVICE_TOKEN_PATH}`
 		);
 	}
+	if (!visionSocketPath.startsWith('/') || visionSocketPath.includes('://')) {
+		throw new Error('CS71_VISION_SOCKET_PATH must be an absolute Unix socket path');
+	}
+	if (profile === 'production' && visionSocketPath !== PRODUCTION_VISION_SOCKET_PATH) {
+		throw new Error(`production CS71_VISION_SOCKET_PATH must be ${PRODUCTION_VISION_SOCKET_PATH}`);
+	}
 
-	return Object.freeze({ profile, daemonSocketPath, databasePath, serviceTokenPath });
+	return Object.freeze({
+		profile,
+		daemonSocketPath,
+		databasePath,
+		serviceTokenPath,
+		visionSocketPath
+	});
 }
 
 function parseProfile(value: string | undefined): WebProfile {

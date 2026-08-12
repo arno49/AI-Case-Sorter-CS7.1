@@ -103,10 +103,10 @@ ensure_system_user cs71d cs71d /var/lib/cs71d
 ensure_system_user cs71-web cs71-web /var/lib/cs71-web
 ensure_system_user cs71-vision cs71-vision /var/lib/cs71-vision
 # Real OS-level membership, in addition to (not instead of) cs71-web.service's
-# and cs71-vision.service's own SupplementaryGroups=cs71-api: that directive
-# is systemd's own grant and needs no /etc/group entry, but anything reaching
-# these identities a different way - su, runuser, a technician's shell - only
-# sees real group membership.
+# SupplementaryGroups=cs71-api and cs71-vision.service's own Group=cs71-api:
+# those directives are systemd's own grant and need no /etc/group entry, but
+# anything reaching these identities a different way - su, runuser, a
+# technician's shell - only sees real group membership.
 ensure_group_member cs71-api cs71-web
 ensure_group_member cs71-api cs71-vision
 
@@ -130,8 +130,9 @@ ensure_dir /var/lib/cs71-vision cs71-vision:cs71-vision 0700
 # Owned by root, not either service identity: appliance/ops/backup.sh and
 # restore.sh run as root and are the only things that ever touch it.
 ensure_dir /var/lib/cs71-backups root:root 0700
-# /run/cs71 is systemd's RuntimeDirectory=; it is recreated on every start of
-# cs71d.service and is not persisted here.
+# /run/cs71 and /run/cs71-vision are systemd's RuntimeDirectory= for
+# cs71d.service and cs71-vision.service; both are recreated on every start
+# and are not persisted here.
 
 log "== daemon config =="
 # World-readable: every path in this file is already fixed by the production

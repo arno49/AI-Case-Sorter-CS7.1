@@ -35,6 +35,11 @@ export const ROUTE_POLICIES: RoutePolicies = Object.freeze({
 	/** Versions, journal-evidence and DTR-gate status. A read, same as the
 	 *  dashboard's snapshot; nothing here is a command. */
 	'/system': { access: 'capability', capability: 'machine.read' },
+	/** Per-class dataset counts against the training floor (PI-VISION-003).
+	 *  A read of cs71-vision's own state, same precedent as `/system`'s read
+	 *  of cs71d's; nothing here is a command either - training itself is
+	 *  PI-VISION-004/005's `vision.train` capability, not this one. */
+	'/dataset': { access: 'capability', capability: 'machine.read' },
 	'/login': { access: 'public' },
 	'/logout': { access: 'authenticated' }
 });

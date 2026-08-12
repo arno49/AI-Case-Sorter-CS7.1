@@ -15,6 +15,7 @@ import { loadWebConfig, type WebConfig } from './config';
 import { EventBroadcast } from './daemon/broadcast';
 import { DaemonClient } from './daemon/client';
 import { createWebLimits, type WebLimits } from './limits';
+import { VisionClient } from './vision/client';
 
 export interface WebRuntime {
 	readonly config: Readonly<WebConfig>;
@@ -38,6 +39,13 @@ export interface WebRuntime {
 	 * leaves, so an appliance nobody is watching holds no connection open.
 	 */
 	readonly events: EventBroadcast;
+	/**
+	 * The `cs71-vision` dataset api client (PI-VISION-003).
+	 *
+	 * Same lazy-touch-nothing shape as `daemon`: constructing it dials nothing
+	 * and reads no credential until the first call.
+	 */
+	readonly vision: VisionClient;
 }
 
 let runtime: WebRuntime | undefined;
@@ -62,7 +70,11 @@ function start(): WebRuntime {
 		socketPath: config.daemonSocketPath,
 		serviceTokenPath: config.serviceTokenPath
 	});
-	return { config, database, limits: createWebLimits(), daemon, events };
+	const vision = new VisionClient({
+		socketPath: config.visionSocketPath,
+		serviceTokenPath: config.serviceTokenPath
+	});
+	return { config, database, limits: createWebLimits(), daemon, events, vision };
 }
 
 /**

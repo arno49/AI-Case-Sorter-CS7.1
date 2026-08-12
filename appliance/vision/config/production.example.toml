@@ -5,3 +5,5 @@ device_path = "/dev/cs71vision"
 daemon_socket_path = "/run/cs71/cs71d.sock"
 dataset_path = "/var/lib/cs71-vision/vision.db"
 daemon_service_token_path = "/etc/cs71-vision/service-token"
+api_socket_path = "/run/cs71-vision/cs71vision.sock"
+minimum_examples_per_class = 40

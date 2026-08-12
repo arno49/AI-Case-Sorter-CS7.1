@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from cs71vision.config import (
+    PRODUCTION_API_SOCKET_PATH,
     PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
     PRODUCTION_DAEMON_SOCKET_PATH,
     PRODUCTION_DATASET_PATH,
@@ -28,6 +29,8 @@ def test_development_defaults_are_a_fixture_backend() -> None:
     assert config.daemon_socket_path
     assert config.dataset_path
     assert config.daemon_service_token_path is None
+    assert config.api_socket_path
+    assert config.minimum_examples_per_class > 0
 
 
 def test_load_config_with_no_path_returns_development_defaults() -> None:
@@ -115,6 +118,21 @@ def test_production_requires_the_fixed_daemon_service_token_path() -> None:
         )
 
 
+def test_production_requires_the_fixed_api_socket_path() -> None:
+    with pytest.raises(ConfigError, match="api_socket_path must be"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "production",
+                "backend": "v4l2",
+                "device_path": PRODUCTION_DEVICE_PATH,
+                "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+                "dataset_path": PRODUCTION_DATASET_PATH,
+                "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+                "api_socket_path": "/run/wrong/cs71vision.sock",
+            }
+        )
+
+
 def test_a_valid_production_configuration_is_accepted() -> None:
     config = VisionConfig.from_mapping(
         {
@@ -124,6 +142,8 @@ def test_a_valid_production_configuration_is_accepted() -> None:
             "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
             "dataset_path": PRODUCTION_DATASET_PATH,
             "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+            "api_socket_path": PRODUCTION_API_SOCKET_PATH,
+            "minimum_examples_per_class": 25,
         }
     )
 
@@ -132,6 +152,15 @@ def test_a_valid_production_configuration_is_accepted() -> None:
     assert config.daemon_socket_path == PRODUCTION_DAEMON_SOCKET_PATH
     assert config.dataset_path == PRODUCTION_DATASET_PATH
     assert config.daemon_service_token_path == PRODUCTION_DAEMON_SERVICE_TOKEN_PATH
+    assert config.api_socket_path == PRODUCTION_API_SOCKET_PATH
+    assert config.minimum_examples_per_class == 25
+
+
+def test_minimum_examples_per_class_must_be_positive() -> None:
+    with pytest.raises(ConfigError, match="minimum_examples_per_class"):
+        VisionConfig.from_mapping(
+            {"profile": "development", "backend": "fixture", "minimum_examples_per_class": 0}
+        )
 
 
 def test_capture_interval_and_frame_size_must_be_positive() -> None:

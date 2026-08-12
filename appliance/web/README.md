@@ -479,6 +479,32 @@ pass — an unrecognised value renders with the `uncertain` tone rather than
 assumed safe. `system-page.spec.ts` proves the load reads both the snapshot
 and the system facts through the real hook.
 
+### What the dataset view reports
+
+`/dataset` (PI-VISION-003) is a second, independent read boundary: it talks
+to `cs71-vision`, not `cs71d`. `src/lib/server/vision/client.ts` is a small
+hand-typed client for `cs71-vision`'s one resource, `GET /v1/dataset` — not
+a second generated OpenAPI contract; that weight was judged disproportionate
+to one read-only endpoint (see PI-VISION-003's backlog entry for the full
+reasoning). It reuses `daemon/transport.ts#exchange` and
+`daemon/credentials.ts#readServiceToken` directly, since both are generic
+Unix-socket-HTTP infrastructure with nothing daemon-specific about them, and
+authenticates with this service's own existing copy of the shared service
+credential (`CS71_WEB_SERVICE_TOKEN_PATH`) — `cs71-vision` accepts the same
+shared secret `cs71d` does, so no second credential file was introduced.
+Failures are re-wrapped into this module's own `VisionError` rather than
+left as a `DaemonError`, so nothing named "Daemon" leaks into a caller
+talking to a different service. `src/lib/dataset-view.ts` is the
+wording-as-data module: each class becomes a `label`/`detail`/`tone`
+(`system-view.ts`'s own `Reading` shape), and a class below the configured
+floor states why in its `detail` rather than being omitted from the list.
+`dataset-page.spec.ts` proves the load reads the dataset summary through the
+real hook, against a real stand-in `cs71-vision` on a real `AF_UNIX` socket.
+
+Set `CS71_VISION_SOCKET_PATH` to point at a different `cs71-vision` socket in
+development; the production profile pins it to
+`/run/cs71-vision/cs71vision.sock`.
+
 ### Restarting this service
 
 A restart drops a database handle and a reader. It reaches nothing else: `cs71d`

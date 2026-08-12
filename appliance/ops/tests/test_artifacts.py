@@ -30,6 +30,7 @@ BACKUP_MARKER_PATH = "/var/lib/cs71d/backup-status.json"
 PRODUCTION_CAMERA_DEVICE_PATH = "/dev/cs71vision"
 VISION_CONFIG_PATH = "/etc/cs71/cs71vision.toml"
 VISION_SERVICE_TOKEN_PATH = "/etc/cs71-vision/service-token"
+PRODUCTION_VISION_API_SOCKET_PATH = "/run/cs71-vision/cs71vision.sock"
 
 
 def parse_unit(path: Path) -> dict[str, list[str]]:
@@ -188,14 +189,19 @@ class VisionServiceIsConsistentWithTheInstaller(unittest.TestCase):
         # this service has no loopback port of its own, so no AF_INET/AF_INET6.
         self.assertEqual(directive(self.vision, "Service", "RestrictAddressFamilies"), "AF_UNIX")
 
-    def test_reaches_cs71ds_socket_through_the_shared_group_only(self) -> None:
-        self.assertEqual(directive(self.vision, "Service", "SupplementaryGroups"), "cs71-api")
-        # Its own primary Group is its own identity, not cs71d's - sharing
-        # only the one group above is the point.
-        self.assertEqual(directive(self.vision, "Service", "Group"), "cs71-vision")
+    def test_shares_the_api_group_the_same_way_cs71d_itself_does(self) -> None:
+        # cs71-vision needs cs71-api both ways: as a client reaching cs71d's
+        # socket, and as the owner of its own dataset API socket (below) that
+        # cs71-web must reach - so its effective Group is cs71-api, the same
+        # shape cs71d.service itself uses, not a SupplementaryGroups grant.
+        self.assertEqual(directive(self.vision, "Service", "Group"), "cs71-api")
+        self.assertNotIn("Service/SupplementaryGroups", self.vision)
 
     def test_owns_its_own_dataset_state_directory(self) -> None:
         self.assertEqual(directive(self.vision, "Service", "StateDirectory"), "cs71-vision")
+
+    def test_owns_its_own_dataset_api_socket_directory(self) -> None:
+        self.assertEqual(directive(self.vision, "Service", "RuntimeDirectory"), "cs71-vision")
 
     def test_start_limit_directives_are_in_the_unit_section(self) -> None:
         self.assertIn("Unit/StartLimitIntervalSec", self.vision)
@@ -249,12 +255,18 @@ class VisionConfigAgreesWithTheProductionPath(unittest.TestCase):
         self.assertIn(f'"{PRODUCTION_CAMERA_DEVICE_PATH}"', text)
         self.assertIn(f'"{PRODUCTION_SOCKET_PATH}"', text)
         self.assertIn(f'"{VISION_SERVICE_TOKEN_PATH}"', text)
+        self.assertIn(f'"{PRODUCTION_VISION_API_SOCKET_PATH}"', text)
 
     def test_vision_production_example_toml_matches_the_fixed_paths(self) -> None:
         text = (REPO_ROOT / "appliance/vision/config/production.example.toml").read_text(
             encoding="utf-8"
         )
-        for path in (PRODUCTION_CAMERA_DEVICE_PATH, PRODUCTION_SOCKET_PATH, VISION_SERVICE_TOKEN_PATH):
+        for path in (
+            PRODUCTION_CAMERA_DEVICE_PATH,
+            PRODUCTION_SOCKET_PATH,
+            VISION_SERVICE_TOKEN_PATH,
+            PRODUCTION_VISION_API_SOCKET_PATH,
+        ):
             self.assertIn(path, text)
 
 

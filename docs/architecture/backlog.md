@@ -932,9 +932,82 @@ own gap, unchanged here).
 
 **Goal:** let an operator see training readiness before training is offered, not after. **Implementation notes:** reuse this workspace's wording-as-data pattern rather than inline strings. **Dependencies:** PI-VISION-002, PI-WEB-002. **Hardware required:** No. **Size:** S.
 
-- UI shows the example count per class next to the configured minimum-example floor.
-- A class below the floor is visibly marked ineligible with the reason shown, not merely absent from a list.
-- No training control is enabled until at least one class clears the floor.
+Delivered for the evidence class achievable without a Pi or real camera.
+Before writing any web code, the existing daemon/BFF pattern was read end to
+end (`appliance/web/src/lib/server/daemon/{client,transport,errors,credentials,index}.ts`,
+`routes/system/+page.server.ts`, `lib/server/auth/policy.ts`) rather than
+guessed at, per the investigation this task was explicitly asked to do
+first. `cs71-vision` had no HTTP API of its own yet — only its read-only
+`daemon_client` calling *out* to `cs71d` (PI-VISION-002) — so this task adds
+one: `cs71vision.api.DatasetApiServer` serves a single resource,
+`GET /v1/dataset`, on its own Unix domain socket, mirroring `cs71d.api`'s
+shape (bearer auth against the shared service credential, stale-socket
+reclaim, `AF_UNIX`-only) at a fraction of its surface — one route, no
+commands, no event stream. Per-class counts come straight from
+`DatasetStore.counts_by_slot()`; the class *is* the slot the operator sorted
+into, the same self-labeling ADR-0013 describes, so no new labeling concept
+was introduced. `cs71vision.runtime.build_api_server` gates on
+`daemon_service_token_path` the same way `build_correlation_loop` already
+does: no credential, no dataset ever populated, nothing to authenticate a
+caller against, so capture-only mode exposes no API either — and it opens
+its own independent `DatasetStore` connection rather than sharing the
+correlation loop's, safe under the WAL mode `DatasetStore.open` already
+enforces and simpler to reason about than a shared handle.
+
+**Web-side scope call, made explicitly rather than assumed:** a full second
+generated OpenAPI contract (mirroring `appliance/contracts/`, a TypeScript
+type-generation step and a contract test suite) was weighed against a
+lightweight hand-typed client for cs71-vision's one new read endpoint, and
+the lightweight route was chosen — proportionate to an "S"-sized task with a
+single resource. `appliance/web/src/lib/server/vision/client.ts` reuses
+`daemon/transport.ts#exchange` and `daemon/credentials.ts#readServiceToken`
+directly (both are generic Unix-socket-HTTP infrastructure despite living in
+the daemon module, not daemon-specific), and re-wraps transport failures into
+its own `VisionError` rather than leaking a `DaemonError` into a caller
+talking to a different service. If the vision API surface grows with
+PI-VISION-004/005 (train/activate/rollback), formalizing a real generated
+contract is worth revisiting; one read-only resource does not justify it yet.
+
+**Socket reachability, PI-VISION-002's own group grant was not enough on its
+own.** `cs71-vision.service`'s `SupplementaryGroups=cs71-api` only ever let
+`cs71-vision` reach *`cs71d`'s* socket as a client; it does nothing for a
+socket `cs71-vision` itself creates. `Group=` became `cs71-api` as the
+service's *effective* primary group instead — the same shape `cs71d.service`
+itself already uses — which does both jobs with one directive: `cs71-vision`
+can still reach `cs71d`'s socket, and its own new dataset-api socket now
+comes out `cs71-vision:cs71-api` 0660, reachable by `cs71-web` through the
+supplementary grant it already carried for `cs71d`'s socket, no new grant
+needed on that side. `RuntimeDirectory=cs71-vision`/`RuntimeDirectoryMode=0750`
+holds the socket, recreated fresh on every start like `cs71d.service`'s own
+`RuntimeDirectory=`. `tests/smoke-test.sh` proves this for real: it waits for
+`/run/cs71-vision/cs71vision.sock`, asserts its owner and mode, then — running
+*as* `cs71-web` with `cs71-web`'s own copy of the shared credential — issues a
+real `GET /v1/dataset` through it and checks for `200`. That is a different
+claim than PI-VISION-002's own smoke check (which only proved `cs71-vision`
+could reach `cs71d`), and needed its own evidence.
+
+The dataset review page itself is `/dataset`
+(`routes/dataset/+page.server.ts`/`+page.svelte`), gated by the same
+`machine.read` capability `/system` uses — a read of `cs71-vision`'s state is
+the same class of thing as a read of `cs71d`'s. `lib/dataset-view.ts` is the
+wording-as-data module the task asked for, mirroring `system-view.ts`'s
+`Reading` shape: each class becomes a `label`/`detail`/`tone`, an ineligible
+class's `detail` states the floor and says why, not merely omitting it from
+a list. No training control exists anywhere in this codebase yet
+(PI-VISION-004/005), so "no training control is enabled until a class clears
+the floor" holds by construction — there is nothing yet to wrongly enable.
+
+What remains genuinely hardware-gated, and is not claimed here: the same
+`V4L2Camera`/hardware-evidence gap PI-VISION-001 already carries, unchanged.
+The dataset page itself was verified through a real SvelteKit hook, a real
+authenticated session and a real stand-in `cs71-vision` on a real `AF_UNIX`
+socket (`routes/dataset/dataset-page.spec.ts`) — the same evidence class
+`system-page.spec.ts` already established for `/system` — not a live browser
+session against real hardware, which this task never required.
+
+- [x] UI shows the example count per class next to the configured minimum-example floor.
+- [x] A class below the floor is visibly marked ineligible with the reason shown, not merely absent from a list.
+- [x] No training control is enabled until at least one class clears the floor.
 
 ### PI-VISION-004 — Local training pipeline and versioned candidate models
 

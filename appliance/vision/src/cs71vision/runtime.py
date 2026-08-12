@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from .api import DatasetApiServer
 from .camera import Camera, CameraError, FixtureCamera, Frame, V4L2Camera
 from .config import Backend, ConfigError, VisionConfig
 from .correlator import Correlator, FrameBuffer
@@ -209,3 +210,26 @@ def build_correlation_loop(config: VisionConfig, buffer: FrameBuffer) -> Correla
     store = DatasetStore.open(config.dataset_path)
     correlator = Correlator(client, store, buffer)
     return CorrelationLoop(correlator, store)
+
+
+def build_api_server(config: VisionConfig) -> DatasetApiServer | None:
+    """Build the dataset API server, or None if this config never talks to cs71d.
+
+    Same gate `build_correlation_loop` uses: without a service token there is
+    no credential to authenticate a caller against and no dataset ever being
+    populated, so capture-only mode exposes no API either.
+
+    Opens its own `DatasetStore` handle, independent of the one
+    `build_correlation_loop` opens - see `DatasetApiServer`'s own docstring
+    for why that is safe and deliberate.
+    """
+    if config.daemon_service_token_path is None:
+        return None
+    token = read_service_token(config.daemon_service_token_path)
+    store = DatasetStore.open(config.dataset_path)
+    return DatasetApiServer(
+        store,
+        socket_path=config.api_socket_path,
+        service_token=token,
+        minimum_examples_per_class=config.minimum_examples_per_class,
+    )

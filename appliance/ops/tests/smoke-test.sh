@@ -204,6 +204,7 @@ capture_interval_ms = 200
 daemon_socket_path = "/run/cs71/cs71d.sock"
 daemon_service_token_path = "/etc/cs71-vision/service-token"
 dataset_path = "/var/lib/cs71-vision/vision.db"
+api_socket_path = "/run/cs71-vision/cs71vision.sock"
 EOF
 chmod 0644 /etc/cs71/cs71vision-smoke.toml
 
@@ -254,8 +255,45 @@ done
 	exit 1
 }
 owner="$(stat -c '%U:%G' /var/lib/cs71-vision/vision.db)"
-[ "$owner" = "cs71-vision:cs71-vision" ] || {
-	log "FAIL: vision.db owner is $owner, expected cs71-vision:cs71-vision"
+# Group is cs71-api, not cs71-vision: PI-VISION-003 made Group=cs71-api the
+# service's effective group (the same shape cs71d.service itself uses), so
+# every file the process creates - vision.db included - picks it up. The
+# 0700 StateDirectory keeps this from granting group access in practice.
+[ "$owner" = "cs71-vision:cs71-api" ] || {
+	log "FAIL: vision.db owner is $owner, expected cs71-vision:cs71-api"
+	exit 1
+}
+
+log "== cs71-vision's dataset API socket exists with the right owner and mode =="
+for _ in $(seq 1 20); do
+	[ -S /run/cs71-vision/cs71vision.sock ] && break
+	sleep 0.5
+done
+[ -S /run/cs71-vision/cs71vision.sock ] || {
+	journalctl -u cs71-vision-smoke.service --no-pager
+	log "FAIL: no socket at /run/cs71-vision/cs71vision.sock"
+	exit 1
+}
+vision_socket_mode="$(stat -c '%a' /run/cs71-vision/cs71vision.sock)"
+[ "$vision_socket_mode" = "660" ] || {
+	log "FAIL: cs71-vision socket mode is $vision_socket_mode, expected 660"
+	exit 1
+}
+vision_socket_owner="$(stat -c '%U:%G' /run/cs71-vision/cs71vision.sock)"
+[ "$vision_socket_owner" = "cs71-vision:cs71-api" ] || {
+	log "FAIL: cs71-vision socket owner is $vision_socket_owner, expected cs71-vision:cs71-api"
+	exit 1
+}
+
+log "== the web identity can reach cs71-vision's dataset api with its own credential =="
+# The same shared service credential cs71-web already uses against cs71d
+# (PI-OPS-001's three-file pattern) - proof this is one shared secret, not a
+# separate one this task would have had to invent.
+vision_status="$(runuser -u cs71-web -- curl -s -o /dev/null -w '%{http_code}' \
+	--unix-socket /run/cs71-vision/cs71vision.sock -H "Authorization: Bearer $token" \
+	http://localhost/v1/dataset)"
+[ "$vision_status" = "200" ] || {
+	log "FAIL: GET /v1/dataset through cs71-vision's socket returned $vision_status, expected 200"
 	exit 1
 }
 

@@ -8,7 +8,8 @@ describe('loadWebConfig', () => {
 			profile: 'development',
 			daemonSocketPath: '/tmp/cs71/cs71d.sock',
 			databasePath: '/tmp/cs71-web/web.db',
-			serviceTokenPath: '/tmp/cs71-web/service-token'
+			serviceTokenPath: '/tmp/cs71-web/service-token',
+			visionSocketPath: '/tmp/cs71-vision/cs71vision.sock'
 		});
 	});
 
@@ -17,7 +18,8 @@ describe('loadWebConfig', () => {
 			profile: 'production',
 			daemonSocketPath: '/run/cs71/cs71d.sock',
 			databasePath: '/var/lib/cs71-web/web.db',
-			serviceTokenPath: '/etc/cs71-web/service-token'
+			serviceTokenPath: '/etc/cs71-web/service-token',
+			visionSocketPath: '/run/cs71-vision/cs71vision.sock'
 		});
 	});
 
@@ -71,5 +73,23 @@ describe('loadWebConfig', () => {
 				CS71D_SOCKET_PATH: '/tmp/cs71d.sock'
 			})
 		).toThrow('production CS71D_SOCKET_PATH');
+	});
+
+	it('rejects a TCP vision endpoint', () => {
+		expect(() =>
+			loadWebConfig({
+				CS71_WEB_PROFILE: 'production',
+				CS71_VISION_SOCKET_PATH: 'http://127.0.0.1:8080'
+			})
+		).toThrow('absolute Unix socket path');
+	});
+
+	it('rejects an arbitrary production vision socket', () => {
+		expect(() =>
+			loadWebConfig({
+				CS71_WEB_PROFILE: 'production',
+				CS71_VISION_SOCKET_PATH: '/tmp/cs71vision.sock'
+			})
+		).toThrow('production CS71_VISION_SOCKET_PATH');
 	});
 });
