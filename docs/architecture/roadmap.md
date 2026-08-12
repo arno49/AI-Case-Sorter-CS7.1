@@ -126,14 +126,18 @@ graph LR
   service drops a database handle and a reader and nothing else, so it can
   neither cancel nor duplicate an operation the daemon is running. M5's exit
   criteria are met apart from the operator screens, which are PI-UI-001.
-- PI-UI-001 is in progress: the dashboard is delivered. What a screen may say
-  about the machine is decided in one tested module — acceptance is never worded
-  as completion, a terminal the controller did not confirm is presented as an
-  outcome that is not known, an unobserved axis reads "not known" rather than
-  "not homed", and `UNCERTAIN` has a tone of its own. The software stop is the
-  first control in the tab order and a keyboard-only spec drives it end to end
-  from the rendered page to the daemon. Manual controls, feed gating and
-  operation history remain.
+- PI-UI-001 is in progress: the dashboard and manual controls are delivered.
+  What a screen may say about the machine is decided in one tested module —
+  acceptance is never worded as completion, a terminal the controller did not
+  confirm is presented as an outcome that is not known, an unobserved axis
+  reads "not known" rather than "not homed", and `UNCERTAIN` has a tone of its
+  own. The software stop is the first control in the tab order and a
+  keyboard-only spec drives it end to end from the rendered page to the daemon.
+  Connect, home and sort are offered capability-driven from the snapshot the
+  operator is looking at, every command form carries that snapshot's generation
+  and a render-minted idempotency key, and the feed control follows the
+  firmware capability — disabled today with the daemon's reason for the
+  unqualified gate shown verbatim. Operation history remains.
 - Hardware-dependent firmware integration remains blocked; simulator evidence
   does not advance M8 qualification.
 

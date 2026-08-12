@@ -79,6 +79,7 @@ function operation(overrides: Partial<Operation> = {}): Operation {
 }
 
 interface PageForm {
+	readonly control?: string;
 	readonly error?: string;
 	readonly operationId?: string;
 	readonly state?: string;
@@ -184,7 +185,11 @@ describe('what the dashboard shows', () => {
 describe('what the dashboard refuses to say', () => {
 	it('never labels an accepted stop as a completion', () => {
 		const html = rendered(snapshot({ active_operation: operation({ state: 'ACCEPTED' }) }), {
-			form: { operationId: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c', state: 'ACCEPTED' }
+			form: {
+				control: 'stop',
+				operationId: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c',
+				state: 'ACCEPTED'
+			}
 		});
 
 		const acceptance = fieldText(html, 'stop-accepted').join(' ');

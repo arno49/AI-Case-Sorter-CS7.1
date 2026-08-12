@@ -76,8 +76,12 @@ in one tested module: acceptance is never worded as completion, a terminal the
 controller did not confirm reads as an outcome that is not known, an unobserved
 axis reads "not known" rather than "not homed", and the software stop — still
 not an emergency stop — is the first control a keyboard reaches. Manual
-controls, feed gating and operation history screens have not been implemented
-yet.
+connect, home and sort controls are offered capability-driven from the snapshot
+the operator is looking at, each command form carrying that snapshot's
+generation and a fresh idempotency key so a stale page is refused and a
+resubmission cannot move the machine twice; the feed control stays disabled
+with the daemon's reason for the unqualified firmware gate shown verbatim. The
+operation history screen has not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

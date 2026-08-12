@@ -3,7 +3,9 @@
 	import { invalidateAll } from '$app/navigation';
 
 	import MachineStatus from '$lib/components/MachineStatus.svelte';
+	import ManualControls from '$lib/components/ManualControls.svelte';
 	import StopControl from '$lib/components/StopControl.svelte';
+	import { controlsPlan } from '$lib/machine-controls';
 	import { MachineView } from '$lib/machine-view.svelte';
 	import type { MachineSnapshot } from '$lib/machine';
 
@@ -69,9 +71,18 @@
 		}
 	}
 
+	// Every action names the control it answered, so an answer renders beside
+	// the form the operator used and nowhere else.
+	const stopFeedback = $derived(form?.control === 'stop' ? form : null);
 	const accepted = $derived(
-		form?.operationId ? { operationId: form.operationId, state: String(form.state) } : null
+		stopFeedback?.operationId
+			? { operationId: stopFeedback.operationId, state: String(stopFeedback.state) }
+			: null
 	);
+	const commandFeedback = $derived(form?.control && form.control !== 'stop' ? form : null);
+
+	// What may be offered, decided from the machine the operator is looking at.
+	const plan = $derived(controlsPlan(machine ?? null, data.capabilities));
 
 	// Labels for what the server said this role may do. The list is a reflection
 	// of the server's decision, not a source of it: hiding an entry here hides a
@@ -93,9 +104,16 @@
 <main>
 	<h1>CS7.1 control appliance</h1>
 
-	<StopControl csrfToken={data.csrfToken} error={form?.error} {accepted} />
+	<StopControl csrfToken={data.csrfToken} error={stopFeedback?.error} {accepted} />
 
 	<MachineStatus snapshot={machine} {unavailable} stale={view.stale} refreshing={view.refreshing} />
+
+	<ManualControls
+		{plan}
+		csrfToken={data.csrfToken}
+		keys={data.commandKeys ?? null}
+		feedback={commandFeedback}
+	/>
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>
@@ -105,7 +123,6 @@
 				<li>{LABELS[capability] ?? capability}</li>
 			{/each}
 		</ul>
-		<p>Connect, home, sort and feed controls are not implemented yet.</p>
 	</section>
 
 	<form method="POST" action="/logout">

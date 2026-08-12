@@ -547,11 +547,28 @@ in document order with no positive `tabindex` anywhere, and
 `dashboard-page.spec.ts` drives the keyboard flow end to end: the real load
 renders the page, the first focusable control is the stop, and submitting
 exactly the fields its form carries reaches the daemon as a stop command.
-Manual controls, feed gating and operation history remain.
+
+The manual controls are delivered on the same page. `machine-controls.ts`
+decides, from the snapshot the operator is looking at, which of connect, home,
+sort and feed may be offered and what is said beside a withheld one: no
+command form exists at all when the machine has not been read, motion is
+withheld without a `READY` session or when the daemon reports itself not
+ready, an axis the firmware does not advertise is withheld by that name, and
+the sorter slot list is exactly `slot_count` long. The feed control follows
+the capability rather than a UI opinion — today that means disabled, with the
+daemon's `feed_unavailable_reason` shown verbatim, and it enables only when a
+qualified firmware ever advertises feeding. Every command form carries the
+snapshot generation the operator decided against and an idempotency key minted
+for that render, so a stale page is refused by the daemon with reload wording
+and a resubmitted form is the same command, not a second one; the end-to-end
+spec proves the served fields alone reach the daemon as those headers. Each
+attempt — accepted, refused by the daemon, or refused by this workspace's own
+form checks before anything was sent — lands in `web_audit` under
+`machine.connect|home|sort|feed`. Operation history remains.
 
 - [x] Dashboard shows connection, homing, active operation, faults and snapshot generation from daemon snapshot.
-- [ ] Manual controls validate capability/slot and submit idempotency/generation-protected intent.
-- [ ] Feed controls are capability-driven and remain unavailable with an explicit reason until the firmware feed lifecycle gate is qualified.
+- [x] Manual controls validate capability/slot and submit idempotency/generation-protected intent.
+- [x] Feed controls are capability-driven and remain unavailable with an explicit reason until the firmware feed lifecycle gate is qualified.
 - [ ] Operation history shows accepted, progress and terminal states with trusted-terminal status.
 - [x] UI never labels HTTP acceptance as machine completion.
 - [x] Keyboard-only automated flow can find and activate software stop.

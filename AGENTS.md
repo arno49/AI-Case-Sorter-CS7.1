@@ -38,9 +38,13 @@ stream fanned out from one daemon reader whose consumers re-read a snapshot
 rather than present a gap. The dashboard's wording is decided in one tested
 module: acceptance never reads as completion, an unconfirmed terminal reads as
 an outcome that is not known, an unobserved axis reads "not known" rather than
-"not homed", and the software stop is the first control in the tab order. Feed,
-manual controls and the history screens are not implemented; do not describe it
-as deployed or qualified.
+"not homed", and the software stop is the first control in the tab order.
+Manual connect, home, sort and feed controls are offered capability-driven from
+the snapshot the operator saw; every command form carries that snapshot's
+generation and a render-minted idempotency key, and the feed control stays
+disabled with the daemon's reason for the unqualified firmware gate shown
+verbatim. The history screens are not implemented; do not describe it as
+deployed or qualified.
 
 ## Current validated baseline
 
@@ -52,7 +56,7 @@ as deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 429 passing vitest tests.
+- `appliance/web` workspace: 452 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -339,6 +343,18 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
 - The software stop is the first control in the document and therefore in the
   tab order; no element on an operator page declares a positive `tabindex`. The
   page says beside the button that it is a software stop, not an emergency stop.
+- A manual command form is an intent, not a button press. Which of connect,
+  home, sort and feed may be offered is decided in
+  `appliance/web/src/lib/machine-controls.ts` from the snapshot the operator is
+  looking at — never offered without a snapshot, motion never offered without a
+  `READY` session or against an unadvertised capability, the slot list exactly
+  `slot_count` long, and feed following `feed_available` with the daemon's
+  `feed_unavailable_reason` shown verbatim while the firmware gate is
+  unqualified. The form carries the snapshot generation and an idempotency key
+  minted by the server load for that render, so a stale page is refused by the
+  daemon and a resubmitted form deduplicates instead of moving the machine
+  twice. Withholding a control in the page is a courtesy; authorization and
+  admission happen again on the server and in the daemon.
 - Restarting the web service drops a database handle and a reader and nothing
   else. `cs71d` owns every operation in flight and goes on running it, which is
   why a restart can neither cancel nor duplicate one, and why no command is ever
