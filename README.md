@@ -81,7 +81,10 @@ the operator is looking at, each command form carrying that snapshot's
 generation and a fresh idempotency key so a stale page is refused and a
 resubmission cannot move the machine twice; the feed control stays disabled
 with the daemon's reason for the unqualified firmware gate shown verbatim. The
-operation history screen has not been implemented yet.
+operation history screen reads the durable record the daemon keeps, filtered
+by exactly the state and type values the contract defines and paged forward
+on the daemon's own cursor, describing every row with the same wording the
+dashboard uses so an unsettled operation is never worded as a completion.
 
 The canonical firmware uses cooperative proximity settling: after the feed
 sensor has been inactive longer than its debounce timeout, brass must keep the

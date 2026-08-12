@@ -29,6 +29,9 @@ export const ROUTE_POLICIES: RoutePolicies = Object.freeze({
 	'/': { access: 'capability', capability: 'machine.read' },
 	/** The machine's event stream. Watching is reading, and nothing more. */
 	'/events': { access: 'capability', capability: 'machine.read' },
+	/** The durable operation history. A read of the same record `machine.read`
+	 *  already grants a view of on the dashboard, just further back. */
+	'/operations': { access: 'capability', capability: 'machine.read' },
 	'/login': { access: 'public' },
 	'/logout': { access: 'authenticated' }
 });

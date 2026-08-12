@@ -398,6 +398,31 @@ and `Idempotency-Key` headers. Every attempt lands in `web_audit` under
 `machine.connect|home|sort|feed`, including one this workspace's own form
 checks refused before anything was sent.
 
+### What the history remembers
+
+`src/lib/operation-history.ts` is the same move again, this time over a page
+of the daemon's durable record rather than the dashboard's single active
+operation. It builds each row with `machine-status.ts`'s own
+`operationReading` — the module is imported, not reimplemented — so the
+history screen and the dashboard cannot describe the same operation two
+different ways: an unsettled row is never worded as a completion, and a
+terminal without `trusted_terminal` still reads as an outcome that is not
+known. The `state` and `type` filters offer exactly the values the contract
+defines; nothing here invents a grouping the daemon does not already have a
+value for.
+
+`/operations` is a `GET`, not a form post. Filtering and paging are query
+string changes — `?state=SUCCEEDED&type=SORT&cursor=…` — so a bookmarked or
+shared URL reproduces the same page, and there is no action here for the web
+audit to record: reading history is the same kind of read the dashboard's
+snapshot already is. A filter value this workspace does not recognise is
+dropped in the load rather than forwarded to the daemon, so a stale or
+mistyped query string shows the unfiltered page instead of failing the
+screen, and paging forward carries the daemon's own opaque `next_cursor`.
+`operation-history-page.spec.ts` proves the query string a request carries is
+what the fake daemon actually receives, and that an unrecognised filter value
+never reaches it.
+
 ### Restarting this service
 
 A restart drops a database handle and a reader. It reaches nothing else: `cs71d`

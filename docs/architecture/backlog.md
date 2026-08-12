@@ -486,8 +486,9 @@ journal of record: `cs71d` owns what the machine did in its own database, and
 the two are never written in one transaction. Entries cannot be edited, and the
 table has no column for a password, a token or a form body.
 
-Remaining for PI-UI-001: connect, home, sort, feed, recovery and configuration
-have clients but no screens.
+Remaining for PI-UI-002: recovery and configuration have clients but no
+screens. Connect, home, sort and feed are now screens, delivered in
+PI-UI-001.
 
 - [x] Browser requests cannot select daemon URL, serial path or arbitrary protocol command.
 - [x] BFF supplies required command headers and maps daemon errors to safe user responses.
@@ -535,7 +536,7 @@ why it can neither cancel nor duplicate an operation `cs71d` is running.
 
 **Goal:** deliver status, command and history screens. **Implementation notes:** pages are SSR first and capability-driven; expose snapshot generation to command forms. **Dependencies:** PI-BFF-002. **Hardware required:** No. **Size:** L.
 
-In progress. The dashboard is delivered: `machine-status.ts` decides every
+Delivered. The dashboard is delivered: `machine-status.ts` decides every
 sentence a screen may say about the machine — acceptance is never worded as
 completion (`COMPLETION_WORDS` is the testable form of that rule), a terminal
 without `trusted_terminal` is presented as an outcome that is not known rather
@@ -564,12 +565,25 @@ and a resubmitted form is the same command, not a second one; the end-to-end
 spec proves the served fields alone reach the daemon as those headers. Each
 attempt — accepted, refused by the daemon, or refused by this workspace's own
 form checks before anything was sent — lands in `web_audit` under
-`machine.connect|home|sort|feed`. Operation history remains.
+`machine.connect|home|sort|feed`.
+
+The operation history screen is delivered at `/operations`, gated by the same
+`machine.read` capability as the dashboard. `operation-history.ts` reuses
+`machine-status.ts`'s `operationReading` for every row rather than
+reimplementing its wording, so the two screens cannot describe the same
+operation two different ways — an unsettled row is never worded as a
+completion and a terminal without `trusted_terminal` still reads as an
+outcome that is not known. The state and type filters offer exactly the
+values the contract defines, nothing invented, and are a `GET` query string
+rather than a form post: there is no action here to audit, so a bookmarked or
+shared URL reproduces the same page. A filter value this workspace does not
+recognise is dropped rather than sent to the daemon, and the daemon's own
+opaque `next_cursor` carries the current filter forward for the next page.
 
 - [x] Dashboard shows connection, homing, active operation, faults and snapshot generation from daemon snapshot.
 - [x] Manual controls validate capability/slot and submit idempotency/generation-protected intent.
 - [x] Feed controls are capability-driven and remain unavailable with an explicit reason until the firmware feed lifecycle gate is qualified.
-- [ ] Operation history shows accepted, progress and terminal states with trusted-terminal status.
+- [x] Operation history shows accepted, progress and terminal states with trusted-terminal status.
 - [x] UI never labels HTTP acceptance as machine completion.
 - [x] Keyboard-only automated flow can find and activate software stop.
 

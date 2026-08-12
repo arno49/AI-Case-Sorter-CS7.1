@@ -43,8 +43,10 @@ Manual connect, home, sort and feed controls are offered capability-driven from
 the snapshot the operator saw; every command form carries that snapshot's
 generation and a render-minted idempotency key, and the feed control stays
 disabled with the daemon's reason for the unqualified firmware gate shown
-verbatim. The history screens are not implemented; do not describe it as
-deployed or qualified.
+verbatim. The operation history screen at `/operations` is implemented,
+reusing the dashboard's own per-operation wording so a row is never worded as
+a completion; the fault, recovery and system views (PI-UI-002) are not
+implemented, and neither is deployed or qualified.
 
 ## Current validated baseline
 
@@ -56,7 +58,7 @@ deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 452 passing vitest tests.
+- `appliance/web` workspace: 472 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -355,6 +357,14 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   daemon and a resubmitted form deduplicates instead of moving the machine
   twice. Withholding a control in the page is a courtesy; authorization and
   admission happen again on the server and in the daemon.
+- The operation history screen at `/operations` (`appliance/web/src/lib/operation-history.ts`)
+  reuses `machine-status.ts`'s `operationReading` for every row rather than
+  reimplementing its wording, so the two screens cannot describe the same
+  operation two different ways. Its filters offer exactly the `state`/`type`
+  values the contract defines, a filter value this workspace does not
+  recognise is dropped rather than forwarded to the daemon, and paging
+  forward uses the daemon's own opaque `next_cursor`. It is a `GET`, not a
+  form post — there is no action here to audit.
 - Restarting the web service drops a database handle and a reader and nothing
   else. `cs71d` owns every operation in flight and goes on running it, which is
   why a restart can neither cancel nor duplicate one, and why no command is ever

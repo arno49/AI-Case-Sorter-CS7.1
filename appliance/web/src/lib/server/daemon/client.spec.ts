@@ -143,6 +143,34 @@ describe('the software stop', () => {
 	});
 });
 
+describe('the operation history', () => {
+	beforeEach(() => {
+		daemon.answerWith(replying(200, { api_version: 'v1', items: [], next_cursor: null }));
+	});
+
+	it('reads with no query string when the caller asked for nothing in particular', async () => {
+		await client.operations();
+
+		expect(sent().path).toBe('/v1/operations');
+	});
+
+	it('carries a state, a type, a limit and a cursor the caller already validated', async () => {
+		await client.operations({ state: 'FAILED', type: 'SORT', limit: 10, cursor: 'a-cursor' });
+
+		const params = new URLSearchParams(sent().path.split('?')[1]);
+		expect(params.get('state')).toBe('FAILED');
+		expect(params.get('type')).toBe('SORT');
+		expect(params.get('limit')).toBe('10');
+		expect(params.get('cursor')).toBe('a-cursor');
+	});
+
+	it('uses the read deadline, not a command deadline', async () => {
+		await client.operations();
+
+		expect(sent().headers['x-deadline-ms']).toBe(String(DEADLINES.read));
+	});
+});
+
 describe('what the browser cannot choose', () => {
 	it('has no method that takes a path, a device or a protocol string', () => {
 		const surface = Object.getOwnPropertyNames(DaemonClient.prototype);
@@ -154,6 +182,7 @@ describe('what the browser cannot choose', () => {
 			'feed',
 			'home',
 			'operation',
+			'operations',
 			'recover',
 			'snapshot',
 			'sort',
