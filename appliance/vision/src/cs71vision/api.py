@@ -1,12 +1,19 @@
-"""cs71-vision's own read-only HTTP/JSON API, served on a Unix domain socket.
+"""cs71-vision's own HTTP/JSON API, served on a Unix domain socket.
 
-Mirrors `cs71d.api`'s shape deliberately, at a fraction of its surface: one
-resource (per-class dataset counts against the training floor), read-only,
-authenticated with the same shared bearer credential every service in this
-installation already carries (`cs71vision.runtime.read_service_token`).
-`cs71-web` is the only intended caller, the same way it already is for
-`cs71d`'s socket - see `docs/architecture/api-and-events.md` for the shared
-rules (Unix-socket only, bearer credential, never browser-addressable).
+Mirrors `cs71d.api`'s shape deliberately, at a fraction of its surface:
+dataset review (PI-VISION-003), and training/versioning/activation
+(PI-VISION-004/005), authenticated with the same shared bearer credential
+every service in this installation already carries
+(`cs71vision.runtime.read_service_token`). `cs71-web` is the only intended
+caller, the same way it already is for `cs71d`'s socket - see
+`docs/architecture/api-and-events.md` for the shared rules (Unix-socket
+only, bearer credential, never browser-addressable).
+
+Training, activation and rollback carry no actor or attribution of their
+own - this module has no concept of "which operator". Attribution and the
+audit trail live entirely on the `cs71-web` side (`recordAudit`), the same
+way `cs71d` never learns a browser identity either; this socket only ever
+learns "an authenticated caller asked".
 
 This module has no TCP code path at all, the same guarantee
 `appliance/daemon/src/cs71d/api.py` makes and tests statically.
@@ -18,24 +25,33 @@ import hmac
 import json
 import logging
 import os
+import re
 import socket
 import socketserver
 import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from .dataset import DatasetStore
+from .dataset import DatasetError, DatasetStore
 
 _LOGGER = logging.getLogger("cs71vision.api")
 
 SOCKET_MODE = 0o660
 SHUTDOWN_POLL_SECONDS = 0.2
+#: None of this API's routes have a body to read; this only bounds how much
+#: of an unexpected one is ever drained before being discarded.
+MAX_BODY_BYTES = 4_096
+
+_ACTIVATE_PATH = re.compile(r"^/v1/models/(?P<version>[0-9]+)/activate$")
 
 _ERROR_STATUS: dict[str, HTTPStatus] = {
     "UNAUTHENTICATED": HTTPStatus.UNAUTHORIZED,
     "RESOURCE_NOT_FOUND": HTTPStatus.NOT_FOUND,
+    "VALIDATION_FAILED": HTTPStatus.BAD_REQUEST,
     "INTERNAL_ERROR": HTTPStatus.INTERNAL_SERVER_ERROR,
 }
 
@@ -49,14 +65,28 @@ class ApiError(Exception):
         self.message = message
 
 
-class DatasetApiServer:
-    """Serve `GET /v1/dataset` on one Unix domain socket.
+class Trainable(Protocol):
+    """What this API needs to trigger training - `TrainingJob` today, a fake in tests.
 
-    Owns the `DatasetStore` it is given the same way `CorrelationLoop` owns
-    its own: `close()` releases it. The two hold independent connections to
-    the same `vision.db` - safe under the WAL mode `DatasetStore.open`
-    already enforces, and it keeps this server's lifecycle free of any
-    dependency on whether correlation is currently running.
+    A `Protocol`, not a concrete import of `cs71vision.runtime.TrainingJob`:
+    `runtime.py` builds a `VisionApiServer` (`build_api_server`), so a
+    concrete import here would be circular. `TrainingJob` satisfies this
+    structurally, the same way `Correlator` satisfies `runtime.Poller`
+    without either module importing the other.
+    """
+
+    def trigger(self) -> bool: ...
+    def close(self) -> None: ...
+
+
+class VisionApiServer:
+    """Serve `cs71-vision`'s dataset/training/activation resources on one socket.
+
+    Owns both the `DatasetStore` and the `TrainingJob` it is given, the same
+    way `CorrelationLoop` owns its own store: `close()` releases both. Each
+    holds an independent connection to the same `vision.db` - safe under the
+    WAL mode `DatasetStore.open` already enforces, and it keeps every
+    component's lifecycle free of any dependency on the others' state.
     """
 
     def __init__(
@@ -66,6 +96,8 @@ class DatasetApiServer:
         socket_path: str | Path,
         service_token: str,
         minimum_examples_per_class: int,
+        training_job: Trainable,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
         socket_mode: int = SOCKET_MODE,
     ) -> None:
         if not service_token:
@@ -76,6 +108,8 @@ class DatasetApiServer:
         self._socket_path = str(socket_path)
         self._token = service_token.encode("utf-8")
         self._minimum = minimum_examples_per_class
+        self._training_job = training_job
+        self._now = now
         self._socket_mode = socket_mode
         self._server: _UnixHttpServer | None = None
         self._thread: threading.Thread | None = None
@@ -109,9 +143,10 @@ class DatasetApiServer:
             if thread is not None:
                 thread.join(timeout)
             self._unlink_stale_socket()
+        self._training_job.close()
         self._store.close()
 
-    def __enter__(self) -> DatasetApiServer:
+    def __enter__(self) -> VisionApiServer:
         self.start()
         return self
 
@@ -126,11 +161,22 @@ class DatasetApiServer:
             raise ApiError("UNAUTHENTICATED", "a valid local service credential is required")
 
     def route(self, method: str, path: str) -> tuple[HTTPStatus, dict[str, Any]]:
-        if method not in {"GET", "HEAD"}:
-            raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
-        if path == "/v1/dataset":
-            return HTTPStatus.OK, self._dataset_body()
-        raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
+        if method in {"GET", "HEAD"}:
+            if path == "/v1/dataset":
+                return HTTPStatus.OK, self._dataset_body()
+            if path == "/v1/models":
+                return HTTPStatus.OK, self._models_body()
+            raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
+        if method == "POST":
+            if path == "/v1/train":
+                return HTTPStatus.OK, self._train_body()
+            if path == "/v1/rollback":
+                return HTTPStatus.OK, self._rollback_body()
+            matched = _ACTIVATE_PATH.fullmatch(path)
+            if matched is not None:
+                return HTTPStatus.OK, self._activate_body(int(matched.group("version")))
+            raise ApiError("RESOURCE_NOT_FOUND", f"POST {path} is not a resource of this API")
+        raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
 
     def _dataset_body(self) -> dict[str, Any]:
         counts = self._store.counts_by_slot()
@@ -143,6 +189,68 @@ class DatasetApiServer:
             "minimum_examples_per_class": self._minimum,
             "classes": classes,
             "training_ready": any(item["eligible"] for item in classes),
+        }
+
+    def _models_body(self) -> dict[str, Any]:
+        return {
+            "api_version": "v1",
+            "active_version": self._store.active_version(),
+            # Mirrors _rollback_body's own precondition exactly, so a caller
+            # can show or hide a rollback control correctly rather than
+            # guessing from candidate count (a model can be trained many
+            # times while only ever activated once, which leaves nothing to
+            # roll back to despite several recorded candidates existing).
+            "can_roll_back": len(self._store.activations()) >= 2,
+            "candidates": [
+                {
+                    "version": candidate.version,
+                    "trained_at": candidate.trained_at,
+                    "included_classes": list(candidate.included_classes),
+                    "excluded_classes": list(candidate.excluded_classes),
+                    "accuracy_by_class": {
+                        str(slot): accuracy
+                        for slot, accuracy in candidate.accuracy_by_class.items()
+                    },
+                    "minimum_examples_per_class": candidate.minimum_examples_per_class,
+                    "training_example_count": candidate.training_example_count,
+                    "holdout_example_count": candidate.holdout_example_count,
+                }
+                for candidate in self._store.candidates()
+            ],
+        }
+
+    def _train_body(self) -> dict[str, Any]:
+        """Trigger a training run. `started: false` means one was already in flight.
+
+        Never itself the floor-and-classes decision - `TrainingJob.trigger()`
+        starting nothing there is already sufficient answer to "was a run
+        already running"; the caller does not need a distinct error for it.
+        """
+        return {"api_version": "v1", "started": self._training_job.trigger()}
+
+    def _activate_body(self, version: int) -> dict[str, Any]:
+        activated_at = self._now()
+        try:
+            self._store.activate(version, activated_at=activated_at)
+        except DatasetError as exc:
+            raise ApiError("RESOURCE_NOT_FOUND", str(exc)) from exc
+        return {
+            "api_version": "v1",
+            "active_version": version,
+            "activated_at": _rfc3339(activated_at),
+        }
+
+    def _rollback_body(self) -> dict[str, Any]:
+        history = self._store.activations()
+        if len(history) < 2:
+            raise ApiError("VALIDATION_FAILED", "there is no previous version to roll back to")
+        previous_version = history[-2].version
+        activated_at = self._now()
+        self._store.activate(previous_version, activated_at=activated_at)
+        return {
+            "api_version": "v1",
+            "active_version": previous_version,
+            "activated_at": _rfc3339(activated_at),
         }
 
     def _claim_socket_path(self) -> None:
@@ -172,10 +280,14 @@ class DatasetApiServer:
             return
 
 
+def _rfc3339(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat()
+
+
 class _UnixHttpServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
     allow_reuse_address = True
-    api: DatasetApiServer
+    api: VisionApiServer
 
     def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
         # BaseHTTPRequestHandler expects an addressable peer; a Unix peer has
@@ -192,6 +304,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._dispatch("GET")
 
+    def do_POST(self) -> None:
+        self._dispatch("POST")
+
     def address_string(self) -> str:
         return "unix"
 
@@ -204,6 +319,7 @@ class _Handler(BaseHTTPRequestHandler):
         api = server.api
         try:
             api.authenticate(self.headers.get("Authorization"))
+            self._drain_body()
             status, body = api.route(method, self.path)
         except ApiError as exc:
             self._write(_ERROR_STATUS.get(exc.code, HTTPStatus.INTERNAL_SERVER_ERROR), exc)
@@ -215,6 +331,23 @@ class _Handler(BaseHTTPRequestHandler):
             )
         else:
             self._write(status, body)
+
+    def _drain_body(self) -> None:
+        """Read and discard any request body, capped, so the connection stays clean.
+
+        No route on this API parses a body; this exists only so an
+        HTTP/1.1 keep-alive connection is not left with unread bytes ahead
+        of whatever the client sends next.
+        """
+        declared = self.headers.get("Content-Length")
+        if declared is None:
+            return
+        try:
+            length = min(int(declared), MAX_BODY_BYTES)
+        except ValueError:
+            return
+        if length > 0:
+            self.rfile.read(length)
 
     def _write(self, status: HTTPStatus, body: ApiError | dict[str, Any]) -> None:
         content = (

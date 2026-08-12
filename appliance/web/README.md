@@ -481,12 +481,12 @@ and the system facts through the real hook.
 
 ### What the dataset view reports
 
-`/dataset` (PI-VISION-003) is a second, independent read boundary: it talks
-to `cs71-vision`, not `cs71d`. `src/lib/server/vision/client.ts` is a small
-hand-typed client for `cs71-vision`'s one resource, `GET /v1/dataset` — not
-a second generated OpenAPI contract; that weight was judged disproportionate
-to one read-only endpoint (see PI-VISION-003's backlog entry for the full
-reasoning). It reuses `daemon/transport.ts#exchange` and
+`/dataset` (PI-VISION-003/004/005) is a second, independent boundary from
+the dashboard: it talks to `cs71-vision`, not `cs71d`.
+`src/lib/server/vision/client.ts` is a small hand-typed client, not a
+second generated OpenAPI contract; that weight was judged disproportionate
+to `cs71-vision`'s api surface (see PI-VISION-003's backlog entry for the
+full reasoning). It reuses `daemon/transport.ts#exchange` and
 `daemon/credentials.ts#readServiceToken` directly, since both are generic
 Unix-socket-HTTP infrastructure with nothing daemon-specific about them, and
 authenticates with this service's own existing copy of the shared service
@@ -494,12 +494,36 @@ credential (`CS71_WEB_SERVICE_TOKEN_PATH`) — `cs71-vision` accepts the same
 shared secret `cs71d` does, so no second credential file was introduced.
 Failures are re-wrapped into this module's own `VisionError` rather than
 left as a `DaemonError`, so nothing named "Daemon" leaks into a caller
-talking to a different service. `src/lib/dataset-view.ts` is the
-wording-as-data module: each class becomes a `label`/`detail`/`tone`
-(`system-view.ts`'s own `Reading` shape), and a class below the configured
-floor states why in its `detail` rather than being omitted from the list.
-`dataset-page.spec.ts` proves the load reads the dataset summary through the
-real hook, against a real stand-in `cs71-vision` on a real `AF_UNIX` socket.
+talking to a different service.
+
+`src/lib/dataset-view.ts` is the wording-as-data module: each class becomes
+a `label`/`detail`/`tone` (`system-view.ts`'s own `Reading` shape), and a
+class below the configured floor states why in its `detail` rather than
+being omitted from the list. `modelReadings()` builds each recorded
+candidate's per-class accuracy comparison against whichever model is
+currently active — the page renders that table directly above a
+candidate's own activate control, which is what satisfies ADR-0013's
+"activation is refused unless the operator has been shown the candidate's
+accuracy alongside the currently active model's": it is a property of what
+the page renders, not a separate confirmation step.
+
+Training, activating and rolling back (PI-VISION-005) are three ordinary
+form actions (`?/train`, `?/activate`, `?/rollback`) shaped exactly like the
+dashboard's own manual commands — `requireCapability` next to the effect,
+`recordAudit` on every outcome including a refusal — except with no
+generation or idempotency key, since `cs71-vision` has no optimistic-
+concurrency model to match: none of these three ever touch `cs71d` or
+machine state. They gate on a new capability, `vision.train`
+(`security-and-safety.md`), granted at the `operator` row rather than
+reserved to `administrator` — a deliberate departure recorded in ADR-0013,
+since retraining/activating a classifier is neither machine motion nor an
+irreversible action the way `machine.recover`/`config.write` are.
+
+`dataset-page.spec.ts` proves both halves through the real hook: the load
+reads `GET /v1/dataset` and `GET /v1/models` against a real stand-in
+`cs71-vision` on a real `AF_UNIX` socket, and each action reaches its own
+resource (`POST /v1/train`, `POST /v1/models/{version}/activate`,
+`POST /v1/rollback`) and lands a real `web_audit` row, accepted or refused.
 
 Set `CS71_VISION_SOCKET_PATH` to point at a different `cs71-vision` socket in
 development; the production profile pins it to

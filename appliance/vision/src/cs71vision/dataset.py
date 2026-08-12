@@ -80,6 +80,19 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=3,
+        name="activations",
+        statements=(
+            """
+            CREATE TABLE activations (
+                activation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version INTEGER NOT NULL REFERENCES models(version),
+                activated_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -126,6 +139,19 @@ class CandidateSummary:
     minimum_examples_per_class: int
     training_example_count: int
     holdout_example_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationSummary:
+    """One activation event: which version became active, and when.
+
+    Append-only, the same discipline `web_audit` uses: "roll back" is never
+    an edit to a prior row, it is a new row pointing at an earlier version.
+    """
+
+    activation_id: int
+    version: int
+    activated_at: str
 
 
 _CREATE_MIGRATION_LEDGER = """
@@ -318,6 +344,53 @@ class DatasetStore:
         if row is None:
             raise DatasetError(f"no candidate model at version {version}")
         return bytes(row["model_blob"])
+
+    def activate(self, version: int, *, activated_at: datetime) -> int:
+        """Make `version` the active model by recording a new activation event.
+
+        Never edits a prior activation row - "roll back" is a new activation
+        pointing at an earlier version, the same append-only discipline
+        `web_audit` uses. Refuses a version this store never recorded a
+        candidate for; the `REFERENCES models(version)` foreign key backs
+        this with a second, structural guarantee, but this check exists for
+        the clearer message.
+        """
+        with self._transaction() as cursor:
+            exists = cursor.execute("SELECT 1 FROM models WHERE version = ?", (version,)).fetchone()
+            if exists is None:
+                raise DatasetError(f"no candidate model at version {version}")
+            cursor.execute(
+                "INSERT INTO activations (version, activated_at) VALUES (?, ?)",
+                (version, _encode_time(activated_at)),
+            )
+            activation_id = cursor.lastrowid
+        if activation_id is None:
+            raise DatasetError("activating a candidate did not yield an activation id")
+        return activation_id
+
+    def activations(self) -> tuple[ActivationSummary, ...]:
+        """Every activation event, oldest first - the full activate/rollback history."""
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                "SELECT activation_id, version, activated_at"
+                " FROM activations ORDER BY activation_id"
+            ).fetchall()
+        return tuple(
+            ActivationSummary(
+                activation_id=int(row["activation_id"]),
+                version=int(row["version"]),
+                activated_at=str(row["activated_at"]),
+            )
+            for row in rows
+        )
+
+    def active_version(self) -> int | None:
+        """The version of the most recent activation, or None if never activated."""
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT version FROM activations ORDER BY activation_id DESC LIMIT 1"
+            ).fetchone()
+        return None if row is None else int(row["version"])
 
     def _configure(self) -> None:
         try:

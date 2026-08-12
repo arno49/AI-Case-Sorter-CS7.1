@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from .api import DatasetApiServer
+from .api import VisionApiServer
 from .camera import Camera, CameraError, FixtureCamera, Frame, V4L2Camera
 from .config import Backend, ConfigError, VisionConfig
 from .correlator import Correlator, FrameBuffer
@@ -309,24 +309,30 @@ def build_training_job(config: VisionConfig) -> TrainingJob | None:
     return TrainingJob(store, trainer)
 
 
-def build_api_server(config: VisionConfig) -> DatasetApiServer | None:
-    """Build the dataset API server, or None if this config never talks to cs71d.
+def build_api_server(config: VisionConfig) -> VisionApiServer | None:
+    """Build the vision API server, or None if this config never talks to cs71d.
 
-    Same gate `build_correlation_loop` uses: without a service token there is
-    no credential to authenticate a caller against and no dataset ever being
-    populated, so capture-only mode exposes no API either.
+    Same gate `build_correlation_loop`/`build_training_job` use: without a
+    service token there is no credential to authenticate a caller against
+    and no dataset ever being populated, so capture-only mode exposes no API
+    either.
 
     Opens its own `DatasetStore` handle, independent of the one
-    `build_correlation_loop` opens - see `DatasetApiServer`'s own docstring
-    for why that is safe and deliberate.
+    `build_correlation_loop` opens, and its own `TrainingJob` (with its own
+    independent `DatasetStore` handle in turn) rather than sharing either -
+    see `VisionApiServer`'s own docstring for why that is safe and
+    deliberate. `VisionApiServer.close()` closes both.
     """
     if config.daemon_service_token_path is None:
         return None
     token = read_service_token(config.daemon_service_token_path)
     store = DatasetStore.open(config.dataset_path)
-    return DatasetApiServer(
+    training_job = build_training_job(config)
+    assert training_job is not None  # same gate already checked above
+    return VisionApiServer(
         store,
         socket_path=config.api_socket_path,
         service_token=token,
         minimum_examples_per_class=config.minimum_examples_per_class,
+        training_job=training_job,
     )

@@ -97,6 +97,7 @@
 		'machine.read': 'View machine state, history and faults',
 		'machine.stop': 'Stop the machine (software stop, not an emergency stop)',
 		'machine.operate': 'Connect, home, sort and feed',
+		'vision.train': 'Retrain, activate and roll back the classifier model',
 		'machine.recover': 'Recovery and reset, with explicit confirmation',
 		'config.write': 'Change permitted configuration',
 		'users.manage': 'Manage users and provisioning'

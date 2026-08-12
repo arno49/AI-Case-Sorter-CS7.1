@@ -9,9 +9,14 @@
 export {
 	API_VERSION,
 	DEADLINES,
+	InvalidCommandError,
 	VisionClient,
+	type ActivationResult,
+	type CandidateSummary,
 	type DatasetClassSummary,
 	type DatasetSummary,
+	type ModelsSummary,
+	type TrainResult,
 	type VisionClientOptions
 } from './client';
 

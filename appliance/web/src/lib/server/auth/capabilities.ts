@@ -7,12 +7,16 @@
  * handler that reads `role === 'administrator'` would have to be found and
  * changed again the next time the matrix moves.
  *
- * Two rows of that table deserve their names here rather than a comment
+ * Three rows of that table deserve their names here rather than a comment
  * elsewhere. A viewer may stop the machine -- withholding the stop from the
  * least privileged account would be a safety decision made by an access-control
- * table. And no role at all may drive the protocol or the device path, so
+ * table. No role at all may drive the protocol or the device path, so
  * `protocol.direct` exists to be refused: a route that ever asks for it is
- * denied for everybody, including an administrator.
+ * denied for everybody, including an administrator. And `vision.train`
+ * (PI-VISION-005) is a deliberate departure from this project's own pattern
+ * of reserving impactful actions to `administrator` (ADR-0013): retraining
+ * and activating a classifier candidate never touches machine motion, so it
+ * is granted at the `operator` row alongside `machine.operate`.
  */
 
 import type { Role } from './users';
@@ -21,6 +25,7 @@ export const CAPABILITIES = [
 	'machine.read',
 	'machine.stop',
 	'machine.operate',
+	'vision.train',
 	'machine.recover',
 	'config.write',
 	'users.manage',
@@ -31,7 +36,7 @@ export type Capability = (typeof CAPABILITIES)[number];
 
 const VIEWER: readonly Capability[] = ['machine.read', 'machine.stop'];
 
-const OPERATOR: readonly Capability[] = [...VIEWER, 'machine.operate'];
+const OPERATOR: readonly Capability[] = [...VIEWER, 'machine.operate', 'vision.train'];
 
 const ADMINISTRATOR: readonly Capability[] = [
 	...OPERATOR,
