@@ -35,8 +35,12 @@ capability matrix, CSRF, origin, rate and concurrency controls on
 state-changing requests, a socket-only daemon client behind a dashboard that
 reads the machine snapshot and submits the software stop, and a browser event
 stream fanned out from one daemon reader whose consumers re-read a snapshot
-rather than present a gap. Feed and the remaining operator screens are not
-implemented; do not describe it as deployed or qualified.
+rather than present a gap. The dashboard's wording is decided in one tested
+module: acceptance never reads as completion, an unconfirmed terminal reads as
+an outcome that is not known, an unobserved axis reads "not known" rather than
+"not homed", and the software stop is the first control in the tab order. Feed,
+manual controls and the history screens are not implemented; do not describe it
+as deployed or qualified.
 
 ## Current validated baseline
 
@@ -48,7 +52,7 @@ implemented; do not describe it as deployed or qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 404 passing vitest tests.
+- `appliance/web` workspace: 429 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -323,6 +327,18 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   the only thing that describes the machine completely. Reads are coalesced so a
   busy machine cannot make a page flood itself, and a screen that owes a snapshot
   says so rather than looking current.
+- What a screen says about the machine is decided in
+  `appliance/web/src/lib/machine-status.ts`, not in markup. No word of
+  completion describes an operation that has not settled, and settled is reached
+  only through a terminal with `trusted_terminal` — an unconfirmed terminal is
+  presented as an outcome that is not known, never repeated by its state name.
+  An axis the session has not observed reads "not known", not "not homed": the
+  wire has no third value, and a guess in the safe-looking direction is still a
+  guess. `UNCERTAIN` keeps a tone of its own so it cannot collapse into ordinary
+  attention.
+- The software stop is the first control in the document and therefore in the
+  tab order; no element on an operator page declares a positive `tabindex`. The
+  page says beside the button that it is a software stop, not an emergency stop.
 - Restarting the web service drops a database handle and a reader and nothing
   else. `cs71d` owns every operation in flight and goes on running it, which is
   why a restart can neither cancel nor duplicate one, and why no command is ever

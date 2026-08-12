@@ -343,6 +343,34 @@ can read, and one read per event would be load the page inflicted on itself.
 What matters is that a read _ends_ after the last event. A screen that owes a
 snapshot says so, so a stale picture is visibly stale rather than quietly wrong.
 
+### What a screen may say
+
+`src/lib/machine-status.ts` decides every sentence the dashboard shows about
+the machine, as data rather than markup, which is what makes the rules
+testable. Three rules run through it. Acceptance is not completion: no word of
+completion (`COMPLETION_WORDS` is the pattern the specs enforce) may describe
+an operation that has not settled, and settled is reached only through a
+terminal the controller confirmed — `trusted_terminal` is the difference
+between an outcome and a guess, so an unconfirmed terminal is presented as an
+outcome that is not known rather than repeated by its state name. Not known is
+worth saying: the wire has no third value for an axis the session never
+observed, so a disconnected session reads "not known" rather than "not homed" —
+an operator told "not known" homes the machine, which is safe; one told a guess
+acts on it. `UNCERTAIN` carries its own tone, distinct from ordinary attention,
+so a machine whose state is unknown cannot blend into one with a known problem.
+
+The dashboard is composed from `src/lib/components/`: `MachineStatus.svelte`
+renders those readings, and `StopControl.svelte` is deliberately first in the
+document — and therefore first in the tab order, since nothing on the page
+declares a positive `tabindex` — so a keyboard reaches the software stop before
+anything else. `src/routes/rendered.ts` reads a server-rendered page the way a
+keyboard does (focus order, accessible names, the form a control submits), and
+`dashboard-page.spec.ts` uses it to drive the keyboard flow end to end: the
+real load renders the page, the first focusable control is the stop, and
+submitting exactly the fields its form carries reaches the fake daemon as a
+stop command. It is still a software stop, and the page says so beside the
+button.
+
 ### Restarting this service
 
 A restart drops a database handle and a reader. It reaches nothing else: `cs71d`
