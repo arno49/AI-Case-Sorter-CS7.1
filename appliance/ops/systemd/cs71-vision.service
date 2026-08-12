@@ -1,0 +1,53 @@
+[Unit]
+Description=cs71-vision - camera capture for the CS7.1 appliance
+Documentation=https://github.com/arno49/AI-Case-Sorter-CS7.1/blob/main/appliance/vision/README.md
+After=local-fs.target dev-cs71vision.device
+BindsTo=dev-cs71vision.device
+ConditionPathExists=/dev/cs71vision
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=cs71-vision
+Group=cs71-vision
+UMask=0077
+ExecStart=/opt/cs71/vision/venv/bin/cs71vision --serve /etc/cs71/cs71vision.toml
+Restart=on-failure
+RestartSec=2
+
+# Only the matched camera symlink, only read/write, nothing else in /dev -
+# the same discipline cs71d.service's DeviceAllow= already uses for the
+# serial adapter.
+DeviceAllow=/dev/cs71vision rw
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# No network at all: this service only ever reads a camera and logs -
+# tighter even than cs71d's AF_UNIX, since it has no socket of its own yet.
+RestrictAddressFamilies=
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=512M
+CPUQuota=100%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

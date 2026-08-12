@@ -1,0 +1,17 @@
+# Stable device identity for the CS7.1 classifier camera.
+#
+# Matches on USB vendor ID and product ID - not the serial number as well,
+# unlike 99-cs71.rules for the controller adapter. That rule needs a serial
+# number because "any generic USB-serial adapter" is a broad class it must
+# not accidentally match; this rule matches a specific camera module already
+# chosen for this appliance (3DModels/Classifier/CameraV2), where exactly one
+# unit is expected to ever be attached, and many inexpensive UVC modules do
+# not reliably program a unique USB serial string in the first place. No
+# camera has been approved with recorded hardware evidence yet; the two
+# placeholders below are substituted by install.sh, the same way the
+# controller adapter's are. This file as checked in matches nothing until
+# that substitution happens.
+#
+# TAG+="systemd" plus SYSTEMD_WANTS starts cs71-vision.service the moment the
+# camera is present, the same reason 99-cs71.rules does it for cs71d.service.
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="@@CAMERA_VENDOR_ID@@", ATTRS{idProduct}=="@@CAMERA_PRODUCT_ID@@", SYMLINK+="cs71vision", GROUP="cs71-vision", MODE="0660", TAG+="systemd", ENV{SYSTEMD_WANTS}="cs71-vision.service"

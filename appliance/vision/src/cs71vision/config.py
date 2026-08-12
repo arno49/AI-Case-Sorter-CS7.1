@@ -1,0 +1,152 @@
+"""Strict `cs71-vision` configuration with fail-safe profile defaults.
+
+Mirrors `cs71d.config` deliberately: the same three profiles, the same
+"production fixes every path so there is nothing left to misconfigure"
+posture, the same refusal of unknown fields. A camera source is exactly as
+much a hardware boundary as a serial port, so it gets the same discipline.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+
+class ConfigError(ValueError):
+    """Raised when vision configuration violates an appliance invariant."""
+
+
+class Profile(StrEnum):
+    DEVELOPMENT = "development"
+    TEST = "test"
+    PRODUCTION = "production"
+
+
+class Backend(StrEnum):
+    FIXTURE = "fixture"
+    V4L2 = "v4l2"
+
+
+#: The udev-created stable symlink for the approved camera module, the same
+#: shape `cs71d.config.PRODUCTION_DEVICE_PATH` is for the serial adapter.
+PRODUCTION_DEVICE_PATH = "/dev/cs71vision"
+
+_ALLOWED_FIELDS = {
+    "profile",
+    "backend",
+    "device_path",
+    "capture_interval_ms",
+    "frame_width",
+    "frame_height",
+}
+
+_DEFAULT_INTERVAL_MS = 1_000
+#: The CameraV2 USB VGA module's native resolution
+#: (3DModels/Classifier/CameraV2/Camera Assembly V2.pdf).
+_DEFAULT_WIDTH = 640
+_DEFAULT_HEIGHT = 480
+
+
+@dataclass(frozen=True, slots=True)
+class VisionConfig:
+    profile: Profile
+    backend: Backend
+    device_path: str | None
+    capture_interval_ms: int
+    frame_width: int
+    frame_height: int
+
+    @classmethod
+    def development(cls) -> VisionConfig:
+        return cls(
+            profile=Profile.DEVELOPMENT,
+            backend=Backend.FIXTURE,
+            device_path=None,
+            capture_interval_ms=_DEFAULT_INTERVAL_MS,
+            frame_width=_DEFAULT_WIDTH,
+            frame_height=_DEFAULT_HEIGHT,
+        )
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> VisionConfig:
+        unknown = set(raw) - _ALLOWED_FIELDS
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise ConfigError(f"unknown vision configuration field(s): {names}")
+
+        try:
+            profile = Profile(_required_string(raw, "profile"))
+            backend = Backend(_required_string(raw, "backend"))
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
+        device_path = _optional_string(raw, "device_path")
+        capture_interval_ms = _positive_int(raw, "capture_interval_ms", _DEFAULT_INTERVAL_MS)
+        frame_width = _positive_int(raw, "frame_width", _DEFAULT_WIDTH)
+        frame_height = _positive_int(raw, "frame_height", _DEFAULT_HEIGHT)
+
+        if backend is Backend.FIXTURE and device_path is not None:
+            raise ConfigError("fixture backend cannot specify device_path")
+
+        if profile is Profile.PRODUCTION:
+            if backend is not Backend.V4L2:
+                raise ConfigError("production profile requires v4l2 backend")
+            if device_path != PRODUCTION_DEVICE_PATH:
+                raise ConfigError(f"production device_path must be {PRODUCTION_DEVICE_PATH}")
+        elif backend is Backend.V4L2:
+            raise ConfigError("v4l2 backend is reserved for the production profile")
+
+        return cls(
+            profile=profile,
+            backend=backend,
+            device_path=device_path,
+            capture_interval_ms=capture_interval_ms,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+
+
+def load_config(path: str | Path | None = None) -> VisionConfig:
+    if path is None:
+        return VisionConfig.development()
+
+    config_path = Path(path)
+    try:
+        with config_path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"cannot load configuration {config_path}: {exc}") from exc
+
+    if set(document) != {"vision"}:
+        raise ConfigError("configuration must contain only a [vision] table")
+    vision = document["vision"]
+    if not isinstance(vision, dict):
+        raise ConfigError("[vision] must be a table")
+    return VisionConfig.from_mapping(vision)
+
+
+def _required_string(raw: Mapping[str, Any], name: str) -> str:
+    value = raw.get(name)
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{name} must be a non-empty string")
+    return value
+
+
+def _optional_string(raw: Mapping[str, Any], name: str) -> str | None:
+    value = raw.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{name} must be a non-empty string when provided")
+    return value
+
+
+def _positive_int(raw: Mapping[str, Any], name: str, default: int) -> int:
+    value = raw.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return value

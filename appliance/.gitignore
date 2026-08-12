@@ -5,3 +5,8 @@ daemon/build/
 daemon/dist/
 daemon/reports/
 daemon/src/*.egg-info/
+vision/.pytest_cache/
+vision/build/
+vision/dist/
+vision/reports/
+vision/src/*.egg-info/

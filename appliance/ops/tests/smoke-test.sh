@@ -26,9 +26,10 @@ require_root
 
 cleanup() {
 	systemctl stop cs71-web.service cs71d.service cs71-web-smoke.service cs71d-smoke.service \
-		>/dev/null 2>&1 || true
+		cs71-vision-smoke.service >/dev/null 2>&1 || true
 	rm -f /etc/systemd/system/cs71d-smoke.service /etc/systemd/system/cs71-web-smoke.service
-	rm -f /etc/cs71/cs71d-smoke.toml /dev/cs71 /dev/cs71-smoke-stub
+	rm -f /etc/systemd/system/cs71-vision-smoke.service
+	rm -f /etc/cs71/cs71d-smoke.toml /etc/cs71/cs71vision-smoke.toml /dev/cs71 /dev/cs71-smoke-stub
 	rm -rf /var/lib/cs71-backups
 	# The restore drill below points the real unit names at the smoke config;
 	# put them back to what install.sh actually shipped.
@@ -189,5 +190,56 @@ restored_status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/
 	log "FAIL: GET /login after restore returned $restored_status, expected 200"
 	exit 1
 }
+
+log "== a test-only vision config: fixture backend, no real camera needed =="
+cat >/etc/cs71/cs71vision-smoke.toml <<'EOF'
+[vision]
+profile = "test"
+backend = "fixture"
+capture_interval_ms = 200
+EOF
+chmod 0644 /etc/cs71/cs71vision-smoke.toml
+
+log "== deriving a vision test unit: identical sandbox, no camera-arrival gate =="
+sed -e 's#/etc/cs71/cs71vision\.toml#/etc/cs71/cs71vision-smoke.toml#' \
+	-e '/^ConditionPathExists=/d' \
+	-e '/^BindsTo=/d' \
+	-e 's#^After=local-fs\.target dev-cs71vision\.device#After=local-fs.target#' \
+	"$OPS_DIR/systemd/cs71-vision.service" >/etc/systemd/system/cs71-vision-smoke.service
+systemctl daemon-reload
+
+log "== starting the real sandboxed vision process =="
+systemctl start cs71-vision-smoke.service
+for _ in $(seq 1 20); do
+	systemctl is-active --quiet cs71-vision-smoke.service && break
+	sleep 0.5
+done
+if ! systemctl is-active --quiet cs71-vision-smoke.service; then
+	journalctl -u cs71-vision-smoke.service --no-pager
+	log "FAIL: cs71-vision did not stay active under its sandbox"
+	exit 1
+fi
+
+log "== cs71-vision is actually capturing fixture frames, not just staying up =="
+for _ in $(seq 1 20); do
+	journalctl -u cs71-vision-smoke.service --no-pager | grep -q "captured a" && break
+	sleep 0.5
+done
+journalctl -u cs71-vision-smoke.service --no-pager | grep -q "captured a" || {
+	journalctl -u cs71-vision-smoke.service --no-pager
+	log "FAIL: cs71-vision never logged a captured frame"
+	exit 1
+}
+
+log "== cs71-vision's own sandbox refuses to open any socket at all =="
+if systemd-run --pipe --wait --collect \
+	--property=User=cs71-vision --property=NoNewPrivileges=yes --property=RestrictAddressFamilies= \
+	python3 -c 'import socket; socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)' \
+	>/tmp/cs71-smoke-vision-af-unix.log 2>&1; then
+	cat /tmp/cs71-smoke-vision-af-unix.log
+	log "FAIL: a process under cs71-vision's own sandbox settings opened an AF_UNIX socket"
+	exit 1
+fi
+rm -f /tmp/cs71-smoke-vision-af-unix.log
 
 log "== all checks passed =="

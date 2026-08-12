@@ -26,17 +26,26 @@ HOSTNAME_ARG=""
 VENDOR_ID=""
 PRODUCT_ID=""
 SERIAL=""
+CAMERA_VENDOR_ID=""
+CAMERA_PRODUCT_ID=""
 
 usage() {
 	cat <<'EOF' >&2
-Usage: install.sh --hostname HOST --vendor-id XXXX --product-id XXXX --serial STRING [--web-port PORT] [--start]
+Usage: install.sh --hostname HOST --vendor-id XXXX --product-id XXXX --serial STRING [--web-port PORT] [--camera-vendor-id XXXX --camera-product-id XXXX] [--start]
 
-  --hostname HOST     LAN hostname Caddy serves (e.g. cs71.local)
-  --vendor-id XXXX    approved USB adapter vendor ID, 4 hex digits
-  --product-id XXXX   approved USB adapter product ID, 4 hex digits
-  --serial STRING     approved adapter's own serial number
-  --web-port PORT     loopback port cs71-web listens on (default 3000)
-  --start             enable and start services now (default: install and enable only)
+  --hostname HOST          LAN hostname Caddy serves (e.g. cs71.local)
+  --vendor-id XXXX         approved USB adapter vendor ID, 4 hex digits
+  --product-id XXXX        approved USB adapter product ID, 4 hex digits
+  --serial STRING          approved adapter's own serial number
+  --web-port PORT          loopback port cs71-web listens on (default 3000)
+  --camera-vendor-id XXXX  classifier camera vendor ID, 4 hex digits (optional)
+  --camera-product-id XXXX classifier camera product ID, 4 hex digits (optional)
+  --start                  enable and start services now (default: install and enable only)
+
+cs71-vision is always installed and enabled. Without the two --camera-*
+arguments its udev rule matches no real device, the same way the checked-in
+rule does before substitution - install it again with those arguments once
+the camera's hardware identity is recorded (PI-HIL-001-class evidence).
 EOF
 	exit 2
 }
@@ -63,6 +72,14 @@ while [ $# -gt 0 ]; do
 		WEB_PORT="$2"
 		shift 2
 		;;
+	--camera-vendor-id)
+		CAMERA_VENDOR_ID="$2"
+		shift 2
+		;;
+	--camera-product-id)
+		CAMERA_PRODUCT_ID="$2"
+		shift 2
+		;;
 	--start)
 		START=true
 		shift
@@ -81,8 +98,12 @@ log "== users and groups =="
 ensure_group cs71d
 ensure_group cs71-web
 ensure_group cs71-api
+ensure_group cs71-vision
 ensure_system_user cs71d cs71d /var/lib/cs71d
 ensure_system_user cs71-web cs71-web /var/lib/cs71-web
+# No state directory of its own yet: PI-VISION-001 captures frames and logs
+# them, nothing durable exists here until PI-VISION-002's dataset store.
+ensure_system_user cs71-vision cs71-vision /var/lib/cs71-vision
 # Real OS-level membership, in addition to (not instead of) cs71-web.service's
 # own SupplementaryGroups=cs71-api: that directive is systemd's own grant and
 # needs no /etc/group entry, but anything reaching this identity a different
@@ -92,6 +113,7 @@ ensure_group_member cs71-api cs71-web
 log "== directories =="
 ensure_dir /opt/cs71/web root:root 0755
 ensure_dir /opt/cs71/daemon root:root 0755
+ensure_dir /opt/cs71/vision root:root 0755
 # Owner-only, and owned by the identity that reads the credential inside -
 # access is by matching UID, not by group membership, so it does not depend
 # on which supplementary groups end up on the process at run time.
@@ -112,6 +134,12 @@ log "== daemon config =="
 # not already read from this repository. The credential is a separate file.
 install -o root -g root -m 0644 "$SOURCE_ROOT/appliance/daemon/config/production.example.toml" \
 	/etc/cs71/cs71d.toml
+
+log "== vision config =="
+# World-readable for the same reason cs71d.toml is: every value is already
+# fixed by the production profile, nothing secret in it.
+install -o root -g root -m 0644 "$SOURCE_ROOT/appliance/vision/config/production.example.toml" \
+	/etc/cs71/cs71vision.toml
 
 log "== web config =="
 install -o root -g root -m 0644 /dev/null /etc/cs71/web.env
@@ -134,6 +162,9 @@ build_web_workspace "$SOURCE_ROOT"
 log "== installing the daemon into a dedicated venv =="
 build_daemon_venv "$SOURCE_ROOT"
 
+log "== installing cs71-vision into a dedicated venv =="
+build_vision_venv "$SOURCE_ROOT"
+
 log "== recording what was actually installed, for backup.sh's manifest =="
 write_release_info "$SOURCE_ROOT"
 
@@ -153,12 +184,23 @@ install -m 0644 "$OPS_DIR/systemd/cs71d.service" /etc/systemd/system/cs71d.servi
 install -m 0644 "$OPS_DIR/systemd/cs71-web.service" /etc/systemd/system/cs71-web.service
 install -m 0644 "$OPS_DIR/systemd/cs71-backup.service" /etc/systemd/system/cs71-backup.service
 install -m 0644 "$OPS_DIR/systemd/cs71-backup.timer" /etc/systemd/system/cs71-backup.timer
+install -m 0644 "$OPS_DIR/systemd/cs71-vision.service" /etc/systemd/system/cs71-vision.service
 mkdir -p /etc/systemd/system/caddy.service.d
 install -m 0644 "$OPS_DIR/systemd/caddy-cs71.conf" /etc/systemd/system/caddy.service.d/cs71.conf
 
-log "== udev rule =="
+log "== udev rule (controller) =="
 substitute_template "$OPS_DIR/udev/99-cs71.rules" /etc/udev/rules.d/99-cs71.rules \
 	"VENDOR_ID=$VENDOR_ID" "PRODUCT_ID=$PRODUCT_ID" "SERIAL=$SERIAL"
+
+log "== udev rule (classifier camera) =="
+if [ -n "$CAMERA_VENDOR_ID" ] && [ -n "$CAMERA_PRODUCT_ID" ]; then
+	substitute_template "$OPS_DIR/udev/98-cs71-vision.rules" /etc/udev/rules.d/98-cs71-vision.rules \
+		"CAMERA_VENDOR_ID=$CAMERA_VENDOR_ID" "CAMERA_PRODUCT_ID=$CAMERA_PRODUCT_ID"
+else
+	install -m 0644 "$OPS_DIR/udev/98-cs71-vision.rules" /etc/udev/rules.d/98-cs71-vision.rules
+	log "no --camera-vendor-id/--camera-product-id given; cs71-vision.service is installed" \
+		"and enabled but matches no real device yet"
+fi
 
 log "== Caddy site =="
 # /etc/caddy may not exist yet if the Caddy package has not been installed
@@ -173,10 +215,11 @@ systemctl daemon-reload
 if command -v udevadm >/dev/null 2>&1; then
 	udevadm control --reload-rules
 	udevadm trigger --subsystem-match=tty
+	udevadm trigger --subsystem-match=video4linux
 fi
 
 log "== enabling services =="
-systemctl enable cs71d.service cs71-web.service cs71-backup.timer
+systemctl enable cs71d.service cs71-web.service cs71-backup.timer cs71-vision.service
 
 if [ "$START" = true ]; then
 	# The bootstrap CLI is deliberately the first thing to open web.db, as the
@@ -191,6 +234,10 @@ if [ "$START" = true ]; then
 	systemctl restart cs71d.service
 	systemctl restart cs71-web.service
 	systemctl restart cs71-backup.timer
+	# Harmless when no camera is matched yet: BindsTo=/ConditionPathExists=
+	# on cs71-vision.service make this a no-op start rather than a failure,
+	# the same way cs71d.service behaves before its own adapter is present.
+	systemctl restart cs71-vision.service
 	systemctl try-restart caddy.service || log "caddy.service is not active; start it once its TLS/DNS prerequisites are ready"
 else
 	log "services are installed and enabled but not started (pass --start to start them)"

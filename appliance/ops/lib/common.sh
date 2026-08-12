@@ -126,6 +126,18 @@ build_daemon_venv() {
 	chown -R root:root /opt/cs71/daemon
 }
 
+# $1 source checkout root - (re)install cs71-vision into its own dedicated
+# venv, separate from cs71d's: it has its own dependency set
+# (opencv-python-headless, numpy) that has no reason to share cs71d's venv.
+build_vision_venv() {
+	local source_root="$1"
+	rm -rf /opt/cs71/vision/venv
+	python3 -m venv /opt/cs71/vision/venv
+	/opt/cs71/vision/venv/bin/pip install --no-cache-dir --disable-pip-version-check \
+		"$source_root/appliance/vision"
+	chown -R root:root /opt/cs71/vision
+}
+
 # $1 source checkout root - record what was actually built and installed, so
 # a later backup (from a periodic timer, with no checkout beside it) can
 # still say what version it backed up. install.sh and upgrade.sh both call

@@ -18,6 +18,7 @@ hardware-evidence boundaries below.
 | `appliance/daemon/` | Python `cs71d` workspace; sole serial owner |
 | `appliance/daemon/src/cs71d/simulator/` | Deterministic no-hardware protocol simulator |
 | `appliance/web/` | SvelteKit SSR/Node.js browser-facing BFF workspace |
+| `appliance/vision/` | Python `cs71-vision` workspace: camera capture, and in later PI-VISION tasks, classification |
 | `appliance/ops/` | Native systemd/udev/Caddy installer, backup/restore/upgrade scripts and their own functional smoke test |
 | `docs/architecture/` | Canonical Raspberry Pi appliance architecture, ADRs, roadmap, and backlog |
 | `RASPBERRY_PI_WEB_ARCHITECTURE.md` | Raspberry Pi architecture executive summary |
@@ -63,8 +64,14 @@ upgrade that rebuilds from the checkout and rolls artifacts and data back
 through `restore.sh` on any failure before the web service is confirmed
 healthy; `cs71d`'s production profile now also latches new-work-blocking
 faults for low disk space or a stale/failed backup the same way a journal
-write failure already does. None of this is deployed or qualified on real
-hardware.
+write failure already does. A third appliance service, `cs71-vision`
+(ADR-0013), now exists for the first PI-VISION slice: a `Camera` capture
+abstraction (`FixtureCamera`, deterministic and dependency-free; `V4L2Camera`,
+opened through OpenCV's V4L2 backend rather than a hand-rolled ioctl
+implementation to avoid both a real correctness risk and a GPL dependency),
+packaged the same least-privilege way as `cs71d`/`cs71-web`. It does not yet
+store anything, classify anything, or talk to `cs71d` or the web BFF. None of
+this is deployed or qualified on real hardware.
 
 ## Current validated baseline
 
@@ -77,8 +84,11 @@ hardware.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 317 passing pytest tests.
 - `appliance/web` workspace: 508 passing vitest tests.
-- `appliance/ops` artifact checks: 59 passing static tests (`unittest`), plus
+- `appliance/ops` artifact checks: 75 passing static tests (`unittest`), plus
   a functional smoke test that only runs on Linux (see below).
+- `cs71-vision` package: 31 passing pytest tests. `FixtureCamera` is what
+  these actually exercise; `V4L2Camera` is unit-tested only against its own
+  refusal path — real camera hardware evidence does not exist yet.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 

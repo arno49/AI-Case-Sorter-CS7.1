@@ -1,0 +1,4 @@
+[vision]
+profile = "production"
+backend = "v4l2"
+device_path = "/dev/cs71vision"
