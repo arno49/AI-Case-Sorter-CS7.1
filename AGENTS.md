@@ -29,8 +29,8 @@ API contract, initial daemon/web workspace scaffolds, a single-owner serial
 worker, published session state with conservative reconnect, and durable
 operations with idempotent admission, fail-closed durability, an attributable
 priority stop, capability-validated home and sort adapters, a socket-only
-internal API with bounded resumable events, and a server-side web
-authentication core. Feed, the browser-facing request boundary, RBAC and
+internal API with bounded resumable events, and local web authentication
+with opaque server-side sessions. Feed, RBAC, CSRF tokens, rate limiting and
 operator features are not implemented; do not describe it as deployed or
 qualified.
 
@@ -44,7 +44,7 @@ qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 98 passing vitest tests.
+- `appliance/web` workspace: 124 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -222,6 +222,16 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   revokes the one it replaces; logout, idle expiry, absolute expiry, account
   disable and password change all revoke. Revocation is final and a session
   may not be rebound to another account or token, both enforced by triggers.
+- `hooks.server.ts` denies by default: a route is reachable without a session
+  only by appearing in its public list, so a new page is protected by
+  omission. A request presenting a token the server will not honour always
+  leaves without that cookie. The login redirect carries a fixed reason code
+  and never a caller-supplied return path.
+- The session cookie carries an opaque token only -- no role, no user id, no
+  signed claims. It is `HttpOnly`, `SameSite=Strict` and root-scoped in every
+  profile, and `Secure` with the `__Host-` prefix in production. Ending a
+  session is a POST; a `GET` sign-out would let any page sign an operator out
+  of a running machine.
 - `appliance/contracts/cs71d-v1.openapi.json` is the source of truth for the
   API surface. Translate daemon vocabulary at that boundary; never let protocol
   internals, raw serial content or secrets appear in a response body.
