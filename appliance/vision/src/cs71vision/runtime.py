@@ -1,11 +1,12 @@
-"""Assemble and run the vision capture and correlation loops."""
+"""Assemble and run the vision capture, correlation and training loops."""
 
 from __future__ import annotations
 
+import functools
 import logging
 import stat
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -15,7 +16,8 @@ from .camera import Camera, CameraError, FixtureCamera, Frame, V4L2Camera
 from .config import Backend, ConfigError, VisionConfig
 from .correlator import Correlator, FrameBuffer
 from .daemon_client import DaemonClient
-from .dataset import DatasetStore
+from .dataset import DatasetExample, DatasetStore, TrainedCandidate
+from .training import TrainingError, train_candidate
 
 _LOGGER = logging.getLogger("cs71vision.runtime")
 
@@ -210,6 +212,101 @@ def build_correlation_loop(config: VisionConfig, buffer: FrameBuffer) -> Correla
     store = DatasetStore.open(config.dataset_path)
     correlator = Correlator(client, store, buffer)
     return CorrelationLoop(correlator, store)
+
+
+#: What the training job calls to produce a candidate from the dataset's
+#: current examples: `cs71vision.training.train_candidate`, with its
+#: `minimum_examples_per_class` already bound, in production - a fake in
+#: tests, the same shape `Sink`/`Poller` already use for this module's other
+#: background loops.
+Trainer = Callable[[Sequence[DatasetExample]], TrainedCandidate]
+
+
+class TrainingJob:
+    """Train one candidate on its own thread when triggered; never blocks the caller.
+
+    Deliberately trigger-based, not scheduled: PI-VISION-005 is what exposes
+    an operator-facing trigger (the `vision.train` capability) and decides
+    when to call `trigger()`. This class only guarantees the call itself
+    never blocks, and that two triggers in flight at once collapse into one
+    run rather than stacking a second training pass behind the first.
+    """
+
+    def __init__(
+        self,
+        store: DatasetStore,
+        trainer: Trainer,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._store = store
+        self._trainer = trainer
+        self._now = now
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def trigger(self) -> bool:
+        """Start a training run in the background.
+
+        Returns False, starting nothing, if a run is already in flight: the
+        dataset has not changed since that run started reading it, so a
+        second concurrent pass would train on the same examples for no
+        benefit while doubling the CPU load PI-VISION-004's own "never
+        blocks ordinary sorting" requirement is about avoiding.
+        """
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            thread = threading.Thread(target=self._run, name="cs71vision-train", daemon=True)
+            self._thread = thread
+            thread.start()
+            return True
+
+    def close(self, *, timeout: float = 30.0) -> None:
+        """Wait for an in-flight run to finish, if any, then release the store."""
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+        self._store.close()
+
+    def _run(self) -> None:
+        try:
+            examples = self._store.examples()
+            candidate = self._trainer(examples)
+        except TrainingError:
+            _LOGGER.info("training run produced no candidate: not enough classes cleared the floor")
+            return
+        except Exception:  # noqa: BLE001 - one bad run must not kill this thread
+            _LOGGER.exception("cs71-vision's training run failed")
+            return
+        try:
+            self._store.record_candidate(candidate, trained_at=self._now())
+        except Exception:  # noqa: BLE001 - a storage failure must not raise off-thread
+            _LOGGER.exception("cs71-vision could not record a freshly trained candidate")
+
+
+def build_training_job(config: VisionConfig) -> TrainingJob | None:
+    """Build the training job, or None if this config never talks to cs71d.
+
+    Same gate `build_correlation_loop`/`build_api_server` use, for a
+    different reason that lands on the same answer: without a service token,
+    `vision.db` never receives an example in the first place because
+    correlation itself never runs, so there is structurally nothing this job
+    could ever train from.
+    """
+    if config.daemon_service_token_path is None:
+        return None
+    store = DatasetStore.open(config.dataset_path)
+    trainer: Trainer = functools.partial(
+        train_candidate, minimum_examples_per_class=config.minimum_examples_per_class
+    )
+    return TrainingJob(store, trainer)
 
 
 def build_api_server(config: VisionConfig) -> DatasetApiServer | None:

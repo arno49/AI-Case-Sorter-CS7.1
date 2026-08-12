@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from cs71vision.dataset import IN_MEMORY, DatasetError, DatasetSchemaError, DatasetStore
+from cs71vision.dataset import (
+    IN_MEMORY,
+    DatasetError,
+    DatasetExample,
+    DatasetSchemaError,
+    DatasetStore,
+    TrainedCandidate,
+)
 
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
 
@@ -181,3 +188,105 @@ def test_a_diverged_migration_checksum_is_refused(workspace: Path) -> None:
 
     with pytest.raises(DatasetSchemaError, match="diverged"):
         DatasetStore.open(path, now=lambda: START)
+
+
+def _candidate(**overrides: object) -> TrainedCandidate:
+    defaults: dict[str, object] = {
+        "model_blob": b"fake-model-bytes",
+        "included_classes": (3, 5),
+        "excluded_classes": (7,),
+        "accuracy_by_class": {3: 1.0, 5: 0.9},
+        "minimum_examples_per_class": 40,
+        "training_example_count": 64,
+        "holdout_example_count": 16,
+    }
+    defaults.update(overrides)
+    return TrainedCandidate(**defaults)  # type: ignore[arg-type]
+
+
+def test_examples_returns_every_recorded_slot_and_frame(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        store.record_example(
+            operation_id="op-1",
+            slot=3,
+            frame_png=b"first",
+            frame_captured_at=START,
+            operation_created_at=START,
+        )
+        store.record_example(
+            operation_id="op-2",
+            slot=5,
+            frame_png=b"second",
+            frame_captured_at=START,
+            operation_created_at=START,
+        )
+
+        examples = store.examples()
+
+        assert set(examples) == {
+            DatasetExample(slot=3, frame_png=b"first"),
+            DatasetExample(slot=5, frame_png=b"second"),
+        }
+    finally:
+        store.close()
+
+
+def test_examples_is_empty_before_anything_is_recorded(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        assert store.examples() == ()
+    finally:
+        store.close()
+
+
+def test_record_candidate_then_read_it_back(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        [summary] = store.candidates()
+        assert summary.version == version
+        assert summary.trained_at == START.isoformat()
+        assert summary.included_classes == (3, 5)
+        assert summary.excluded_classes == (7,)
+        assert summary.accuracy_by_class == {3: 1.0, 5: 0.9}
+        assert summary.minimum_examples_per_class == 40
+        assert summary.training_example_count == 64
+        assert summary.holdout_example_count == 16
+        assert store.candidate_model(version) == b"fake-model-bytes"
+    finally:
+        store.close()
+
+
+def test_recording_a_second_candidate_never_overwrites_the_first(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        first = store.record_candidate(_candidate(model_blob=b"model-v1"), trained_at=START)
+        second = store.record_candidate(
+            _candidate(model_blob=b"model-v2"), trained_at=START + timedelta(minutes=5)
+        )
+
+        assert second != first
+        assert store.candidate_model(first) == b"model-v1"
+        assert store.candidate_model(second) == b"model-v2"
+        assert [summary.version for summary in store.candidates()] == [first, second]
+    finally:
+        store.close()
+
+
+def test_candidate_model_of_an_unknown_version_is_refused(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        with pytest.raises(DatasetError, match="no candidate model"):
+            store.candidate_model(999)
+    finally:
+        store.close()
+
+
+def test_candidates_is_empty_before_anything_is_trained(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        assert store.candidates() == ()
+    finally:
+        store.close()

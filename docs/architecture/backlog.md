@@ -1013,10 +1013,84 @@ session against real hardware, which this task never required.
 
 **Goal:** implement the Pi-local background retraining job with a hard per-class data floor and recorded held-out accuracy. **Implementation notes:** this is where Pi 5's real training throughput gets measured, not assumed. **Dependencies:** PI-VISION-002, PI-VISION-003. **Hardware required:** Yes, Raspberry Pi 5 — training wall-clock time is itself part of the acceptance evidence. **Size:** L.
 
-- A class below the configured minimum-example floor is excluded from the training set outright, not merely flagged in the UI.
-- Training runs as a background job that never blocks `cs71-vision`'s live suggestion path or `cs71d`'s admission path.
-- A trained candidate is stored as a new durable, versioned model; the previously active version is retained, never overwritten in place.
-- Per-class accuracy on a held-out split is recorded and retrievable before the candidate is ever offered for activation.
+Delivered for the evidence class achievable without a Pi. `cs71vision.training`
+is the pipeline: `extract_features` decodes a captured frame to grayscale,
+resizes it to a fixed 32x32 regardless of the capture resolution a config
+used, and normalizes to `[0, 1]` - a small, fixed-length, dependency-free
+vector, not a learned embedding, because Phase 0 (ADR-0013) has no model and
+no dataset to bootstrap one from; a better feature set can replace this
+function later without touching anything downstream of it. `train_candidate`
+groups examples by slot, excludes any class below
+`minimum_examples_per_class` **outright** - it never reaches feature
+extraction or training, not merely a UI flag - and refuses to train at all
+when fewer than two classes clear the floor (a one-class model is not a
+candidate PI-VISION-005 should ever be able to offer). Each included class is
+deterministically split (a `random.Random(seed)` local to the call, never
+wall-clock or global random state) into a training pool and a held-out
+subset; held-out accuracy is computed strictly from examples the classifier
+never trained on. A class with only one example after clearing the floor
+still trains on it and is simply skipped for held-out evaluation, rather than
+this function refusing to train at all.
+
+**Classifier choice, made explicitly:** `scikit-learn`'s `RandomForestClassifier`
+(BSD-3-Clause; its own dependencies - `scipy`, `joblib`, `threadpoolctl`,
+`narwhals` - are all BSD/MIT), the same reasoning that put OpenCV over a
+hand-rolled V4L2 implementation in PI-VISION-001: a well-tested, permissively
+licensed, minimal-footprint library over a hand-rolled classifier, sized for
+a background job training on tens to a few hundred examples per class on a
+Pi 5 CPU - not a deep-learning framework sized for a workload this is not.
+`pickle` serializes the fitted classifier to bytes for storage; no new
+on-disk model-file format was introduced.
+
+**Storage extends `vision.db`, not a new file or directory.** A forward-only
+migration (schema version 2, `models`) adds one table: `model_blob` plus
+JSON-encoded `included_classes`/`excluded_classes`/`accuracy_by_class` and
+the floor and example counts a run actually used.
+`DatasetStore.record_candidate` is a plain `INSERT` against an
+`AUTOINCREMENT` primary key - there is no `UPDATE`/`DELETE` path onto this
+table anywhere in this codebase, so "the previously active version is
+retained, never overwritten in place" holds structurally, not by
+convention. `DatasetStore.candidates()` returns every recorded candidate's
+metadata (no model blobs); `candidate_model(version)` reads one blob by
+version. Keeping this inside `vision.db` rather than a new
+`models/`-directory-plus-manifest was a deliberate call: it needed no new
+`backup.sh`/`restore.sh`/permissions wiring at all, since `vision.db` is
+already backed up and restored wholesale (`sqlite3 ... .backup`, table-agnostic) -
+this task has zero `appliance/ops/` changes as a direct result.
+
+**`cs71vision.runtime.TrainingJob` runs a trigger, not a schedule.**
+`trigger()` starts one training run on its own thread and returns
+immediately; a second `trigger()` while one is in flight returns `False`
+rather than stacking a second pass behind the first, since the dataset has
+not changed since the in-flight run started reading it. This is deliberately
+scoped to the mechanism, not the policy: PI-VISION-005 is what decides *when*
+to call `trigger()` (the operator-facing `vision.train` capability), and this
+task builds nothing that calls it - wiring an HTTP trigger before the
+capability that is supposed to gate it exists would let any caller train
+before RBAC does. `build_training_job` shares `build_correlation_loop`'s and
+`build_api_server`'s own gate on `daemon_service_token_path` for a different
+reason that lands on the same answer: without a token, correlation never
+runs, so `vision.db` never receives an example in the first place and there
+is structurally nothing to ever train from. A dedicated test proves the
+"never blocks" requirement directly rather than by inspection: a blocking
+fake trainer is left mid-run on its own thread while the main test thread
+reads the store and gets an answer immediately, because the store's lock is
+only ever held for the brief read that produces `examples()`, never across
+the training computation itself.
+
+What remains genuinely hardware-gated, and is not claimed here: this task's
+own backlog entry says it plainly - "Pi 5's real training throughput gets
+measured, not assumed" - and nothing in this repository runs on a Pi 5.
+`RandomForestClassifier`'s wall-clock training time on real captured frames,
+at real dataset sizes, on real Pi 5 CPU, is unmeasured; every test here runs
+against small, fast, synthetic solid-color images on ordinary CI hardware.
+This is the same class of gap `V4L2Camera`'s real-hardware behavior and the
+DTR gate already are for this workspace, not a new kind of one.
+
+- [x] A class below the configured minimum-example floor is excluded from the training set outright, not merely flagged in the UI.
+- [x] Training runs as a background job that never blocks `cs71-vision`'s live suggestion path or `cs71d`'s admission path.
+- [x] A trained candidate is stored as a new durable, versioned model; the previously active version is retained, never overwritten in place.
+- [x] Per-class accuracy on a held-out split is recorded and retrievable before the candidate is ever offered for activation.
 
 ### PI-VISION-005 — Operator train/activate capability and RBAC extension
 

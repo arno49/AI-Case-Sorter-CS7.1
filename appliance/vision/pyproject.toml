@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{name = "CS7.1 maintainers"}]
-dependencies = ["opencv-python-headless==5.0.0.93", "numpy>=1.26,<3"]
+dependencies = ["opencv-python-headless==5.0.0.93", "numpy>=1.26,<3", "scikit-learn==1.9.0"]
 
 [project.scripts]
 cs71vision = "cs71vision.cli:main"
@@ -31,6 +31,13 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests", "scripts"]
 exclude = "^(build|dist)/"
+
+# scikit-learn ships no py.typed marker/stubs; every other dependency here
+# (opencv-python-headless, numpy) does, so this is scoped to just the one
+# module that needs it rather than a blanket relaxation.
+[[tool.mypy.overrides]]
+module = "sklearn.*"
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py312"

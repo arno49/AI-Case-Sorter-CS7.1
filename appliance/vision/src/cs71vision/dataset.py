@@ -10,6 +10,7 @@ confirmed `cs71d` state - a `SUCCEEDED` sort operation's own
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -60,9 +61,72 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX examples_by_slot ON examples(slot)",
         ),
     ),
+    Migration(
+        version=2,
+        name="models",
+        statements=(
+            """
+            CREATE TABLE models (
+                version INTEGER PRIMARY KEY AUTOINCREMENT,
+                trained_at TEXT NOT NULL,
+                model_blob BLOB NOT NULL,
+                included_classes TEXT NOT NULL,
+                excluded_classes TEXT NOT NULL,
+                accuracy_by_class TEXT NOT NULL,
+                minimum_examples_per_class INTEGER NOT NULL,
+                training_example_count INTEGER NOT NULL,
+                holdout_example_count INTEGER NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExample:
+    """One labeled example, reduced to what the training pipeline needs."""
+
+    slot: int
+    frame_png: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class TrainedCandidate:
+    """A freshly trained model, ready to be recorded as a new version.
+
+    Produced by `cs71vision.training.train_candidate`; this module only
+    knows its shape, not how it was produced, the same separation
+    `Correlator`/`DatasetStore` already keep.
+    """
+
+    model_blob: bytes
+    included_classes: tuple[int, ...]
+    excluded_classes: tuple[int, ...]
+    #: Per included class that had at least one held-out example. A class
+    #: with too few examples to split (see `train_candidate`) has no entry
+    #: here rather than a fabricated value.
+    accuracy_by_class: Mapping[int, float]
+    minimum_examples_per_class: int
+    training_example_count: int
+    holdout_example_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSummary:
+    """A recorded candidate's metadata, without its (potentially large) model blob."""
+
+    version: int
+    trained_at: str
+    included_classes: tuple[int, ...]
+    excluded_classes: tuple[int, ...]
+    accuracy_by_class: Mapping[int, float]
+    minimum_examples_per_class: int
+    training_example_count: int
+    holdout_example_count: int
+
 
 _CREATE_MIGRATION_LEDGER = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -185,6 +249,76 @@ class DatasetStore:
             row = cursor.execute("SELECT COUNT(*) AS n FROM examples").fetchone()
         return int(row["n"])
 
+    def examples(self) -> tuple[DatasetExample, ...]:
+        """Every labeled example, slot and frame only - what training needs.
+
+        Reads everything into memory in one guarded pass rather than holding
+        a cursor open across the caller's own (likely long) training run:
+        the lock this takes is brief, the computation the caller does with
+        the result is not, and those must not be conflated.
+        """
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                "SELECT slot, frame_png FROM examples ORDER BY recorded_at"
+            ).fetchall()
+        return tuple(
+            DatasetExample(slot=int(row["slot"]), frame_png=bytes(row["frame_png"])) for row in rows
+        )
+
+    def record_candidate(self, candidate: TrainedCandidate, *, trained_at: datetime) -> int:
+        """Store a newly trained candidate as a new version.
+
+        Never overwrites a prior version (`AUTOINCREMENT` primary key, plain
+        `INSERT`): PI-VISION-004's own requirement is that the previously
+        active version is retained, not replaced in place.
+        """
+        with self._transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO models"
+                " (trained_at, model_blob, included_classes, excluded_classes, accuracy_by_class,"
+                " minimum_examples_per_class, training_example_count, holdout_example_count)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _encode_time(trained_at),
+                    candidate.model_blob,
+                    json.dumps(list(candidate.included_classes)),
+                    json.dumps(list(candidate.excluded_classes)),
+                    json.dumps(
+                        {
+                            str(slot): accuracy
+                            for slot, accuracy in candidate.accuracy_by_class.items()
+                        }
+                    ),
+                    candidate.minimum_examples_per_class,
+                    candidate.training_example_count,
+                    candidate.holdout_example_count,
+                ),
+            )
+            version = cursor.lastrowid
+        if version is None:
+            raise DatasetError("recording a candidate did not yield a version")
+        return version
+
+    def candidates(self) -> tuple[CandidateSummary, ...]:
+        """Every recorded candidate's metadata, newest last, no model blobs."""
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                "SELECT version, trained_at, included_classes, excluded_classes, accuracy_by_class,"
+                " minimum_examples_per_class, training_example_count, holdout_example_count"
+                " FROM models ORDER BY version"
+            ).fetchall()
+        return tuple(_candidate_summary_from(row) for row in rows)
+
+    def candidate_model(self, version: int) -> bytes:
+        """One recorded candidate's own model blob, by version."""
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT model_blob FROM models WHERE version = ?", (version,)
+            ).fetchone()
+        if row is None:
+            raise DatasetError(f"no candidate model at version {version}")
+        return bytes(row["model_blob"])
+
     def _configure(self) -> None:
         try:
             self._connection.row_factory = sqlite3.Row
@@ -280,3 +414,19 @@ def _encode_time(value: datetime) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _candidate_summary_from(row: sqlite3.Row) -> CandidateSummary:
+    return CandidateSummary(
+        version=int(row["version"]),
+        trained_at=str(row["trained_at"]),
+        included_classes=tuple(json.loads(row["included_classes"])),
+        excluded_classes=tuple(json.loads(row["excluded_classes"])),
+        accuracy_by_class={
+            int(slot): float(accuracy)
+            for slot, accuracy in json.loads(row["accuracy_by_class"]).items()
+        },
+        minimum_examples_per_class=int(row["minimum_examples_per_class"]),
+        training_example_count=int(row["training_example_count"]),
+        holdout_example_count=int(row["holdout_example_count"]),
+    )
