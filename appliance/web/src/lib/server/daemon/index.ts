@@ -24,7 +24,30 @@ export {
 	type OperationAccepted
 } from './client';
 
+export {
+	EventBroadcast,
+	REPLAY_CAPACITY,
+	SUBSCRIBER_BACKLOG_LIMIT,
+	type BrowserMessage,
+	type EventBroadcastOptions,
+	type ResyncReason,
+	type SubscribeOptions,
+	type UpstreamSource
+} from './broadcast';
+
 export { ServiceCredentialError, readServiceToken } from './credentials';
+
+export {
+	IDLE_TIMEOUT_MS,
+	MAXIMUM_EVENT_BYTES,
+	RESYNC_EVENT,
+	readDaemonEvents,
+	subscribeToDaemonEvents,
+	type DaemonEvent,
+	type EventStreamOptions,
+	type StreamMessage,
+	type SubscriptionOptions
+} from './events';
 
 export {
 	DaemonError,

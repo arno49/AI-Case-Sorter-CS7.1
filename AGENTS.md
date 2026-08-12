@@ -32,10 +32,11 @@ priority stop, capability-validated home and sort adapters, a socket-only
 internal API with bounded resumable events, local web authentication with
 opaque server-side sessions, server-side role enforcement against the documented
 capability matrix, CSRF, origin, rate and concurrency controls on
-state-changing requests, and a socket-only daemon client behind a dashboard that
-reads the machine snapshot and submits the software stop. Feed and the remaining
-operator screens are not implemented; do not describe it as deployed or
-qualified.
+state-changing requests, a socket-only daemon client behind a dashboard that
+reads the machine snapshot and submits the software stop, and a browser event
+stream fanned out from one daemon reader whose consumers re-read a snapshot
+rather than present a gap. Feed and the remaining operator screens are not
+implemented; do not describe it as deployed or qualified.
 
 ## Current validated baseline
 
@@ -47,7 +48,7 @@ qualified.
 - `native_v2`: 49 passing tests.
 - Host package: 116 passing pytest tests.
 - `cs71d` daemon package: 298 passing pytest tests.
-- `appliance/web` workspace: 362 passing vitest tests.
+- `appliance/web` workspace: 404 passing vitest tests.
 - `uno`: 17,594 bytes flash, 899 bytes static SRAM.
 - `uno_v2`: 26,290 bytes flash, 997 bytes static SRAM.
 
@@ -304,6 +305,28 @@ Accepted decisions are recorded in `docs/architecture/adr/`.
   unrenumbered. A bridge with its own sequence would make the two ends
   impossible to line up. An unknown event type is passed through; ignoring it is
   the consumer's decision under the v1 contract.
+- One process, one reader. `EventBroadcast` attaches to the daemon's stream when
+  the first browser subscribes and lets go when the last one leaves; a second
+  connection would buy nothing and would spend the daemon's retention budget on
+  an identical stream. A browser never applies back pressure: one that falls
+  behind has its backlog discarded and is told to read a snapshot, because a
+  viewer that far out of date cannot be caught up by more events. Nothing in the
+  fan-out ever waits for a browser, so a browser that stops reading or vanishes
+  cannot slow daemon event production or the serial worker behind it.
+- Only real events carry an SSE `id:`. A resynchronisation or unavailability
+  notice must not become a cursor, or a browser's next `Last-Event-ID` would name
+  a position that never existed. A cursor this process cannot resume — absent,
+  unparseable, older than what it retained, or from before a restart — is
+  answered with a resynchronisation rather than a guess.
+- The browser builds no machine state out of an event. An event says the machine
+  moved past the generation on screen; the answer is to read a snapshot, which is
+  the only thing that describes the machine completely. Reads are coalesced so a
+  busy machine cannot make a page flood itself, and a screen that owes a snapshot
+  says so rather than looking current.
+- Restarting the web service drops a database handle and a reader and nothing
+  else. `cs71d` owns every operation in flight and goes on running it, which is
+  why a restart can neither cancel nor duplicate one, and why no command is ever
+  resent on the way back up.
 - SQL lives only in `appliance/web/src/lib/server/auth/` and
   `appliance/web/src/lib/server/audit.ts`. Adding a module to that list is a
   reviewed change; `boundaries.spec.ts` fails otherwise.

@@ -68,7 +68,10 @@ documented capability matrix, with every route declaring what it requires, and
 state-changing requests must pass an origin and CSRF check and stay inside
 documented rate, concurrency and size budgets. A socket-only daemon client backs
 a dashboard that reads the machine snapshot and submits the software stop,
-recording every attempt in the web audit. The remaining operator screens have
+recording every attempt in the web audit. The dashboard also watches the machine
+live: one reader of the daemon's event stream is fanned out to every open
+browser, and a browser that may have missed something re-reads a snapshot rather
+than presenting a state assembled from a gap. The remaining operator screens have
 not been implemented yet.
 
 The canonical firmware uses cooperative proximity settling: after the feed
