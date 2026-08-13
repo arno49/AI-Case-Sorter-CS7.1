@@ -102,6 +102,41 @@ export interface SuggestionAccuracy {
 	readonly accuracy: number | null;
 }
 
+/**
+ * One class's reviewed autonomous-sort record (PI-VISION-008, ADR-0013).
+ *
+ * `total`/`correct` count only reviewed attempts - a class with attempts
+ * but no review yet has no entry here at all, never a fabricated 0% false
+ * rate. "Unreviewed" and "reviewed clean" must never look the same.
+ */
+export interface AutonomousAccuracy {
+	readonly total: number;
+	readonly correct: number;
+	readonly falseRate: number | null;
+}
+
+/** One autonomous sort submitted to `cs71d`, awaiting a human's verdict. */
+export interface PendingAutonomousReview {
+	readonly attemptId: number;
+	readonly suggestionId: number;
+	readonly operationId: string;
+	readonly slot: number;
+	readonly attemptedAt: string;
+}
+
+export interface AutonomySummary {
+	/** Per-class confidence threshold currently configured, keyed by slot. */
+	readonly thresholds: Readonly<Record<number, number>>;
+	readonly accuracyByClass: Readonly<Record<number, AutonomousAccuracy>>;
+	readonly pendingReview: readonly PendingAutonomousReview[];
+}
+
+export interface AutonomousReviewResult {
+	readonly attemptId: number;
+	readonly correct: boolean;
+	readonly reviewedAt: string;
+}
+
 export interface VisionClientOptions {
 	readonly socketPath: string;
 	readonly serviceTokenPath: string;
@@ -181,23 +216,67 @@ export class VisionClient {
 		return parseSuggestionAccuracy(reply.body, reply.status);
 	}
 
+	/**
+	 * Configured autonomy thresholds, reviewed per-class accuracy and the
+	 * review queue (PI-VISION-008) - the evidence an operator looks at
+	 * before ever lowering a class's threshold in configuration.
+	 */
+	async autonomy(): Promise<AutonomySummary> {
+		const reply = await this.#get('/v1/autonomy');
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseAutonomySummary(reply.body, reply.status);
+	}
+
+	/**
+	 * Record a human's verdict on one autonomous attempt.
+	 *
+	 * The only source of ground truth for an autonomous sort: there is no
+	 * operator confirmation step to compare against the way a manual sort's
+	 * suggestion accuracy already is.
+	 */
+	async reviewAutonomousAttempt(
+		attemptId: number,
+		correct: boolean
+	): Promise<AutonomousReviewResult> {
+		if (!Number.isInteger(attemptId) || attemptId < 1) {
+			throw new InvalidCommandError('an attempt id must be a positive integer');
+		}
+		const reply = await this.#post(
+			'/v1/autonomous-reviews',
+			JSON.stringify({ api_version: API_VERSION, attempt_id: attemptId, correct })
+		);
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseAutonomousReviewResult(reply.body, reply.status);
+	}
+
 	async #get(path: string): Promise<DaemonReply> {
 		return this.#send('GET', path, DEADLINES.read);
 	}
 
-	async #post(path: string): Promise<DaemonReply> {
-		return this.#send('POST', path, DEADLINES.write);
+	async #post(path: string, body?: string): Promise<DaemonReply> {
+		return this.#send('POST', path, DEADLINES.write, body);
 	}
 
-	async #send(method: 'GET' | 'POST', path: string, deadlineMs: number): Promise<DaemonReply> {
+	async #send(
+		method: 'GET' | 'POST',
+		path: string,
+		deadlineMs: number,
+		body?: string
+	): Promise<DaemonReply> {
 		try {
 			return await exchange(this.options.socketPath, {
 				method,
 				path,
 				headers: {
 					authorization: `Bearer ${this.#serviceToken()}`,
-					accept: 'application/json'
+					accept: 'application/json',
+					...(body === undefined ? {} : { 'content-type': 'application/json' })
 				},
+				body,
 				timeoutMs: deadlineMs + 2_000
 			});
 		} catch (cause) {
@@ -452,6 +531,101 @@ function parseSuggestionAccuracy(body: unknown, status: number): SuggestionAccur
 		});
 	}
 	return { total, correct, accuracy };
+}
+
+function parseAutonomySummary(body: unknown, status: number): AutonomySummary {
+	const record = asRecord(body);
+	const thresholds = record?.thresholds;
+	const accuracyByClass = record?.accuracy_by_class;
+	const pendingReview = record?.pending_review;
+	if (
+		record?.api_version !== API_VERSION ||
+		typeof thresholds !== 'object' ||
+		thresholds === null ||
+		typeof accuracyByClass !== 'object' ||
+		accuracyByClass === null ||
+		!Array.isArray(pendingReview)
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered without the expected autonomy shape'
+		});
+	}
+	return {
+		thresholds: numericAccuracyMap(thresholds as Record<string, unknown>),
+		accuracyByClass: autonomousAccuracyMap(accuracyByClass as Record<string, unknown>, status),
+		pendingReview: pendingReview.map((item) => parsePendingAutonomousReview(item, status))
+	};
+}
+
+function autonomousAccuracyMap(
+	raw: Record<string, unknown>,
+	status: number
+): Readonly<Record<number, AutonomousAccuracy>> {
+	const entries: [number, AutonomousAccuracy][] = [];
+	for (const [slot, item] of Object.entries(raw)) {
+		const record = asRecord(item);
+		const total = record?.total;
+		const correct = record?.correct;
+		const falseRate = record?.false_rate;
+		if (
+			typeof total !== 'number' ||
+			typeof correct !== 'number' ||
+			(falseRate !== null && typeof falseRate !== 'number')
+		) {
+			throw new VisionError({
+				kind: 'malformed',
+				status,
+				detail: 'cs71-vision answered with an unusable autonomous accuracy entry'
+			});
+		}
+		entries.push([Number(slot), { total, correct, falseRate }]);
+	}
+	return Object.fromEntries(entries);
+}
+
+function parsePendingAutonomousReview(item: unknown, status: number): PendingAutonomousReview {
+	const record = asRecord(item);
+	const attemptId = record?.attempt_id;
+	const suggestionId = record?.suggestion_id;
+	const operationId = record?.operation_id;
+	const slot = record?.slot;
+	const attemptedAt = record?.attempted_at;
+	if (
+		typeof attemptId !== 'number' ||
+		typeof suggestionId !== 'number' ||
+		typeof operationId !== 'string' ||
+		typeof slot !== 'number' ||
+		typeof attemptedAt !== 'string'
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered with an unusable pending review entry'
+		});
+	}
+	return { attemptId, suggestionId, operationId, slot, attemptedAt };
+}
+
+function parseAutonomousReviewResult(body: unknown, status: number): AutonomousReviewResult {
+	const record = asRecord(body);
+	const attemptId = record?.attempt_id;
+	const correct = record?.correct;
+	const reviewedAt = record?.reviewed_at;
+	if (
+		record?.api_version !== API_VERSION ||
+		typeof attemptId !== 'number' ||
+		typeof correct !== 'boolean' ||
+		typeof reviewedAt !== 'string'
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered without a usable autonomous review result'
+		});
+	}
+	return { attemptId, correct, reviewedAt };
 }
 
 function asRecord(body: unknown): Record<string, unknown> | undefined {

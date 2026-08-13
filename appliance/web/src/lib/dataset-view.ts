@@ -19,6 +19,7 @@
 
 import type { Tone } from '$lib/machine-status';
 import type {
+	AutonomySummary,
 	CandidateSummary,
 	DatasetClassSummary,
 	DatasetSummary,
@@ -136,4 +137,57 @@ export function suggestionAccuracyDetail(accuracy: SuggestionAccuracy): string {
 	const percent = Math.round((accuracy.accuracy ?? 0) * 100);
 	const noun = accuracy.total === 1 ? 'sort' : 'sorts';
 	return `${percent}% (${accuracy.correct} of ${accuracy.total} ${noun} matched the suggestion shown at the time).`;
+}
+
+export interface AutonomyClassReading {
+	readonly slot: number;
+	/** Null when this class has no autonomy threshold configured. */
+	readonly threshold: number | null;
+	readonly detail: string;
+	readonly tone: Tone;
+}
+
+/**
+ * Every class with either a configured threshold or reviewed autonomous
+ * activity, slot order (PI-VISION-008).
+ *
+ * A class with attempts but zero reviews yet is deliberately absent from
+ * `summary.accuracyByClass` (`cs71vision.dataset.autonomous_accuracy_by_class`'s
+ * own contract) - "unreviewed" and "reviewed clean" must never look the
+ * same, so this never fabricates a reading for one.
+ */
+export function autonomyClassReadings(summary: AutonomySummary): readonly AutonomyClassReading[] {
+	const slots = new Set<number>([
+		...Object.keys(summary.thresholds).map(Number),
+		...Object.keys(summary.accuracyByClass).map(Number)
+	]);
+	return [...slots].sort((a, b) => a - b).map((slot) => autonomyClassReading(slot, summary));
+}
+
+function autonomyClassReading(slot: number, summary: AutonomySummary): AutonomyClassReading {
+	const threshold = summary.thresholds[slot] ?? null;
+	const accuracy = summary.accuracyByClass[slot];
+	if (accuracy === undefined) {
+		return {
+			slot,
+			threshold,
+			detail:
+				threshold === null
+					? 'No autonomy threshold configured; every suggestion for this class is held for confirmation.'
+					: 'No autonomous attempt has been reviewed yet.',
+			tone: 'ordinary'
+		};
+	}
+	const falsePercent = Math.round((accuracy.falseRate ?? 0) * 100);
+	return {
+		slot,
+		threshold,
+		detail: `${falsePercent}% false (${accuracy.total - accuracy.correct} of ${accuracy.total} reviewed autonomous sorts were wrong).`,
+		tone: (accuracy.falseRate ?? 0) > 0 ? 'attention' : 'ordinary'
+	};
+}
+
+/** One pending review, phrased for a person deciding correct or incorrect. */
+export function pendingReviewDetail(slot: number, attemptedAt: string): string {
+	return `Slot ${slot}, attempted ${attemptedAt}.`;
 }

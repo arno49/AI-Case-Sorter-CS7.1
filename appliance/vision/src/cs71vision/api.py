@@ -29,7 +29,7 @@ import re
 import socket
 import socketserver
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -48,6 +48,7 @@ SHUTDOWN_POLL_SECONDS = 0.2
 MAX_BODY_BYTES = 4_096
 
 _ACTIVATE_PATH = re.compile(r"^/v1/models/(?P<version>[0-9]+)/activate$")
+_EMPTY_THRESHOLDS: Mapping[int, float] = {}
 
 _ERROR_STATUS: dict[str, HTTPStatus] = {
     "UNAUTHENTICATED": HTTPStatus.UNAUTHORIZED,
@@ -98,6 +99,7 @@ class VisionApiServer:
         service_token: str,
         minimum_examples_per_class: int,
         training_job: Trainable,
+        autonomy_thresholds: Mapping[int, float] = _EMPTY_THRESHOLDS,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         socket_mode: int = SOCKET_MODE,
     ) -> None:
@@ -110,6 +112,7 @@ class VisionApiServer:
         self._token = service_token.encode("utf-8")
         self._minimum = minimum_examples_per_class
         self._training_job = training_job
+        self._autonomy_thresholds = autonomy_thresholds
         self._now = now
         self._socket_mode = socket_mode
         self._server: _UnixHttpServer | None = None
@@ -161,7 +164,7 @@ class VisionApiServer:
         ):
             raise ApiError("UNAUTHENTICATED", "a valid local service credential is required")
 
-    def route(self, method: str, path: str) -> tuple[HTTPStatus, dict[str, Any]]:
+    def route(self, method: str, path: str, body: bytes = b"") -> tuple[HTTPStatus, dict[str, Any]]:
         if method in {"GET", "HEAD"}:
             if path == "/v1/dataset":
                 return HTTPStatus.OK, self._dataset_body()
@@ -171,12 +174,16 @@ class VisionApiServer:
                 return HTTPStatus.OK, self._suggestion_body()
             if path == "/v1/suggestion-accuracy":
                 return HTTPStatus.OK, self._suggestion_accuracy_body()
+            if path == "/v1/autonomy":
+                return HTTPStatus.OK, self._autonomy_body()
             raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
         if method == "POST":
             if path == "/v1/train":
                 return HTTPStatus.OK, self._train_body()
             if path == "/v1/rollback":
                 return HTTPStatus.OK, self._rollback_body()
+            if path == "/v1/autonomous-reviews":
+                return HTTPStatus.OK, self._autonomous_review_body(body)
             matched = _ACTIVATE_PATH.fullmatch(path)
             if matched is not None:
                 return HTTPStatus.OK, self._activate_body(int(matched.group("version")))
@@ -261,6 +268,75 @@ class VisionApiServer:
             "accuracy": accuracy.fraction,
         }
 
+    def _autonomy_body(self) -> dict[str, Any]:
+        """Configured per-class thresholds, reviewed accuracy, and the review queue.
+
+        The false-autonomous-sort rate a class's threshold may only be
+        lowered after seeing (ADR-0013) - a class with attempts but no
+        review yet is absent from `accuracy_by_class`, never reported as 0%
+        false: "unreviewed" and "reviewed clean" must never look the same.
+        """
+        accuracy = {
+            str(entry.slot): {
+                "total": entry.total,
+                "correct": entry.correct,
+                "false_rate": entry.false_rate,
+            }
+            for entry in self._store.autonomous_accuracy_by_class()
+        }
+        pending = [
+            {
+                "attempt_id": attempt.attempt_id,
+                "suggestion_id": attempt.suggestion_id,
+                "operation_id": attempt.operation_id,
+                "slot": attempt.slot,
+                "attempted_at": attempt.attempted_at,
+            }
+            for attempt in self._store.pending_autonomous_reviews()
+        ]
+        return {
+            "api_version": "v1",
+            "thresholds": {str(slot): value for slot, value in self._autonomy_thresholds.items()},
+            "accuracy_by_class": accuracy,
+            "pending_review": pending,
+        }
+
+    def _autonomous_review_body(self, body: bytes) -> dict[str, Any]:
+        """Record a human's verdict on one autonomous attempt.
+
+        The only source of ground truth for an autonomous sort: there is no
+        operator confirmation step to compare against the way
+        `suggestion_outcomes` compares a manual sort to its suggestion, so
+        this is never inferred, only recorded from what a person reports
+        after actually checking (ADR-0013's own "not a general 'it seems to
+        work'").
+        """
+        payload = _json_object(body)
+        if set(payload) != {"api_version", "attempt_id", "correct"}:
+            raise ApiError(
+                "VALIDATION_FAILED",
+                "an autonomous review carries exactly api_version, attempt_id and correct",
+            )
+        attempt_id = payload["attempt_id"]
+        correct = payload["correct"]
+        if isinstance(attempt_id, bool) or not isinstance(attempt_id, int):
+            raise ApiError("VALIDATION_FAILED", "attempt_id must be an integer")
+        if not isinstance(correct, bool):
+            raise ApiError("VALIDATION_FAILED", "correct must be a boolean")
+        reviewed_at = self._now()
+        try:
+            self._store.record_autonomous_review(
+                attempt_id=attempt_id, correct=correct, reviewed_at=reviewed_at
+            )
+        except DatasetError as exc:
+            raise ApiError("RESOURCE_NOT_FOUND", str(exc)) from exc
+        return {
+            "api_version": "v1",
+            "attempt_id": attempt_id,
+            "correct": correct,
+            "reviewed_at": _rfc3339(reviewed_at),
+        }
+
     def _train_body(self) -> dict[str, Any]:
         """Trigger a training run. `started: false` means one was already in flight.
 
@@ -326,6 +402,20 @@ def _rfc3339(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
 
 
+def _json_object(body: bytes) -> dict[str, Any]:
+    if not body:
+        raise ApiError("VALIDATION_FAILED", "a JSON request body is required")
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise ApiError("VALIDATION_FAILED", "the request body is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ApiError("VALIDATION_FAILED", "the request body must be a JSON object")
+    if payload.get("api_version") != "v1":
+        raise ApiError("VALIDATION_FAILED", "api_version must be 'v1'")
+    return payload
+
+
 class _UnixHttpServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -361,8 +451,8 @@ class _Handler(BaseHTTPRequestHandler):
         api = server.api
         try:
             api.authenticate(self.headers.get("Authorization"))
-            self._drain_body()
-            status, body = api.route(method, self.path)
+            request_body = self._read_body()
+            status, body = api.route(method, self.path, request_body)
         except ApiError as exc:
             self._write(_ERROR_STATUS.get(exc.code, HTTPStatus.INTERNAL_SERVER_ERROR), exc)
         except Exception:
@@ -374,22 +464,23 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._write(status, body)
 
-    def _drain_body(self) -> None:
-        """Read and discard any request body, capped, so the connection stays clean.
+    def _read_body(self) -> bytes:
+        """Read and return any request body, capped.
 
-        No route on this API parses a body; this exists only so an
-        HTTP/1.1 keep-alive connection is not left with unread bytes ahead
-        of whatever the client sends next.
+        Most routes on this API never parse a body and simply discard what
+        this returns - `_autonomous_review_body` (PI-VISION-008) is the
+        first that does. Capped either way, so an HTTP/1.1 keep-alive
+        connection is never left with unread bytes ahead of whatever the
+        client sends next.
         """
         declared = self.headers.get("Content-Length")
         if declared is None:
-            return
+            return b""
         try:
             length = min(int(declared), MAX_BODY_BYTES)
         except ValueError:
-            return
-        if length > 0:
-            self.rfile.read(length)
+            return b""
+        return self.rfile.read(length) if length > 0 else b""
 
     def _write(self, status: HTTPStatus, body: ApiError | dict[str, Any]) -> None:
         content = (

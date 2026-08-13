@@ -307,12 +307,70 @@ surface may ever disable that.
 
 **Web side:** the dashboard shows an explicit primer confirmation notice
 next to the class suggestion whenever `requires_confirmation` is true -
-today, always. This is informational, the same as the suggestion itself:
-nothing here is a gate yet, since every sort still only ever happens
-through the operator's own form submission - there is no autonomous path to
-gate until PI-VISION-008 exists. What this task actually delivers is the
-uncircumventable primitive PI-VISION-008 must consult before it may ever
-attempt one.
+today, always, since no trained primer detector exists yet. This is
+informational, the same as the suggestion itself: it does not itself block
+a manual sort - what it actually delivers is the uncircumventable primitive
+`cs71vision.autonomy.may_autonomously_sort` (PI-VISION-008) consults before
+it may ever attempt one.
+
+## Confidence-gated autonomous sort (PI-VISION-008)
+
+The one place `cs71-vision` may ever issue a `cs71d` command: a `sort`,
+submitted as the `machine` actor kind (PI-VISION-007), and only when a
+suggestion clears two independent gates in a fixed order that cannot be
+reordered away.
+
+- `cs71vision.autonomy.may_autonomously_sort(suggestion, thresholds)` checks
+  the primer axis first and unconditionally
+  (`primer.requires_operator_confirmation`, PI-VISION-010/SAF-09) - no
+  per-class threshold, however high, ever overrides it - then a per-class
+  manufacturer-classification confidence threshold. A class absent from
+  `thresholds` can never autonomously sort: conservative by omission, not a
+  low default number (ADR-0013: "starting conservative... mostly manual").
+- `cs71vision.autonomy.Autonomist` is the one thing `runtime.AutonomyLoop`
+  calls each tick - kept as its own loop, not a step bolted onto
+  `SuggestionLoop`'s own tick, so "never issues a `cs71d` command, under any
+  configuration" stays true of `SuggestionLoop` by construction. It never
+  submits twice for the same suggestion
+  (`DatasetStore.autonomous_attempt_exists`), and a `cs71d` rejection
+  (stale generation, an unreachable socket) is logged and left for the next
+  tick to reconsider against a then-current suggestion.
+- `DaemonClient.submit_sort` is the only place in this codebase that may
+  ever present the `machine` service credential - a second, distinct token
+  from the ordinary shared one, refused outright when unconfigured. It
+  reads a fresh `current_generation()` immediately before every attempt and
+  submits with a deterministic idempotency key
+  (`autonomous-sort-<suggestion_id>`), so even a duplicate tick collapses
+  into the same operation at `cs71d`, never a second sort of the same case.
+- `build_autonomy_loop` gates on *both* `daemon_service_token_path` and
+  `machine_service_token_path` being configured - distinct from
+  `build_suggestion_loop`'s own gate, since a machine credential can be
+  entirely unset while ordinary suggestion/correlation keeps running (the
+  same "provisioned does not mean active" posture `cs71d`'s own
+  `machine_service_token_path` uses, PI-VISION-007).
+
+**There is no ground truth for an autonomous sort to compare itself
+against** - unlike a manual sort, there is no operator confirmation step to
+diff the suggestion against. So the false-autonomous-sort rate ADR-0013
+requires be measured and recorded before a class's threshold may be
+lowered is never inferred, only recorded from what a person reports after
+actually checking: `DatasetStore.record_autonomous_review` is an
+append-only human verdict on one `autonomous_attempts` row, and
+`autonomous_accuracy_by_class` reports the reviewed false rate per class -
+a class with attempts but zero reviews yet is absent, never reported as 0%
+false, so "unreviewed" and "reviewed clean" can never look the same.
+`GET /v1/autonomy` exposes configured thresholds, the reviewed accuracy and
+the pending-review queue together; `POST /v1/autonomous-reviews` records
+one verdict.
+
+**Provisioning enables the mechanism, not the policy.** The machine
+credential is always provisioned to both `cs71d` and `cs71-vision`
+(PI-VISION-007's `write_machine_service_token`), and
+`production.example.toml` now points both services at it - but
+`autonomy_thresholds` stays empty by default, which structurally means no
+class may ever be sorted autonomously until an installation explicitly
+configures one, per class, after reviewing that class's own recorded
+evidence.
 
 ## Camera
 

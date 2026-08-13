@@ -1,10 +1,14 @@
 /**
  * The dataset review screen: per-class example counts against the training
  * floor (PI-VISION-003), the recorded model versions with train/activate/
- * rollback controls (PI-VISION-004/005), and live suggestion accuracy
+ * rollback controls (PI-VISION-004/005), live suggestion accuracy
  * (PI-VISION-006) - separate evidence from any candidate's training-time
  * held-out accuracy, since it is measured against real operator decisions
- * after activation, not a held-out split of the training data.
+ * after activation, not a held-out split of the training data - and the
+ * autonomous-sort review queue (PI-VISION-008): the false-autonomous-sort
+ * rate ADR-0013 requires be recorded before a class's threshold may be
+ * lowered has no ground truth to infer from, so it is only ever a human's
+ * own recorded verdict on one attempt at a time.
  *
  * The read half is the same shape as `/system`'s own load: nothing to
  * submit, so all three `cs71-vision` reads share one `unavailable` message
@@ -18,7 +22,12 @@
 
 import { fail, type Actions, type ServerLoad } from '@sveltejs/kit';
 
-import type { DatasetSummary, ModelsSummary, SuggestionAccuracy } from '$lib/dataset';
+import type {
+	AutonomySummary,
+	DatasetSummary,
+	ModelsSummary,
+	SuggestionAccuracy
+} from '$lib/dataset';
 import { recordAudit } from '$lib/server/audit';
 import { requireCapability } from '$lib/server/auth/authorization';
 import { can } from '$lib/server/auth/capabilities';
@@ -36,12 +45,14 @@ export const load: ServerLoad = async ({ locals }) => {
 	let dataset: DatasetSummary | null = null;
 	let models: ModelsSummary | null = null;
 	let suggestionAccuracy: SuggestionAccuracy | null = null;
+	let autonomy: AutonomySummary | null = null;
 	let unavailable: string | null = null;
 	try {
-		[dataset, models, suggestionAccuracy] = await Promise.all([
+		[dataset, models, suggestionAccuracy, autonomy] = await Promise.all([
 			vision.datasetSummary(),
 			vision.models(),
-			vision.suggestionAccuracy()
+			vision.suggestionAccuracy(),
+			vision.autonomy()
 		]);
 	} catch (error) {
 		unavailable = safeResponseFor(error).message;
@@ -56,6 +67,7 @@ export const load: ServerLoad = async ({ locals }) => {
 		dataset,
 		models,
 		suggestionAccuracy,
+		autonomy,
 		unavailable
 	};
 };
@@ -133,6 +145,37 @@ export const actions: Actions = {
 		} catch (error) {
 			return failVisionAction('rollback', user, error, locals.requestId, now);
 		}
+	},
+
+	// PI-VISION-008: recording a human verdict on an autonomous sort never
+	// touches machine motion either - it is model-quality evidence, the
+	// same reasoning ADR-0013 already uses to grant vision.train to
+	// operator rather than reserving it to administrator.
+	reviewAutonomousAttempt: async (event) => {
+		const user = requireCapability(event.locals.user, 'vision.train');
+		const { vision, database } = webRuntime();
+		const now = new Date();
+
+		try {
+			const form = await event.request.formData();
+			const attemptId = integerField(form, 'attempt_id');
+			const correct = booleanField(form, 'correct');
+			const result = await vision.reviewAutonomousAttempt(attemptId, correct);
+			recordAudit(
+				database,
+				{
+					userId: user.userId,
+					role: user.role,
+					action: 'vision.reviewAutonomousAttempt',
+					outcome: 'accepted',
+					requestId: event.locals.requestId
+				},
+				now
+			);
+			return { control: 'reviewAutonomousAttempt', attemptId: result.attemptId };
+		} catch (error) {
+			return failVisionAction('reviewAutonomousAttempt', user, error, event.locals.requestId, now);
+		}
 	}
 };
 
@@ -179,6 +222,14 @@ function integerField(form: FormData, name: string): number {
 		throw new InvalidCommandError(`the ${name} field must be a non-negative integer`);
 	}
 	return Number(value);
+}
+
+function booleanField(form: FormData, name: string): boolean {
+	const value = form.get(name);
+	if (value !== 'true' && value !== 'false') {
+		throw new InvalidCommandError(`the ${name} field must be true or false`);
+	}
+	return value === 'true';
 }
 
 /**

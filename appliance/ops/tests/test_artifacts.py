@@ -577,6 +577,10 @@ class DaemonAndWebConfigAgreeOnTheProductionPaths(unittest.TestCase):
             PRODUCTION_SOCKET_PATH,
             PRODUCTION_DAEMON_DATABASE_PATH,
             DAEMON_SERVICE_TOKEN_PATH,
+            # PI-VISION-008 is what actually enables this mechanism; an
+            # installation staying inert depends on cs71-vision's own
+            # autonomy_thresholds staying empty, not this being unset.
+            MACHINE_SERVICE_TOKEN_PATH,
         ):
             self.assertIn(path, text)
 

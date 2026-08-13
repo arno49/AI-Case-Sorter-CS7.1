@@ -1288,10 +1288,81 @@ web-workspace logic changed.
 
 **Goal:** let a sufficiently confident classification submit an autonomous sort through the new actor kind; hold everything else for operator confirmation. **Implementation notes:** per-class threshold, conservative default. **Dependencies:** PI-VISION-006, PI-VISION-007, PI-VISION-010. **Hardware required:** Pi, camera and controller for real autonomous motion; routing/threshold logic itself is evidenced via simulator first. **Size:** L.
 
-- The confidence threshold is configurable per class and defaults conservative (mostly manual).
-- A below-threshold case is held for explicit operator confirmation; it is never silently skipped or defaulted to a guess.
-- A false-autonomous-sort rate is measured and recorded per class before that class's threshold may be lowered.
-- A primer-presence flag (PI-VISION-010) always overrides autonomy regardless of manufacturer-class confidence.
+With all three dependencies merged, this task is where they compose: the
+`machine` actor kind (PI-VISION-007) finally gets a caller, and the primer
+gate (PI-VISION-010) gets a real decision to veto. Before this task,
+`cs71-vision`'s daemon client was read-only by design and had no snapshot
+generation to act against; this is genuinely net-new plumbing, not just
+wiring together what already existed.
+
+**`cs71vision.autonomy.may_autonomously_sort(suggestion, thresholds)`** is
+the composed gate, checked in a fixed order that cannot be reordered away:
+primer first and unconditionally
+(`primer.requires_operator_confirmation`), then a per-class confidence
+threshold. A class absent from `thresholds` can never autonomously sort -
+conservative by omission, matching ADR-0013's "starting conservative...
+mostly manual" rather than encoding that as some low default number a
+future edit could quietly raise past safe. Since no trained primer detector
+exists yet (PI-VISION-010), primer is always `None` today, which means this
+gate is currently inert on the primer axis alone regardless of how any
+class's confidence threshold is configured - the same honest posture
+PI-VISION-010 established, now load-bearing rather than merely documented.
+
+**`cs71vision.autonomy.Autonomist`** is the one thing that ever calls
+`DaemonClient.submit_sort` - kept as its own loop
+(`runtime.AutonomyLoop`), never a step bolted onto `SuggestionLoop`'s own
+tick, so `SuggestionLoop`'s "never issues a `cs71d` command, under any
+configuration" stays true by construction rather than by discipline. It
+never submits twice for one suggestion
+(`DatasetStore.autonomous_attempt_exists`, checked before ever calling
+`cs71d`), and every attempt carries a deterministic idempotency key
+(`autonomous-sort-<suggestion_id>`) so even a duplicate tick collapses into
+the same `cs71d` operation rather than sorting a case twice.
+
+**`DaemonClient` gained real write capability, narrowly.** It was
+documented as "this client never writes" before this task; `submit_sort` is
+now the sole exception, gated on a second, distinct credential
+(`machine_service_token`) that is refused outright when unconfigured - no
+fallback to the ordinary shared credential, and `cs71d` would refuse that
+combination anyway (PI-VISION-007's bidirectional identity/role check).
+`current_generation()` (a new `GET /v1/snapshot` read) supplies the exact
+`If-Match-Generation` every commanding caller must carry - there is no
+exemption for the `machine` role.
+
+**Storage: one additive migration (schema v6), two tables, not a mutation
+of `suggestion_outcomes`.** An autonomous sort has no operator confirmation
+step to compare itself against, so "was this actually right" cannot be
+inferred the way manual-sort accuracy already is - it can only ever be a
+human's own later verdict. `autonomous_attempts` records that a suggestion
+was submitted (`suggestion_id UNIQUE`, preventing a second attempt from
+being recorded even if one were ever retried); `autonomous_reviews` records
+one human verdict per attempt (`attempt_id UNIQUE`), never inferred, never
+edited. `autonomous_accuracy_by_class` reports the reviewed false rate per
+class and *omits* a class with attempts but zero reviews, rather than
+reporting it as 0% false - "unreviewed" and "reviewed clean" must never
+look the same, matching this task's own "not a general 'it seems to work'"
+requirement literally, not just in spirit.
+
+**`GET /v1/autonomy`/`POST /v1/autonomous-reviews`** (new `cs71-vision`
+routes) expose configured thresholds, reviewed accuracy and the
+pending-review queue, and record one verdict. This is the visible place an
+administrator looks before ever lowering a class's threshold in
+`cs71vision.toml` - a config-file, TOML change (the same mechanism every
+other per-installation value in this workspace already uses), not a new
+web-UI control surface, since nothing in this codebase lets an operator
+edit permitted daemon/vision configuration through the browser either.
+
+**Provisioning enables the mechanism, not the policy.** Both
+`production.example.toml`s now point `cs71d` and `cs71-vision` at the
+machine credential PI-VISION-007 already provisions unconditionally, but
+`autonomy_thresholds` stays empty by default - a fresh installation
+autonomously sorts nothing until a class is explicitly configured, after
+its own recorded evidence has been reviewed.
+
+- [x] The confidence threshold is configurable per class and defaults conservative (mostly manual).
+- [x] A below-threshold case is held for explicit operator confirmation; it is never silently skipped or defaulted to a guess.
+- [x] A false-autonomous-sort rate is measured and recorded per class before that class's threshold may be lowered.
+- [x] A primer-presence flag (PI-VISION-010) always overrides autonomy regardless of manufacturer-class confidence.
 
 ### PI-VISION-009 — Configurable routing profiles
 

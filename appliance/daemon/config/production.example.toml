@@ -5,3 +5,9 @@ device_path = "/dev/cs71"
 socket_path = "/run/cs71/cs71d.sock"
 database_path = "/var/lib/cs71d/machine.db"
 service_token_path = "/etc/cs71d/service-token"
+# PI-VISION-008: the machine credential is always provisioned (PI-VISION-007,
+# write_machine_service_token), but the daemon only accepts it once this is
+# set - the mechanism being enabled does not itself do anything: with no
+# autonomy_thresholds configured on the cs71-vision side, nothing ever
+# presents it (ADR-0013: conservative, mostly manual by default).
+machine_service_token_path = "/etc/cs71d/machine-service-token"

@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	autonomyClassReadings,
 	classReadings,
 	modelReadings,
+	pendingReviewDetail,
 	suggestionAccuracyDetail,
 	trainingReadinessDetail
 } from './dataset-view';
-import type { CandidateSummary, DatasetSummary, ModelsSummary } from './dataset';
+import type { AutonomySummary, CandidateSummary, DatasetSummary, ModelsSummary } from './dataset';
 
 function summary(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
 	return {
@@ -202,5 +204,80 @@ describe('suggestionAccuracyDetail', () => {
 		const detail = suggestionAccuracyDetail({ total: 1, correct: 1, accuracy: 1.0 });
 
 		expect(detail).toContain('1 of 1 sort ');
+	});
+});
+
+function autonomySummary(overrides: Partial<AutonomySummary> = {}): AutonomySummary {
+	return {
+		thresholds: {},
+		accuracyByClass: {},
+		pendingReview: [],
+		...overrides
+	};
+}
+
+describe('autonomyClassReadings', () => {
+	it('reports no threshold configured for a class with neither a threshold nor a review', () => {
+		const readings = autonomyClassReadings(autonomySummary());
+
+		expect(readings).toEqual([]);
+	});
+
+	it('reports a configured class with no attempts reviewed yet, distinct from a low false rate', () => {
+		const readings = autonomyClassReadings(autonomySummary({ thresholds: { 3: 0.95 } }));
+
+		expect(readings).toHaveLength(1);
+		expect(readings[0].slot).toBe(3);
+		expect(readings[0].threshold).toBe(0.95);
+		expect(readings[0].detail).toContain('No autonomous attempt has been reviewed yet');
+	});
+
+	it('reports the false rate and raw counts for a reviewed class', () => {
+		const readings = autonomyClassReadings(
+			autonomySummary({
+				thresholds: { 3: 0.95 },
+				accuracyByClass: { 3: { total: 4, correct: 3, falseRate: 0.25 } }
+			})
+		);
+
+		expect(readings[0].detail).toContain('25%');
+		expect(readings[0].detail).toContain('1 of 4');
+		expect(readings[0].tone).toBe('attention');
+	});
+
+	it('marks a clean reviewed class ordinary, not attention', () => {
+		const readings = autonomyClassReadings(
+			autonomySummary({
+				thresholds: { 3: 0.95 },
+				accuracyByClass: { 3: { total: 4, correct: 4, falseRate: 0 } }
+			})
+		);
+
+		expect(readings[0].tone).toBe('ordinary');
+	});
+
+	it('includes a reviewed class even without a configured threshold', () => {
+		const readings = autonomyClassReadings(
+			autonomySummary({ accuracyByClass: { 5: { total: 2, correct: 2, falseRate: 0 } } })
+		);
+
+		expect(readings).toHaveLength(1);
+		expect(readings[0].slot).toBe(5);
+		expect(readings[0].threshold).toBeNull();
+	});
+
+	it('orders classes by slot', () => {
+		const readings = autonomyClassReadings(autonomySummary({ thresholds: { 5: 0.9, 3: 0.95 } }));
+
+		expect(readings.map((reading) => reading.slot)).toEqual([3, 5]);
+	});
+});
+
+describe('pendingReviewDetail', () => {
+	it('names the slot and when the attempt happened', () => {
+		const detail = pendingReviewDetail(3, '2026-08-12T12:07:00.000Z');
+
+		expect(detail).toContain('Slot 3');
+		expect(detail).toContain('2026-08-12T12:07:00.000Z');
 	});
 });
