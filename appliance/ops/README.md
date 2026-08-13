@@ -42,6 +42,22 @@ services each read their own copy to know what to present
 `daemon_service_token_path`). `deployment-and-operations.md`'s layout table
 only shows the web's copy; this is the place that says there are three.
 
+**A fourth, distinct credential pair for the machine actor kind**
+(PI-VISION-007, ADR-0013) - `/etc/cs71d/machine-service-token` and
+`/etc/cs71-vision/machine-service-token`, written by
+`write_machine_service_token` (`lib/common.sh`), unconditionally, the same
+way `write_service_tokens` always runs. This is a genuinely *different*
+secret from the shared one above, not a fourth copy of it: `cs71-web` never
+receives this file at all, since it has no legitimate reason to ever act as
+the machine actor kind, and the daemon checks the actual credential
+presented against the actual role claimed (see `appliance/daemon/README.md`'s
+own "The machine actor kind" section) rather than trusting a request body's
+say-so. The file is always provisioned, but `cs71d.toml` does not enable
+the capability by default (`machine_service_token_path` is unset in
+`production.example.toml`) - the file existing is not the same thing as the
+capability being active, and nothing presents this credential until
+PI-VISION-008 configures `cs71-vision` to.
+
 **`/etc/cs71/cs71d.toml`, `/etc/cs71/cs71vision.toml` and `/etc/cs71/web.env`
 are root-owned and world-readable**, deliberately. Every value in them is
 already fixed by the production profile (`config.py`/`config.ts` refuse

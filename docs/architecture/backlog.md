@@ -1230,10 +1230,59 @@ fast synthetic solid-color images, on ordinary CI hardware.
 
 **Goal:** extend the daemon's contract with a narrowly-scoped, non-human actor kind restricted to `sort`. **Implementation notes:** additive OpenAPI/`API_ROLES`/`Actor` change, reviewed with the same weight as `cs71d`'s existing safety primitives; own service credential, following the two-service-token-file pattern from PI-OPS-001. **Dependencies:** PI-API-001, PI-DOMAIN-004. **Hardware required:** No — this is a daemon-contract change, evidenced the same way any other domain change is. **Size:** L.
 
-- The new actor kind cannot reach `machine.recover`, `config.write` or `users.manage` under any circumstance, enforced at the daemon boundary, not only the UI.
-- It authenticates with its own service credential file, distinct from `cs71-web`'s and `cs71d`'s own.
-- Every command it submits is durably journaled and distinguishable in the audit trail as machine-attributed, never presented as a person's decision.
-- The contract change is additive; no existing `FROZEN_*` contract guard breaks.
+Before this task, `cs71d`'s bearer authentication was identity-blind: one
+shared secret was compared against every caller, so nothing distinguished
+"this really came from `cs71-vision`" from "`cs71-web` wrote `role:
+"machine"` into a request body it constructed itself" - the backlog's "own
+service credential file, distinct from `cs71-web`'s and `cs71d`'s own" was
+pointing at exactly this gap. `cs71d.api.ServiceIdentity` (`BFF`/`MACHINE`)
+closes it: `authenticate()` now checks the presented bearer token against up
+to two distinct configured secrets and returns which one matched, and
+`_commanding_actor()` requires the claimed `role` and the authenticated
+`identity` to agree in both directions -
+`(role == MACHINE_ROLE) != (identity is ServiceIdentity.MACHINE)` is
+`FORBIDDEN`. That symmetry matters: it is not enough that the machine
+credential can't claim a human role, since a human-attributed request must
+also be unable to claim the machine role by self-declaration alone. A
+second, narrower gate is new too - the first per-role, per-command
+restriction anywhere in `cs71d` (`domain.py` never inspected `actor.role`
+before this) - `command != "sort"` is `FORBIDDEN` for the machine role
+specifically, leaving every human role governed by the pre-existing flat
+`COMMANDING_ROLES` gate plus SvelteKit's own RBAC, unchanged.
+
+**Credential provisioning follows a deliberately different shape from the
+existing three-file pattern.** `write_service_tokens` (`appliance/ops/lib/common.sh`)
+writes one shared secret to three files, one per service. The new
+`write_machine_service_token` writes a second, *distinct* secret to only
+two files - `/etc/cs71d/machine-service-token` and
+`/etc/cs71-vision/machine-service-token` - never `/etc/cs71-web/`, since
+`cs71-web` has no legitimate reason to ever act as the machine identity; a
+test asserts the string `cs71-web` does not appear in that function's body
+at all. `DaemonConfig.machine_service_token_path` stays optional even in
+production (unlike `service_token_path`, which is effectively required to
+serve) - the capability can exist, provisioned, for a long time before
+PI-VISION-008 ever configures `cs71-vision` to present it; `None` leaves the
+machine role structurally unreachable regardless of request content, proven
+by a real end-to-end `Daemon` + socket test.
+
+**No schema migration, on either side of the boundary.** The contract's
+`Actor.role` enum gained a fourth value; the `FROZEN_ENUMS` contract guard
+only checks top-level enum schemas by strict equality, not enums nested on
+an object property, so this additive change was correctly left unflagged -
+confirmed by reading the guard's own assertion rather than assumed.
+`operations.Actor` was already an unconstrained `{user_id, role}` dataclass
+and `journal.py`'s `operations` table already stores `actor_role` as
+untyped `TEXT`, so a machine-attributed operation is durably journaled and
+distinguishable from a person's decision with zero changes to either. Only
+`cs71d-v1.d.ts` needed mechanical regeneration; `cs71-web`'s own `Role` type
+(`viewer`/`operator`/`administrator`) is a separate, closed vocabulary that
+cannot express `role: "machine"` in any payload it constructs, so no
+web-workspace logic changed.
+
+- [x] The new actor kind cannot reach `machine.recover`, `config.write` or `users.manage` under any circumstance, enforced at the daemon boundary, not only the UI.
+- [x] It authenticates with its own service credential file, distinct from `cs71-web`'s and `cs71d`'s own.
+- [x] Every command it submits is durably journaled and distinguishable in the audit trail as machine-attributed, never presented as a person's decision.
+- [x] The contract change is additive; no existing `FROZEN_*` contract guard breaks.
 
 ### PI-VISION-008 — Confidence-gated hybrid autonomy (Phase 2)
 

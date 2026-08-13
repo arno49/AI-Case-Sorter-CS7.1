@@ -17,6 +17,8 @@ All JSON uses RFC 3339 UTC timestamps, lower_snake_case JSON fields, UTF-8 and e
 
 Responses use `X-Request-ID` for transport diagnostics and return `ETag: "generation:<n>"` for snapshots. The daemon must never trust a caller-supplied role; SvelteKit authorizes browser identity and daemon validates the restricted BFF identity/metadata format.
 
+`Actor.role` is `viewer`/`operator`/`administrator`/`machine` (PI-VISION-007, ADR-0013). `machine` is the one non-human role: a narrowly-scoped autonomous actor, restricted to submitting `sort` and nothing else, under any configuration. It is only ever legitimate when authenticated with its own distinct service credential (never the BFF's) — the daemon checks that the claimed role and the credential that authenticated the request agree in both directions, so a caller holding only the ordinary shared credential can never make itself the machine role by writing it into a request body, and the machine credential can never be used to claim a human role either.
+
 ## Resources
 
 | Method | Resource | Response |

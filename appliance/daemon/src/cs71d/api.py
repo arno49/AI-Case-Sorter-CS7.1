@@ -25,6 +25,7 @@ import socketserver
 import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -44,12 +45,34 @@ API_VERSION = "v1"
 MAX_BODY_BYTES = 64 * 1024
 MAX_CONTRACT_DEADLINE_MS = 120_000
 MAX_API_SLOT = 63
-COMMANDING_ROLES = frozenset({"operator", "administrator"})
+#: The narrowly-scoped, non-human actor kind PI-VISION-007/ADR-0013 add:
+#: never a human role, session or capability reused, restricted below to
+#: `sort` alone and only ever legitimate from its own distinct credential
+#: (see `ServiceIdentity`, `_commanding_actor`) - a caller holding only the
+#: BFF credential can never make itself this role by writing it into a body.
+MACHINE_ROLE = "machine"
+COMMANDING_ROLES = frozenset({"operator", "administrator", MACHINE_ROLE})
 API_ROLES = frozenset({"viewer", *COMMANDING_ROLES})
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 SOCKET_MODE = 0o660
 SHUTDOWN_POLL_SECONDS = 0.02
+
+
+class ServiceIdentity(Enum):
+    """Which credential authenticated this request.
+
+    Never inferred from the request body - `authenticate()` is the only
+    place this is decided, from which of the (up to two) distinct bearer
+    secrets was actually presented. This is what makes `MACHINE_ROLE`'s own
+    restriction real rather than merely self-declared: `_commanding_actor`
+    refuses any request where the claimed role and the authenticated
+    identity disagree, in either direction.
+    """
+
+    BFF = "bff"
+    MACHINE = "machine"
+
 
 _LOGGER = logging.getLogger("cs71d.api")
 _REQUEST_ID = re.compile(r"[0-9a-fA-F-]{36}\Z")
@@ -119,15 +142,24 @@ class ApiServer:
         *,
         socket_path: str | Path,
         service_token: str,
+        machine_service_token: str | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         socket_mode: int = SOCKET_MODE,
     ) -> None:
         if not service_token:
             raise ValueError("a service token is required; the API is never unauthenticated")
+        if machine_service_token == "":
+            raise ValueError("machine_service_token must not be empty when provided")
         self._domain = domain
         self._journal = journal
         self._socket_path = str(socket_path)
         self._token = service_token.encode("utf-8")
+        # None means the machine actor kind has no credential configured yet
+        # (PI-VISION-007's own default): every request is then the BFF's,
+        # and MACHINE_ROLE is unreachable regardless of what a body claims.
+        self._machine_token = (
+            machine_service_token.encode("utf-8") if machine_service_token is not None else None
+        )
         self._now = now
         self._socket_mode = socket_mode
         self._server: _UnixHttpServer | None = None
@@ -172,13 +204,24 @@ class ApiServer:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def authenticate(self, header: str | None) -> None:
-        """Require the installation-local bearer credential on every request."""
+    def authenticate(self, header: str | None) -> ServiceIdentity:
+        """Require a valid installation-local bearer credential on every request.
+
+        Returns which identity presented it. This is the one and only place
+        that decision is made; `_commanding_actor` trusts it over anything a
+        request body claims about its own role.
+        """
         scheme, _, presented = (header or "").partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(
-            presented.strip().encode("utf-8"), self._token
-        ):
+        if scheme.lower() != "bearer":
             raise ApiError("UNAUTHENTICATED", "a valid local service credential is required")
+        presented_bytes = presented.strip().encode("utf-8")
+        if hmac.compare_digest(presented_bytes, self._token):
+            return ServiceIdentity.BFF
+        if self._machine_token is not None and hmac.compare_digest(
+            presented_bytes, self._machine_token
+        ):
+            return ServiceIdentity.MACHINE
+        raise ApiError("UNAUTHENTICATED", "a valid local service credential is required")
 
     def route(
         self,
@@ -186,13 +229,14 @@ class ApiServer:
         path: str,
         query: Mapping[str, list[str]],
         *,
+        identity: ServiceIdentity,
         headers: Mapping[str, str] | None = None,
         body: bytes = b"",
     ) -> _Response:
         if method == "POST":
-            return self._command(path, headers or {}, body)
+            return self._command(path, headers or {}, body, identity=identity)
         if method == "PATCH" and path == "/v1/configuration":
-            return self._configure(headers or {}, body)
+            return self._configure(headers or {}, body, identity=identity)
         if method not in {"GET", "HEAD"}:
             raise ApiError("RESOURCE_NOT_FOUND", f"{method} {path} is not available")
         if path == "/v1/health/live":
@@ -222,8 +266,10 @@ class ApiServer:
             return _Response(HTTPStatus.OK, self._operation(matched.group("operation_id")))
         raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
 
-    def _command(self, path: str, headers: Mapping[str, str], body: bytes) -> _Response:
-        """Admit one state-changing request from the BFF.
+    def _command(
+        self, path: str, headers: Mapping[str, str], body: bytes, *, identity: ServiceIdentity
+    ) -> _Response:
+        """Admit one state-changing request from the BFF, or the machine actor.
 
         Every command carries all three required headers. They are evaluated
         here so a malformed request is refused at the boundary, and the domain
@@ -233,7 +279,7 @@ class ApiServer:
         if action is None and path not in _SESSION_PATHS and path != "/v1/machine/stop":
             raise ApiError("RESOURCE_NOT_FOUND", f"POST {path} is not a resource of this API")
         payload = _json_object(body)
-        actor = _commanding_actor(payload)
+        actor = _commanding_actor(payload, identity=identity, command=_command_name(path, action))
         key = _idempotency_key(headers)
         deadline_ms = _deadline_ms(headers)
 
@@ -341,9 +387,11 @@ class ApiServer:
             "updated_at": _rfc3339(updated_at),
         }
 
-    def _configure(self, headers: Mapping[str, str], body: bytes) -> _Response:
+    def _configure(
+        self, headers: Mapping[str, str], body: bytes, *, identity: ServiceIdentity
+    ) -> _Response:
         payload = _json_object(body)
-        actor = _commanding_actor(payload)
+        actor = _commanding_actor(payload, identity=identity, command="configure")
         _require_exact_fields(payload, {"api_version", "actor", "changes"}, "configuration")
         changes = payload["changes"]
         if not isinstance(changes, dict) or not changes:
@@ -563,13 +611,14 @@ class _Handler(BaseHTTPRequestHandler):
         api = self._api()
         request_id = self._request_id()
         try:
-            api.authenticate(self.headers.get("Authorization"))
+            identity = api.authenticate(self.headers.get("Authorization"))
             body = self._read_body()
             split = urlsplit(self.path)
             response = api.route(
                 method,
                 split.path,
                 parse_qs(split.query),
+                identity=identity,
                 headers={name.lower(): value for name, value in self.headers.items()},
                 body=body,
             )
@@ -759,13 +808,24 @@ def _json_object(body: bytes) -> dict[str, Any]:
     return payload
 
 
-def _commanding_actor(payload: Mapping[str, Any]) -> Actor:
+def _commanding_actor(
+    payload: Mapping[str, Any], *, identity: ServiceIdentity, command: str
+) -> Actor:
     """Read the propagated attribution and refuse a role that cannot command.
 
     SvelteKit authorizes the browser identity; this is not that authority. The
     daemon validates the restricted format it accepts and refuses a role that
     the contract says can only read, so a mistake at the BFF is not silently
     executed as motion.
+
+    `MACHINE_ROLE` gets two further checks neither the viewer nor the
+    commanding human roles need: the claimed role must agree with which
+    credential actually authenticated this request (`identity`), in both
+    directions - the machine identity may never claim a human role, and a
+    human-attributed request may never claim the machine role, since either
+    would make the audit trail's machine-attribution untrustworthy - and it
+    may only ever be used to submit `sort`, never anything else, under any
+    configuration (ADR-0013).
     """
     supplied = payload.get("actor")
     if not isinstance(supplied, dict) or set(supplied) != {"user_id", "role"}:
@@ -773,12 +833,27 @@ def _commanding_actor(payload: Mapping[str, Any]) -> Actor:
     role = supplied["role"]
     if role not in API_ROLES:
         raise ApiError("VALIDATION_FAILED", "actor role is not a role of this API")
+    if (role == MACHINE_ROLE) != (identity is ServiceIdentity.MACHINE):
+        raise ApiError("FORBIDDEN", "the machine role requires the machine service identity")
+    if role == MACHINE_ROLE and command != OperationAction.SORT.value:
+        raise ApiError("FORBIDDEN", "the machine role may only submit sort")
     if role not in COMMANDING_ROLES:
         raise ApiError("FORBIDDEN", f"the {role} role may not command the machine")
     try:
         return Actor(user_id=str(supplied["user_id"]), role=str(role))
     except DomainError as exc:
         raise ApiError("VALIDATION_FAILED", str(exc)) from exc
+
+
+def _command_name(path: str, action: OperationAction | None) -> str:
+    """What `_commanding_actor` calls this request, for the machine-role gate."""
+    if action is not None:
+        return action.value
+    if path == "/v1/session/connect":
+        return "connect"
+    if path == "/v1/session/recover":
+        return "recover"
+    return "stop"
 
 
 def _command_body(action: OperationAction, payload: Mapping[str, Any]) -> dict[str, Any]:

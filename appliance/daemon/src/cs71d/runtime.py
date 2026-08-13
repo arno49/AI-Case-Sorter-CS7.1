@@ -71,6 +71,14 @@ class Daemon:
             raise ConfigError("serving requires service_token_path in the configuration")
         self._config = config
         self._token = read_service_token(config.service_token_path)
+        # None means the machine actor kind (PI-VISION-007) has no credential
+        # configured for this installation yet - the API server still starts,
+        # it just never has anything to compare a machine-role request against.
+        self._machine_token = (
+            read_service_token(config.machine_service_token_path)
+            if config.machine_service_token_path is not None
+            else None
+        )
         self._stopped = threading.Event()
         self._journal: Journal | None = None
         self._domain: OperationDomain | None = None
@@ -113,6 +121,7 @@ class Daemon:
                 journal,
                 socket_path=self._config.socket_path,
                 service_token=self._token,
+                machine_service_token=self._machine_token,
             )
             api.start()
             self._api = api
