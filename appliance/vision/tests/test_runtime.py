@@ -14,20 +14,23 @@ import pytest
 
 from cs71vision.api import VisionApiServer
 from cs71vision.camera import CameraError, Frame
+from cs71vision.classifier import FrameSuggester
 from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
 from cs71vision.dataset import IN_MEMORY, DatasetExample, DatasetStore, TrainedCandidate
 from cs71vision.runtime import (
     CaptureLoop,
     CorrelationLoop,
+    SuggestionLoop,
     TrainingJob,
     build_api_server,
     build_camera,
     build_correlation_loop,
+    build_suggestion_loop,
     build_training_job,
     read_service_token,
 )
-from cs71vision.training import TrainingError
+from cs71vision.training import TrainingError, train_candidate
 
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
 
@@ -576,3 +579,125 @@ def test_build_training_job_trains_a_real_candidate_end_to_end(token_workspace: 
         assert candidates[0].included_classes == (3, 5)
     finally:
         job.close()
+
+
+class CountingSuggester:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def suggest_once(self) -> int:
+        self.calls += 1
+        return 0
+
+
+class ExplodingSuggester:
+    def suggest_once(self) -> int:
+        raise RuntimeError("suggestion exploded")
+
+
+def test_suggestion_loop_ticks_repeatedly() -> None:
+    suggester = CountingSuggester()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = SuggestionLoop(suggester, store, interval_ms=1)
+
+    loop.start()
+    try:
+        deadline = threading.Event()
+        deadline.wait(0.05)
+    finally:
+        loop.close()
+
+    assert suggester.calls >= 1
+
+
+def test_suggestion_loop_survives_a_tick_that_raises() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    loop = SuggestionLoop(ExplodingSuggester(), store, interval_ms=1)
+
+    loop.start()
+    deadline = threading.Event()
+    deadline.wait(0.05)
+    loop.close()  # must not raise or hang
+
+
+def test_suggestion_loop_closes_its_store() -> None:
+    suggester = CountingSuggester()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = SuggestionLoop(suggester, store, interval_ms=1000)
+
+    loop.start()
+    loop.close()
+
+    with pytest.raises(Exception, match="closed"):
+        store.total_examples()
+
+
+def test_suggestion_loop_refuses_a_nonpositive_interval() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        SuggestionLoop(CountingSuggester(), DatasetStore.open(IN_MEMORY), interval_ms=0)
+
+
+def test_build_suggestion_loop_is_none_without_a_token_path() -> None:
+    config = VisionConfig.development()
+
+    assert build_suggestion_loop(config, FrameBuffer()) is None
+
+
+def test_build_suggestion_loop_builds_a_working_loop_given_a_token_path(
+    token_workspace: Path,
+) -> None:
+    token_path = _token_file(token_workspace)
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=IN_MEMORY,
+        daemon_service_token_path=str(token_path),
+    )
+
+    loop = build_suggestion_loop(config, FrameBuffer())
+
+    assert loop is not None
+    assert isinstance(loop, SuggestionLoop)
+    loop.close()
+
+
+def test_suggestion_loop_records_a_real_suggestion_end_to_end(token_workspace: Path) -> None:
+    db_path = token_workspace / "vision.db"
+    store = DatasetStore.open(db_path)
+    examples = [
+        *[DatasetExample(slot=3, frame_png=_png(10)) for _ in range(10)],
+        *[DatasetExample(slot=5, frame_png=_png(240)) for _ in range(10)],
+    ]
+    candidate = train_candidate(examples, minimum_examples_per_class=5, seed=0)
+    version = store.record_candidate(candidate, trained_at=START)
+    store.activate(version, activated_at=START)
+    store.close()
+
+    reopened = DatasetStore.open(db_path)
+    buffer = FrameBuffer()
+    buffer.add(Frame(png=_png(10), width=4, height=4, captured_at=START))
+    suggester = FrameSuggester(reopened, buffer, now=lambda: START)
+    loop = SuggestionLoop(suggester, reopened, interval_ms=1)
+
+    loop.start()
+    try:
+        deadline = threading.Event()
+        for _ in range(200):
+            check = DatasetStore.open(db_path)
+            try:
+                latest = check.latest_suggestion()
+            finally:
+                check.close()
+            if latest is not None:
+                assert latest.suggested_slot == 3
+                break
+            deadline.wait(0.01)
+        else:
+            raise AssertionError("no suggestion was ever recorded")
+    finally:
+        loop.close()

@@ -445,3 +445,78 @@ def test_rollback_with_nothing_ever_activated_is_refused(workspace: Path) -> Non
         assert body["code"] == "VALIDATION_FAILED"
     finally:
         server.close()
+
+
+def test_suggestion_is_none_before_anything_is_recorded(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion")
+
+        assert status == 200
+        assert body["api_version"] == "v1"
+        assert body["suggestion"] is None
+    finally:
+        server.close()
+
+
+def test_suggestion_reports_the_most_recently_recorded_one(workspace: Path) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.87,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    server = _server(workspace, store=store)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion")
+
+        assert status == 200
+        assert body["suggestion"] == {
+            "slot": 3,
+            "confidence": 0.87,
+            "model_version": version,
+            "suggested_at": START.isoformat(),
+        }
+    finally:
+        server.close()
+
+
+def test_suggestion_accuracy_is_zero_before_anything_is_matched(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion-accuracy")
+
+        assert status == 200
+        assert body == {"api_version": "v1", "total": 0, "correct": 0, "accuracy": None}
+    finally:
+        server.close()
+
+
+def test_suggestion_accuracy_reports_matched_outcomes(workspace: Path) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    suggestion_id = store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.9,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    store.record_suggestion_outcome(
+        suggestion_id=suggestion_id, operation_id="op-1", actual_slot=3, recorded_at=START
+    )
+    server = _server(workspace, store=store)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion-accuracy")
+
+        assert status == 200
+        assert body == {"api_version": "v1", "total": 1, "correct": 1, "accuracy": 1.0}
+    finally:
+        server.close()

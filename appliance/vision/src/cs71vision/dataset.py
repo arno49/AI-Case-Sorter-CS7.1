@@ -93,6 +93,32 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=4,
+        name="suggestions",
+        statements=(
+            """
+            CREATE TABLE suggestions (
+                suggestion_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_version INTEGER NOT NULL REFERENCES models(version),
+                suggested_slot INTEGER NOT NULL,
+                confidence REAL NOT NULL,
+                frame_captured_at TEXT NOT NULL,
+                suggested_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE suggestion_outcomes (
+                outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id INTEGER NOT NULL UNIQUE REFERENCES suggestions(suggestion_id),
+                operation_id TEXT NOT NULL UNIQUE,
+                actual_slot INTEGER NOT NULL,
+                correct INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -152,6 +178,36 @@ class ActivationSummary:
     activation_id: int
     version: int
     activated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SuggestionRecord:
+    """One read-only classification of the latest captured frame (PI-VISION-006)."""
+
+    suggestion_id: int
+    model_version: int
+    suggested_slot: int
+    confidence: float
+    frame_captured_at: str
+    suggested_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SuggestionAccuracy:
+    """Live suggestion accuracy: suggestion versus the operator's actual choice.
+
+    Deliberately separate evidence from a candidate's training-time held-out
+    accuracy (`CandidateSummary.accuracy_by_class`) - this is measured
+    against real operator decisions after activation, not a held-out split
+    of the training data.
+    """
+
+    total: int
+    correct: int
+
+    @property
+    def fraction(self) -> float | None:
+        return None if self.total == 0 else self.correct / self.total
 
 
 _CREATE_MIGRATION_LEDGER = """
@@ -392,6 +448,93 @@ class DatasetStore:
             ).fetchone()
         return None if row is None else int(row["version"])
 
+    def record_suggestion(
+        self,
+        *,
+        model_version: int,
+        suggested_slot: int,
+        confidence: float,
+        frame_captured_at: datetime,
+        suggested_at: datetime,
+    ) -> int:
+        """Record one read-only classification. Always a new row, never an edit."""
+        with self._transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO suggestions"
+                " (model_version, suggested_slot, confidence, frame_captured_at, suggested_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    model_version,
+                    suggested_slot,
+                    confidence,
+                    _encode_time(frame_captured_at),
+                    _encode_time(suggested_at),
+                ),
+            )
+            suggestion_id = cursor.lastrowid
+        if suggestion_id is None:
+            raise DatasetError("recording a suggestion did not yield a suggestion id")
+        return suggestion_id
+
+    def latest_suggestion(self) -> SuggestionRecord | None:
+        """The most recently recorded suggestion, or None if none exists yet."""
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT suggestion_id, model_version, suggested_slot, confidence,"
+                " frame_captured_at, suggested_at"
+                " FROM suggestions ORDER BY suggestion_id DESC LIMIT 1"
+            ).fetchone()
+        return None if row is None else _suggestion_record_from(row)
+
+    def unmatched_suggestion_at_or_before(self, moment: datetime) -> SuggestionRecord | None:
+        """The newest suggestion at or before `moment` with no recorded outcome yet.
+
+        Mirrors `FrameBuffer.closest_at_or_before`'s own contract: `None`
+        means no evidence, never a guess.
+        """
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT s.suggestion_id, s.model_version, s.suggested_slot, s.confidence,"
+                " s.frame_captured_at, s.suggested_at"
+                " FROM suggestions s"
+                " LEFT JOIN suggestion_outcomes o ON o.suggestion_id = s.suggestion_id"
+                " WHERE o.suggestion_id IS NULL AND s.suggested_at <= ?"
+                " ORDER BY s.suggested_at DESC LIMIT 1",
+                (_encode_time(moment),),
+            ).fetchone()
+        return None if row is None else _suggestion_record_from(row)
+
+    def record_suggestion_outcome(
+        self, *, suggestion_id: int, operation_id: str, actual_slot: int, recorded_at: datetime
+    ) -> int:
+        """Record what actually happened for one suggestion. Never edited afterward."""
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                "SELECT suggested_slot FROM suggestions WHERE suggestion_id = ?", (suggestion_id,)
+            ).fetchone()
+            if row is None:
+                raise DatasetError(f"no suggestion at id {suggestion_id}")
+            correct = int(row["suggested_slot"]) == actual_slot
+            cursor.execute(
+                "INSERT INTO suggestion_outcomes"
+                " (suggestion_id, operation_id, actual_slot, correct, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (suggestion_id, operation_id, actual_slot, int(correct), _encode_time(recorded_at)),
+            )
+            outcome_id = cursor.lastrowid
+        if outcome_id is None:
+            raise DatasetError("recording a suggestion outcome did not yield an outcome id")
+        return outcome_id
+
+    def suggestion_accuracy(self) -> SuggestionAccuracy:
+        """Live suggestion accuracy across every matched outcome so far."""
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(correct), 0) AS correct"
+                " FROM suggestion_outcomes"
+            ).fetchone()
+        return SuggestionAccuracy(total=int(row["total"]), correct=int(row["correct"]))
+
     def _configure(self) -> None:
         try:
             self._connection.row_factory = sqlite3.Row
@@ -502,4 +645,15 @@ def _candidate_summary_from(row: sqlite3.Row) -> CandidateSummary:
         minimum_examples_per_class=int(row["minimum_examples_per_class"]),
         training_example_count=int(row["training_example_count"]),
         holdout_example_count=int(row["holdout_example_count"]),
+    )
+
+
+def _suggestion_record_from(row: sqlite3.Row) -> SuggestionRecord:
+    return SuggestionRecord(
+        suggestion_id=int(row["suggestion_id"]),
+        model_version=int(row["model_version"]),
+        suggested_slot=int(row["suggested_slot"]),
+        confidence=float(row["confidence"]),
+        frame_captured_at=str(row["frame_captured_at"]),
+        suggested_at=str(row["suggested_at"]),
     )

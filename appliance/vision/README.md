@@ -13,9 +13,13 @@ PI-VISION-003 gives `cs71-vision` its first HTTP surface of its own — a
 single read-only resource the web BFF queries for dataset review — so it now
 talks to the web side, but only ever to answer that one read. PI-VISION-004
 adds the training pipeline itself: a candidate classifier can now be trained
-from the recorded dataset and stored as a new version, but nothing yet
-triggers it operator-side (PI-VISION-005) and nothing yet classifies a live
-frame (PI-VISION-006) — this is the pipeline, not the product.
+from the recorded dataset and stored as a new version. PI-VISION-005 gives
+an operator a bounded way to trigger that training, activate a candidate and
+roll back. PI-VISION-006 puts the active model to work, read-only: it
+classifies the latest captured frame on its own background loop and shows
+the operator a suggestion before they pick a slot — `cs71-vision` still
+never issues a `cs71d` command itself, under any configuration; that is
+PI-VISION-007/008's job, gated by an actor kind that does not exist yet.
 
 ## Self-labeled dataset (PI-VISION-002)
 
@@ -218,6 +222,63 @@ currently active model's" (ADR-0013), not a separate confirmation step.
 (`security-and-safety.md`) - a deliberate departure from this project's own
 pattern of reserving impactful actions to `administrator`, since none of
 these actions touch machine motion or `cs71d` at all.
+
+## Read-only classification suggestion (PI-VISION-006)
+
+Puts the active model to work, without ever letting it act: "read-only" is
+architectural here, not a UI choice - nothing in this feature's request path
+ever calls `cs71vision.daemon_client.DaemonClient` at all, so there is no
+code path, under any configuration, that could turn a suggestion into a
+`cs71d` command.
+
+- `cs71vision.classifier.classify_frame(model_blob, frame_png)` is the
+  primitive: unpickle the stored model (the same trust boundary `training.py`
+  already accepts for `pickle` - this process's own output, never anything
+  else), run PI-VISION-004's own `extract_features`, and read
+  `predict_proba` for the top class and its confidence.
+- `cs71vision.classifier.FrameSuggester` is the one thing
+  `cs71vision.runtime.SuggestionLoop` calls each tick, the same
+  separation-of-concerns `correlator.Correlator`/`runtime.CorrelationLoop`
+  already keep: no active model yet, or nothing captured yet, both mean
+  "nothing to suggest" - not an error. `build_suggestion_loop` shares every
+  other `vision.db`-backed component's own gate: without a token,
+  correlation never runs, so no example is ever recorded and no model is
+  ever trained, meaning there is structurally never an active model to
+  suggest from.
+- Storage is two more append-only tables (schema version 4): `suggestions`
+  (one row per classification) and `suggestion_outcomes`
+  (`suggestion_id`/`operation_id` both `UNIQUE`, so a suggestion is matched
+  at most once). `correlator.Correlator` gained exactly one more step in its
+  existing per-success loop: after recording a new example, it also asks
+  `DatasetStore.unmatched_suggestion_at_or_before(created_at)` - the same
+  "newest evidence at or before this moment, `None` means discard, never
+  guess" contract `FrameBuffer.closest_at_or_before` already uses for
+  frames - and records whether it matched. This is the same correlation
+  pass PI-VISION-002 already runs, on the same cadence; nothing new polls
+  `cs71d`.
+- `VisionApiServer` gained two pure-read routes: `GET /v1/suggestion` (the
+  most recently recorded suggestion, or `null`) and
+  `GET /v1/suggestion-accuracy` (`total`/`correct`/`accuracy`, the last
+  `null` rather than a fabricated zero before anything is matched). Neither
+  route classifies on demand or writes anything - `SuggestionLoop` is the
+  only writer.
+
+**Web side:** the dashboard (`/`) shows the current suggestion
+informationally, directly above the existing manual sort form - the same
+page an operator already uses to pick a slot, not a new one. A
+`cs71-vision` outage here is caught and logged, never surfaced as a page
+error: sorting does not depend on `cs71-vision` (ADR-0013), and the
+dashboard's own daemon-read failure handling stays untouched by it.
+`/dataset` shows live suggestion accuracy as a third, visibly distinct
+figure next to the per-candidate held-out accuracy PI-VISION-005 already
+renders - different evidence, since one measures a held-out split of
+training data and the other measures real operator decisions after
+activation.
+
+What remains genuinely hardware-gated: the same class of gap PI-VISION-001/004
+already carry. Nothing here runs against a real camera or a model trained on
+real frames; every suggestion in this test suite classifies small, fast
+synthetic solid-color images on ordinary CI hardware.
 
 ## Camera
 

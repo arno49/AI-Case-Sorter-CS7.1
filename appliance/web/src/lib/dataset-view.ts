@@ -10,7 +10,11 @@
  * active model's own, so "activation is refused unless the operator has
  * been shown the candidate's accuracy alongside the currently active
  * model's" (ADR-0013) is a property of what this page renders, not a
- * separate confirmation step bolted on afterward.
+ * separate confirmation step bolted on afterward. PI-VISION-006 adds a
+ * third kind of accuracy - live, measured against what the operator
+ * actually chose after a suggestion was shown - kept visibly distinct from
+ * the other two, since it answers a different question ("does this model
+ * work in practice") than either of them.
  */
 
 import type { Tone } from '$lib/machine-status';
@@ -18,7 +22,8 @@ import type {
 	CandidateSummary,
 	DatasetClassSummary,
 	DatasetSummary,
-	ModelsSummary
+	ModelsSummary,
+	SuggestionAccuracy
 } from '$lib/dataset';
 
 export interface ClassReading {
@@ -118,4 +123,17 @@ function modelReading(
 		excludedClasses: candidate.excludedClasses,
 		accuracyComparison
 	};
+}
+
+/**
+ * Live suggestion accuracy, as a sentence - not a percentage alone, which
+ * would read as a claim even at `0/0`.
+ */
+export function suggestionAccuracyDetail(accuracy: SuggestionAccuracy): string {
+	if (accuracy.total === 0) {
+		return 'No suggestion has been matched to an operators choice yet.';
+	}
+	const percent = Math.round((accuracy.accuracy ?? 0) * 100);
+	const noun = accuracy.total === 1 ? 'sort' : 'sorts';
+	return `${percent}% (${accuracy.correct} of ${accuracy.total} ${noun} matched the suggestion shown at the time).`;
 }

@@ -364,3 +364,195 @@ def test_rolling_back_is_just_another_activation_pointing_at_the_earlier_version
         ]
     finally:
         store.close()
+
+
+def test_latest_suggestion_is_none_before_anything_is_recorded(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        assert store.latest_suggestion() is None
+    finally:
+        store.close()
+
+
+def test_record_suggestion_then_read_it_back(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        suggestion_id = store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.87,
+            frame_captured_at=START - timedelta(seconds=1),
+            suggested_at=START,
+        )
+
+        latest = store.latest_suggestion()
+        assert latest is not None
+        assert latest.suggestion_id == suggestion_id
+        assert latest.model_version == version
+        assert latest.suggested_slot == 3
+        assert latest.confidence == 0.87
+        assert latest.suggested_at == START.isoformat()
+    finally:
+        store.close()
+
+
+def test_latest_suggestion_is_the_most_recently_recorded_one(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.5,
+            frame_captured_at=START,
+            suggested_at=START,
+        )
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=5,
+            confidence=0.9,
+            frame_captured_at=START + timedelta(seconds=2),
+            suggested_at=START + timedelta(seconds=2),
+        )
+
+        latest = store.latest_suggestion()
+        assert latest is not None
+        assert latest.suggested_slot == 5
+    finally:
+        store.close()
+
+
+def test_unmatched_suggestion_at_or_before_finds_the_newest_qualifying_one(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        early = store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.5,
+            frame_captured_at=START,
+            suggested_at=START,
+        )
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=5,
+            confidence=0.9,
+            frame_captured_at=START + timedelta(minutes=5),
+            suggested_at=START + timedelta(minutes=5),
+        )
+
+        found = store.unmatched_suggestion_at_or_before(START + timedelta(seconds=1))
+
+        assert found is not None
+        assert found.suggestion_id == early
+    finally:
+        store.close()
+
+
+def test_unmatched_suggestion_at_or_before_returns_none_without_evidence(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.5,
+            frame_captured_at=START + timedelta(minutes=5),
+            suggested_at=START + timedelta(minutes=5),
+        )
+
+        # The only suggestion recorded is newer than the moment asked about.
+        assert store.unmatched_suggestion_at_or_before(START) is None
+    finally:
+        store.close()
+
+
+def test_unmatched_suggestion_at_or_before_excludes_already_matched_suggestions(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.5,
+            frame_captured_at=START,
+            suggested_at=START,
+        )
+        store.record_suggestion_outcome(
+            suggestion_id=suggestion_id,
+            operation_id="op-1",
+            actual_slot=3,
+            recorded_at=START,
+        )
+
+        assert store.unmatched_suggestion_at_or_before(START + timedelta(minutes=1)) is None
+    finally:
+        store.close()
+
+
+def test_record_suggestion_outcome_marks_correctness_by_comparing_to_the_suggestion(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        matching = store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.5,
+            frame_captured_at=START,
+            suggested_at=START,
+        )
+        mismatching = store.record_suggestion(
+            model_version=version,
+            suggested_slot=5,
+            confidence=0.5,
+            frame_captured_at=START,
+            suggested_at=START + timedelta(seconds=1),
+        )
+
+        store.record_suggestion_outcome(
+            suggestion_id=matching, operation_id="op-1", actual_slot=3, recorded_at=START
+        )
+        store.record_suggestion_outcome(
+            suggestion_id=mismatching, operation_id="op-2", actual_slot=7, recorded_at=START
+        )
+
+        accuracy = store.suggestion_accuracy()
+        assert accuracy.total == 2
+        assert accuracy.correct == 1
+        assert accuracy.fraction == pytest.approx(0.5)
+    finally:
+        store.close()
+
+
+def test_recording_an_outcome_for_an_unknown_suggestion_is_refused(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        with pytest.raises(DatasetError, match="no suggestion at id"):
+            store.record_suggestion_outcome(
+                suggestion_id=999, operation_id="op-1", actual_slot=3, recorded_at=START
+            )
+    finally:
+        store.close()
+
+
+def test_suggestion_accuracy_fraction_is_none_before_anything_is_matched(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        accuracy = store.suggestion_accuracy()
+
+        assert accuracy.total == 0
+        assert accuracy.fraction is None
+    finally:
+        store.close()

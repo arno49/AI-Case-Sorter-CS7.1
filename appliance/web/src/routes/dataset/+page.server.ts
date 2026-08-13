@@ -1,21 +1,24 @@
 /**
  * The dataset review screen: per-class example counts against the training
- * floor (PI-VISION-003), and the recorded model versions with train/
- * activate/rollback controls (PI-VISION-004/005).
+ * floor (PI-VISION-003), the recorded model versions with train/activate/
+ * rollback controls (PI-VISION-004/005), and live suggestion accuracy
+ * (PI-VISION-006) - separate evidence from any candidate's training-time
+ * held-out accuracy, since it is measured against real operator decisions
+ * after activation, not a held-out split of the training data.
  *
  * The read half is the same shape as `/system`'s own load: nothing to
- * submit, so both `cs71-vision` reads share one `unavailable` message the
- * way `/system` unifies its own two reads into one. The write half mirrors
- * `/` dashboard's manual-command actions - `requireCapability` next to the
- * effect, `recordAudit` on every outcome, a form's own field validated
- * before anything is sent - except there is no generation or idempotency
- * key here: `cs71-vision` has no optimistic-concurrency model to match,
- * because none of these actions touch machine state.
+ * submit, so all three `cs71-vision` reads share one `unavailable` message
+ * the way `/system` unifies its own two reads into one. The write half
+ * mirrors `/` dashboard's manual-command actions - `requireCapability` next
+ * to the effect, `recordAudit` on every outcome, a form's own field
+ * validated before anything is sent - except there is no generation or
+ * idempotency key here: `cs71-vision` has no optimistic-concurrency model to
+ * match, because none of these actions touch machine state.
  */
 
 import { fail, type Actions, type ServerLoad } from '@sveltejs/kit';
 
-import type { DatasetSummary, ModelsSummary } from '$lib/dataset';
+import type { DatasetSummary, ModelsSummary, SuggestionAccuracy } from '$lib/dataset';
 import { recordAudit } from '$lib/server/audit';
 import { requireCapability } from '$lib/server/auth/authorization';
 import { can } from '$lib/server/auth/capabilities';
@@ -32,9 +35,14 @@ export const load: ServerLoad = async ({ locals }) => {
 
 	let dataset: DatasetSummary | null = null;
 	let models: ModelsSummary | null = null;
+	let suggestionAccuracy: SuggestionAccuracy | null = null;
 	let unavailable: string | null = null;
 	try {
-		[dataset, models] = await Promise.all([vision.datasetSummary(), vision.models()]);
+		[dataset, models, suggestionAccuracy] = await Promise.all([
+			vision.datasetSummary(),
+			vision.models(),
+			vision.suggestionAccuracy()
+		]);
 	} catch (error) {
 		unavailable = safeResponseFor(error).message;
 		reportToServerLog(error, locals.requestId);
@@ -47,6 +55,7 @@ export const load: ServerLoad = async ({ locals }) => {
 		canTrain: locals.user !== null && can(locals.user.role, 'vision.train'),
 		dataset,
 		models,
+		suggestionAccuracy,
 		unavailable
 	};
 };

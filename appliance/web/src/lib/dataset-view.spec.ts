@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { classReadings, modelReadings, trainingReadinessDetail } from './dataset-view';
+import {
+	classReadings,
+	modelReadings,
+	suggestionAccuracyDetail,
+	trainingReadinessDetail
+} from './dataset-view';
 import type { CandidateSummary, DatasetSummary, ModelsSummary } from './dataset';
 
 function summary(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
@@ -176,5 +181,26 @@ describe('modelReadings', () => {
 			{ slot: 5, candidateAccuracy: 0.9, activeAccuracy: null }
 		]);
 		expect(readings[0].active).toBe(false);
+	});
+});
+
+describe('suggestionAccuracyDetail', () => {
+	it('says nothing has been matched yet when total is zero', () => {
+		const detail = suggestionAccuracyDetail({ total: 0, correct: 0, accuracy: null });
+
+		expect(detail).toContain('No suggestion has been matched');
+	});
+
+	it('reports the percentage and the raw counts', () => {
+		const detail = suggestionAccuracyDetail({ total: 8, correct: 6, accuracy: 0.75 });
+
+		expect(detail).toContain('75%');
+		expect(detail).toContain('6 of 8 sorts');
+	});
+
+	it('uses the singular for exactly one matched sort', () => {
+		const detail = suggestionAccuracyDetail({ total: 1, correct: 1, accuracy: 1.0 });
+
+		expect(detail).toContain('1 of 1 sort ');
 	});
 });

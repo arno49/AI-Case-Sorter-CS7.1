@@ -1,12 +1,20 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { classReadings, modelReadings, trainingReadinessDetail } from '$lib/dataset-view';
+	import {
+		classReadings,
+		modelReadings,
+		suggestionAccuracyDetail,
+		trainingReadinessDetail
+	} from '$lib/dataset-view';
 
 	let { data, form } = $props();
 
 	const readings = $derived(data.dataset ? classReadings(data.dataset) : []);
 	const readiness = $derived(data.dataset ? trainingReadinessDetail(data.dataset) : null);
 	const models = $derived(data.models ? modelReadings(data.models) : []);
+	const suggestionAccuracy = $derived(
+		data.suggestionAccuracy ? suggestionAccuracyDetail(data.suggestionAccuracy) : null
+	);
 
 	function percent(accuracy: number | null): string {
 		return accuracy === null ? 'not evaluated' : `${Math.round(accuracy * 100)}%`;
@@ -153,6 +161,17 @@
 						</p>
 					{/if}
 				{/if}
+			</section>
+		{/if}
+
+		{#if data.suggestionAccuracy}
+			<section aria-labelledby="suggestion-accuracy">
+				<h2 id="suggestion-accuracy">Live suggestion accuracy</h2>
+				<!-- Separate evidence from the training-time held-out accuracy shown
+				     above: this is measured against what the operator actually chose
+				     after a suggestion was shown, not a held-out split of the training
+				     data (PI-VISION-006). -->
+				<p data-field="suggestion-accuracy">{suggestionAccuracy}</p>
 			</section>
 		{/if}
 	{/if}

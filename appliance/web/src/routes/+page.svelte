@@ -122,6 +122,17 @@
 		feedback={recoveryFeedback}
 	/>
 
+	{#if data.suggestion}
+		<!-- PI-VISION-006: informational only, shown before the operator picks a
+		     slot below. cs71-vision never issues a cs71d command at this stage,
+		     under any configuration - the operator still submits the sort
+		     themselves through the form this sits above. -->
+		<p data-field="vision-suggestion">
+			Suggested slot: {data.suggestion.slot} ({Math.round(data.suggestion.confidence * 100)}%
+			confidence)
+		</p>
+	{/if}
+
 	<ManualControls
 		{plan}
 		csrfToken={data.csrfToken}

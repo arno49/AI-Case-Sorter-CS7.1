@@ -16,6 +16,9 @@ export {
 	type DatasetClassSummary,
 	type DatasetSummary,
 	type ModelsSummary,
+	type Suggestion,
+	type SuggestionAccuracy,
+	type SuggestionResult,
 	type TrainResult,
 	type VisionClientOptions
 } from './client';

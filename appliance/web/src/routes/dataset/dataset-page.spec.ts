@@ -21,7 +21,7 @@ import { createUser } from '$lib/server/auth/users';
 import { recentAudit } from '$lib/server/audit';
 import { replying, startFakeDaemon, type FakeDaemon } from '$lib/server/daemon/harness';
 import { closeWebRuntime, webRuntime } from '$lib/server/runtime';
-import type { DatasetSummary, ModelsSummary } from '$lib/dataset';
+import type { DatasetSummary, ModelsSummary, SuggestionAccuracy } from '$lib/dataset';
 
 import Page from './+page.svelte';
 import { actions as datasetActions, load as datasetLoad } from './+page.server';
@@ -64,6 +64,7 @@ function models(overrides: Partial<ModelsSummary> = {}): ModelsSummary {
 interface PageData {
 	readonly dataset: DatasetSummary | null;
 	readonly models: ModelsSummary | null;
+	readonly suggestionAccuracy: SuggestionAccuracy | null;
 	readonly unavailable: string | null;
 	readonly canTrain: boolean;
 	readonly csrfToken: string;
@@ -77,6 +78,7 @@ function pageData(overrides: Partial<PageData> = {}): PageData {
 	return {
 		dataset: dataset(),
 		models: models(),
+		suggestionAccuracy: { total: 4, correct: 3, accuracy: 0.75 },
 		unavailable: null,
 		canTrain: true,
 		csrfToken: 'csrf',
@@ -181,6 +183,26 @@ describe('what the dataset view shows', () => {
 
 		expect(html).toContain('Roll back to the previous version');
 	});
+
+	it('shows live suggestion accuracy, kept separate from held-out accuracy', () => {
+		const html = rendered(
+			pageData({ suggestionAccuracy: { total: 8, correct: 6, accuracy: 0.75 } })
+		);
+
+		const shown = fieldText(html, 'suggestion-accuracy').join(' ');
+		expect(shown).toContain('75%');
+		expect(shown).toContain('6 of 8 sorts');
+	});
+
+	it('says nothing has matched yet rather than a bare zero percent', () => {
+		const html = rendered(
+			pageData({ suggestionAccuracy: { total: 0, correct: 0, accuracy: null } })
+		);
+
+		expect(fieldText(html, 'suggestion-accuracy').join(' ')).toContain(
+			'No suggestion has been matched'
+		);
+	});
 });
 
 describe('reading and acting on the dataset view, end to end', () => {
@@ -230,6 +252,8 @@ describe('reading and acting on the dataset view, end to end', () => {
 					active_version: 1,
 					activated_at: '2026-08-12T12:06:00.000Z'
 				})(call, response);
+			} else if (call.path === '/v1/suggestion-accuracy') {
+				replying(200, { api_version: 'v1', total: 4, correct: 3, accuracy: 0.75 })(call, response);
 			} else {
 				replying(404, { code: 'RESOURCE_NOT_FOUND', message: 'no' })(call, response);
 			}

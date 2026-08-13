@@ -86,7 +86,17 @@ interface PageForm {
 	readonly generation?: number;
 }
 
-function rendered(view: MachineSnapshot | null, options: { form?: PageForm } = {}): string {
+interface PageSuggestion {
+	readonly slot: number;
+	readonly confidence: number;
+	readonly modelVersion: number;
+	readonly suggestedAt: string;
+}
+
+function rendered(
+	view: MachineSnapshot | null,
+	options: { form?: PageForm; suggestion?: PageSuggestion | null } = {}
+): string {
 	return render(Page as never, {
 		props: {
 			data: {
@@ -95,7 +105,8 @@ function rendered(view: MachineSnapshot | null, options: { form?: PageForm } = {
 				capabilities: ['machine.read', 'machine.stop', 'machine.operate'],
 				csrfToken: 'a-token-for-this-browser',
 				snapshot: view,
-				unavailable: view === null ? 'The machine service is not answering.' : null
+				unavailable: view === null ? 'The machine service is not answering.' : null,
+				suggestion: options.suggestion ?? null
 			},
 			form: options.form ?? null
 		} as never
@@ -179,6 +190,27 @@ describe('what the dashboard shows', () => {
 		);
 
 		expect(fieldText(html, 'homing')).toEqual(['Not known', 'Not known']);
+	});
+
+	it('shows a suggested slot and confidence before the sort form, when cs71-vision has one', () => {
+		const html = rendered(snapshot(), {
+			suggestion: {
+				slot: 3,
+				confidence: 0.87,
+				modelVersion: 2,
+				suggestedAt: '2026-08-11T12:00:00.000Z'
+			}
+		});
+
+		const shown = fieldText(html, 'vision-suggestion').join(' ');
+		expect(shown).toContain('3');
+		expect(shown).toContain('87%');
+	});
+
+	it('shows nothing about a suggestion when cs71-vision has none, not an empty field', () => {
+		const html = rendered(snapshot(), { suggestion: null });
+
+		expect(fieldText(html, 'vision-suggestion')).toEqual([]);
 	});
 });
 
@@ -282,5 +314,91 @@ describe('a keyboard-only flow, end to end', () => {
 		expect(answer).toMatchObject({ operationId: expect.any(String) });
 		const sent = daemon.requests.filter((call) => call.path === '/v1/machine/stop');
 		expect(sent).toHaveLength(1);
+	});
+});
+
+describe('the suggested slot, end to end', () => {
+	// SOFTWARE_SIMULATOR_ONLY: both cs71d and cs71-vision are stand-ins on real
+	// sockets. This says the page and the real hook agree, not that a real
+	// model classified a real frame.
+	let directory: string;
+	let daemon: FakeDaemon;
+	let vision: FakeDaemon;
+
+	beforeEach(async () => {
+		directory = mkdtempSync(join(tmpdir(), 'cs71-suggestion-'));
+		daemon = await startFakeDaemon();
+		daemon.answerWith(replying(200, snapshot()));
+		vision = await startFakeDaemon();
+		process.env.CS71_WEB_PROFILE = 'development';
+		process.env.CS71_WEB_DATABASE_PATH = join(directory, 'web.db');
+		process.env.CS71D_SOCKET_PATH = daemon.socketPath;
+		process.env.CS71_VISION_SOCKET_PATH = vision.socketPath;
+		process.env.CS71_WEB_SERVICE_TOKEN_PATH = daemon.serviceTokenPath;
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+	});
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		closeWebRuntime();
+		await daemon.close();
+		await vision.close();
+		rmSync(directory, { recursive: true, force: true });
+		delete process.env.CS71_WEB_PROFILE;
+		delete process.env.CS71_WEB_DATABASE_PATH;
+		delete process.env.CS71D_SOCKET_PATH;
+		delete process.env.CS71_VISION_SOCKET_PATH;
+		delete process.env.CS71_WEB_SERVICE_TOKEN_PATH;
+	});
+
+	async function loadedPage(): Promise<string> {
+		const { config, database } = webRuntime();
+		const user = await createUser(
+			database,
+			{ username: 'viewer', password: PASSWORD, role: 'viewer' },
+			new Date()
+		);
+		const cookies = browser();
+		startSession(database, cookies, user.userId, config.profile, new Date());
+
+		const opened = request('/', cookies, { routeId: '/' });
+		await throughHook(opened, handle);
+		const data = await dashboardLoad(opened as unknown as ServerLoadEvent);
+		return render(Page as never, { props: { data, form: null } as never }).body;
+	}
+
+	it('reads the current suggestion through the real hook', async () => {
+		vision.answerWith((call, response) => {
+			if (call.path === '/v1/suggestion') {
+				replying(200, {
+					api_version: 'v1',
+					suggestion: {
+						slot: 3,
+						confidence: 0.87,
+						model_version: 2,
+						suggested_at: '2026-08-11T12:00:00.000Z'
+					}
+				})(call, response);
+			} else {
+				replying(404, { code: 'RESOURCE_NOT_FOUND', message: 'no' })(call, response);
+			}
+		});
+
+		const html = await loadedPage();
+
+		const shown = fieldText(html, 'vision-suggestion').join(' ');
+		expect(shown).toContain('3');
+		expect(shown).toContain('87%');
+		expect(vision.requests.map((call) => call.path)).toContain('/v1/suggestion');
+	});
+
+	it('shows the machine normally when cs71-vision is unreachable, with no suggestion', async () => {
+		await vision.close();
+
+		const html = await loadedPage();
+
+		expect(fieldText(html, 'vision-suggestion')).toEqual([]);
+		// The machine itself is unaffected: cs71d is still answering normally.
+		expect(fieldText(html, 'connection').join(' ')).toContain('Connected');
 	});
 });

@@ -519,10 +519,29 @@ reserved to `administrator` — a deliberate departure recorded in ADR-0013,
 since retraining/activating a classifier is neither machine motion nor an
 irreversible action the way `machine.recover`/`config.write` are.
 
-`dataset-page.spec.ts` proves both halves through the real hook: the load
-reads `GET /v1/dataset` and `GET /v1/models` against a real stand-in
-`cs71-vision` on a real `AF_UNIX` socket, and each action reaches its own
-resource (`POST /v1/train`, `POST /v1/models/{version}/activate`,
+`/dataset` also shows live suggestion accuracy (PI-VISION-006) - a third,
+visibly distinct figure next to the per-candidate held-out accuracy table,
+since the two answer different questions: held-out accuracy is measured on
+a split of the training data, live accuracy is measured against real
+operator decisions after activation. `dataset-view.ts#suggestionAccuracyDetail`
+renders `0/0` as "nothing matched yet" rather than a bare, misleading `0%`.
+
+The dashboard (`routes/+page.server.ts`, the main `/` screen) reads the
+current suggestion too, directly above the existing manual sort form -
+"before the operator picks a slot" means the screen they are already
+looking at, not a new one. This read is independent of, and never gates,
+the daemon-facing parts of that same load: a `cs71-vision` outage is caught
+and logged, and the dashboard shows no suggestion, but the machine snapshot,
+the stop control and every manual command keep working exactly as if
+`cs71-vision` did not exist - sorting does not depend on it (ADR-0013).
+`dashboard-page.spec.ts` proves this with a real stand-in `cs71-vision`
+closed mid-test: the machine state still renders normally.
+
+`dataset-page.spec.ts` proves the dataset/model/training half through the
+real hook: the load reads `GET /v1/dataset`, `GET /v1/models` and
+`GET /v1/suggestion-accuracy` against a real stand-in `cs71-vision` on a
+real `AF_UNIX` socket, and each action reaches its own resource
+(`POST /v1/train`, `POST /v1/models/{version}/activate`,
 `POST /v1/rollback`) and lands a real `web_audit` row, accepted or refused.
 
 Set `CS71_VISION_SOCKET_PATH` to point at a different `cs71-vision` socket in

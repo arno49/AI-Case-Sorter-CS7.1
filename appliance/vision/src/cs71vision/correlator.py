@@ -1,4 +1,6 @@
-"""Turn `cs71d`'s confirmed sort outcomes into labeled dataset examples.
+"""Turn `cs71d`'s confirmed sort outcomes into labeled dataset examples, and
+match each one against the read-only suggestion (if any) that was live when
+it happened (PI-VISION-006).
 
 `cs71d` is the source of truth for "what actually happened" - a frame is
 only ever attached to a label once `cs71d` has recorded a trusted terminal
@@ -58,6 +60,10 @@ class FrameBuffer:
                 candidate = frame
         return candidate
 
+    def latest(self) -> Frame | None:
+        """The most recently captured frame, or None if nothing has been captured yet."""
+        return self._frames[-1] if self._frames else None
+
 
 class Correlator:
     """Poll `cs71d` for newly succeeded sorts and label what can be labeled."""
@@ -103,4 +109,22 @@ class Correlator:
                 operation_created_at=created_at,
             ):
                 recorded += 1
+                self._match_suggestion(success.operation_id, success.slot, created_at)
         return recorded
+
+    def _match_suggestion(self, operation_id: str, actual_slot: int, created_at: datetime) -> None:
+        """Record what actually happened for whatever suggestion was live then.
+
+        Silently does nothing when no suggestion qualifies - no active model
+        yet, or nothing suggested before this sort - the same "discard,
+        never guess" posture `poll_once` already applies to a missing frame.
+        """
+        suggestion = self._store.unmatched_suggestion_at_or_before(created_at)
+        if suggestion is None:
+            return
+        self._store.record_suggestion_outcome(
+            suggestion_id=suggestion.suggestion_id,
+            operation_id=operation_id,
+            actual_slot=actual_slot,
+            recorded_at=created_at,
+        )

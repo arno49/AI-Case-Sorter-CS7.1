@@ -23,6 +23,12 @@
  * administrator-only) and a required confirmation field this workspace checks
  * before anything is sent, because the contract itself never implies consent
  * from the request merely having been made.
+ *
+ * The suggested class (PI-VISION-006) is read here too, but never gates
+ * anything and never fails the page: a `cs71-vision` outage is logged and
+ * shown as no suggestion, not as an error banner, because sorting does not
+ * depend on `cs71-vision` at all (ADR-0013) and this screen must not imply
+ * otherwise.
  */
 
 import { fail, type Actions, type RequestEvent, type ServerLoad } from '@sveltejs/kit';
@@ -41,6 +47,7 @@ import {
 } from '$lib/server/daemon/client';
 import { DaemonError, safeResponseFor } from '$lib/server/daemon/errors';
 import { webRuntime } from '$lib/server/runtime';
+import type { Suggestion } from '$lib/server/vision';
 
 /** What this workspace calls the intent, in audit entries and nowhere on the wire. */
 const STOP_ACTION = 'machine.stop';
@@ -53,7 +60,7 @@ type ManualControl = 'connect' | 'home' | 'sort' | 'feed' | 'recover';
 export const load: ServerLoad = async ({ locals }) => {
 	// The hook has already refused an unauthenticated request and checked that
 	// this role may read the machine.
-	const { daemon } = webRuntime();
+	const { daemon, vision } = webRuntime();
 
 	let snapshot = null;
 	let unavailable: string | null = null;
@@ -61,6 +68,15 @@ export const load: ServerLoad = async ({ locals }) => {
 		snapshot = await daemon.snapshot();
 	} catch (error) {
 		unavailable = safeResponseFor(error).message;
+		reportToServerLog(error, locals.requestId);
+	}
+
+	let suggestion: Suggestion | null = null;
+	try {
+		suggestion = (await vision.suggestion()).suggestion;
+	} catch (error) {
+		// Silent by design - see this file's own docstring: no suggestion is
+		// not an error state for a screen whose controls never depend on one.
 		reportToServerLog(error, locals.requestId);
 	}
 
@@ -73,6 +89,7 @@ export const load: ServerLoad = async ({ locals }) => {
 		csrfToken: locals.csrfToken,
 		snapshot,
 		unavailable,
+		suggestion,
 		// One key per command form, fresh for this render: resubmitting the form
 		// this response carries is the same command, and the next render is a new
 		// intent. Minted only for a role that can use them.

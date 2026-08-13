@@ -16,5 +16,7 @@ export type {
 	DatasetClassSummary,
 	DatasetSummary,
 	ModelsSummary,
+	Suggestion,
+	SuggestionAccuracy,
 	TrainResult
 } from '$lib/server/vision';
