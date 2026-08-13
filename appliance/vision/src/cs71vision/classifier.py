@@ -9,6 +9,13 @@ whether or not they follow the suggestion, keeps feeding PI-VISION-002's
 dataset loop unchanged. Autonomous submission needs a new daemon actor kind
 that does not exist yet (PI-VISION-007) and a confidence-gated policy on
 top of it (PI-VISION-008); nothing here reaches toward either.
+
+`classify_frame`'s own `slot` is a manufacturer-class label, not
+necessarily a physical chute - `FrameSuggester` passes it through
+`cs71vision.routing.RoutingSession.route` before it is ever stored or
+suggested (PI-VISION-009). When no routing run is active that call is the
+identity function, so this is exactly PI-VISION-006's original behaviour
+unless an operator has explicitly started one.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import pickle
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
 from .correlator import FrameBuffer
 from .dataset import DatasetError, DatasetStore
@@ -69,6 +77,22 @@ def classify_frame(model_blob: bytes, frame_png: bytes) -> Suggestion:
     return Suggestion(slot=slot, confidence=confidence, primer_present=None)
 
 
+class Router(Protocol):
+    """What the suggester needs to turn a class into a chute - `RoutingSession` today."""
+
+    def route(self, class_id: int) -> int: ...
+
+
+class _IdentityRouter:
+    """The default when no `RoutingSession` is given: unrouted, as before PI-VISION-009."""
+
+    def route(self, class_id: int) -> int:
+        return class_id
+
+
+_IDENTITY_ROUTER = _IdentityRouter()
+
+
 class FrameSuggester:
     """Classify the latest captured frame against the active model, once.
 
@@ -82,10 +106,12 @@ class FrameSuggester:
         store: DatasetStore,
         buffer: FrameBuffer,
         *,
+        router: Router = _IDENTITY_ROUTER,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._store = store
         self._buffer = buffer
+        self._router = router
         self._now = now
 
     def suggest_once(self) -> int:
@@ -113,7 +139,7 @@ class FrameSuggester:
             return 0
         self._store.record_suggestion(
             model_version=active_version,
-            suggested_slot=suggestion.slot,
+            suggested_slot=self._router.route(suggestion.slot),
             confidence=suggestion.confidence,
             primer_present=suggestion.primer_present,
             frame_captured_at=frame.captured_at,

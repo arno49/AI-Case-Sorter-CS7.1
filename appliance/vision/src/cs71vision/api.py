@@ -38,6 +38,14 @@ from typing import Any, Protocol
 
 from .dataset import DatasetError, DatasetStore
 from .primer import requires_operator_confirmation
+from .routing import (
+    DynamicProfile,
+    FixedMapProfile,
+    RoutingError,
+    RoutingProfile,
+    RoutingSession,
+    TwoPassProfile,
+)
 
 _LOGGER = logging.getLogger("cs71vision.api")
 
@@ -100,6 +108,7 @@ class VisionApiServer:
         minimum_examples_per_class: int,
         training_job: Trainable,
         autonomy_thresholds: Mapping[int, float] = _EMPTY_THRESHOLDS,
+        routing: RoutingSession | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         socket_mode: int = SOCKET_MODE,
     ) -> None:
@@ -113,6 +122,12 @@ class VisionApiServer:
         self._minimum = minimum_examples_per_class
         self._training_job = training_job
         self._autonomy_thresholds = autonomy_thresholds
+        # A private session when none is given, so this server is always
+        # usable standalone (tests, or PI-VISION-009's own routes without a
+        # runtime.py-wired suggestion loop) - `runtime.build_api_server`
+        # always passes the same instance its suggestion loop routes
+        # against, so a run started here is a run that actually applies.
+        self._routing = routing if routing is not None else RoutingSession()
         self._now = now
         self._socket_mode = socket_mode
         self._server: _UnixHttpServer | None = None
@@ -176,6 +191,8 @@ class VisionApiServer:
                 return HTTPStatus.OK, self._suggestion_accuracy_body()
             if path == "/v1/autonomy":
                 return HTTPStatus.OK, self._autonomy_body()
+            if path == "/v1/routing":
+                return HTTPStatus.OK, self._routing_body()
             raise ApiError("RESOURCE_NOT_FOUND", f"{path} is not a resource of this API")
         if method == "POST":
             if path == "/v1/train":
@@ -184,6 +201,10 @@ class VisionApiServer:
                 return HTTPStatus.OK, self._rollback_body()
             if path == "/v1/autonomous-reviews":
                 return HTTPStatus.OK, self._autonomous_review_body(body)
+            if path == "/v1/routing/start":
+                return HTTPStatus.OK, self._routing_start_body(body)
+            if path == "/v1/routing/stop":
+                return HTTPStatus.OK, self._routing_stop_body()
             matched = _ACTIVATE_PATH.fullmatch(path)
             if matched is not None:
                 return HTTPStatus.OK, self._activate_body(int(matched.group("version")))
@@ -337,6 +358,39 @@ class VisionApiServer:
             "reviewed_at": _rfc3339(reviewed_at),
         }
 
+    def _routing_body(self) -> dict[str, Any]:
+        """The active routing run, if any, and its live chute<->class legend."""
+        snapshot = self._routing.snapshot()
+        source_group = (
+            snapshot.profile.source_group if isinstance(snapshot.profile, TwoPassProfile) else None
+        )
+        return {
+            "api_version": "v1",
+            "active": snapshot.active,
+            "kind": snapshot.profile.kind if snapshot.profile is not None else None,
+            "started_at": snapshot.started_at,
+            "source_group": source_group,
+            "legend": [
+                {"slot": entry.slot, "class_id": entry.class_id, "overflow": entry.overflow}
+                for entry in snapshot.legend
+            ],
+        }
+
+    def _routing_start_body(self, body: bytes) -> dict[str, Any]:
+        """Start a new routing run, replacing any previous one entirely (PI-VISION-009)."""
+        payload = _json_object(body)
+        profile = _routing_profile_from(payload)
+        try:
+            self._routing.start(profile)
+        except RoutingError as exc:
+            raise ApiError("VALIDATION_FAILED", str(exc)) from exc
+        return self._routing_body()
+
+    def _routing_stop_body(self) -> dict[str, Any]:
+        """End the active routing run. A no-op, not an error, when none is active."""
+        self._routing.stop()
+        return self._routing_body()
+
     def _train_body(self) -> dict[str, Any]:
         """Trigger a training run. `started: false` means one was already in flight.
 
@@ -414,6 +468,70 @@ def _json_object(body: bytes) -> dict[str, Any]:
     if payload.get("api_version") != "v1":
         raise ApiError("VALIDATION_FAILED", "api_version must be 'v1'")
     return payload
+
+
+def _routing_profile_from(payload: Mapping[str, Any]) -> RoutingProfile:
+    kind = payload.get("kind")
+    if kind == "fixed":
+        _require_fields(
+            payload, {"api_version", "kind", "class_to_slot", "overflow_slot"}, (), "fixed"
+        )
+        return FixedMapProfile(
+            class_to_slot=_class_to_slot(payload["class_to_slot"]),
+            overflow_slot=_int_field(payload["overflow_slot"], "overflow_slot"),
+        )
+    if kind == "dynamic":
+        _require_fields(payload, {"api_version", "kind", "available_slots"}, (), "dynamic")
+        return DynamicProfile(available_slots=_slot_list(payload["available_slots"]))
+    if kind == "two_pass":
+        _require_fields(
+            payload,
+            {"api_version", "kind", "class_to_slot", "overflow_slot"},
+            ("source_group",),
+            "two-pass",
+        )
+        source_group = payload.get("source_group")
+        return TwoPassProfile(
+            class_to_slot=_class_to_slot(payload["class_to_slot"]),
+            overflow_slot=_int_field(payload["overflow_slot"], "overflow_slot"),
+            source_group=None if source_group is None else _int_field(source_group, "source_group"),
+        )
+    raise ApiError("VALIDATION_FAILED", "kind must be 'fixed', 'dynamic' or 'two_pass'")
+
+
+def _require_fields(
+    payload: Mapping[str, Any], required: set[str], optional: tuple[str, ...], name: str
+) -> None:
+    allowed = required | set(optional)
+    if not required <= set(payload) or not set(payload) <= allowed:
+        raise ApiError(
+            "VALIDATION_FAILED", f"a {name} routing profile carries exactly {sorted(required)}"
+        )
+
+
+def _class_to_slot(raw: Any) -> dict[int, int]:
+    if not isinstance(raw, dict) or not raw:
+        raise ApiError("VALIDATION_FAILED", "class_to_slot must be a non-empty object")
+    result: dict[int, int] = {}
+    for key, value in raw.items():
+        try:
+            class_id = int(key)
+        except (TypeError, ValueError):
+            raise ApiError("VALIDATION_FAILED", "class_to_slot keys must be integers") from None
+        result[class_id] = _int_field(value, "class_to_slot")
+    return result
+
+
+def _slot_list(raw: Any) -> tuple[int, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise ApiError("VALIDATION_FAILED", "available_slots must be a non-empty list")
+    return tuple(_int_field(item, "available_slots") for item in raw)
+
+
+def _int_field(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ApiError("VALIDATION_FAILED", f"{name} must be an integer")
+    return value
 
 
 class _UnixHttpServer(socketserver.ThreadingUnixStreamServer):

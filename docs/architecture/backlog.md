@@ -1368,10 +1368,67 @@ its own recorded evidence has been reviewed.
 
 **Goal:** let an operator choose how manufacturer classes map onto 8–10 physical chutes, per run. **Implementation notes:** fixed map plus overflow, dynamic per-batch assignment, and two-pass coarse-then-fine, all as `cs71-vision` configuration rather than one hardcoded strategy (ADR-0013). **Dependencies:** PI-VISION-006. **Hardware required:** Pi and camera for a real run; profile-selection logic itself is software-evidenced. **Size:** L.
 
-- An operator selects a routing profile before a run starts; the active profile is visible throughout the run.
-- Dynamic per-batch mode shows a live, accurate chute↔class legend, updated the moment a new class is first seen in that run.
-- Fixed-map mode supports pre-assigning specific classes to specific chutes with exactly one defined overflow chute.
-- Two-pass mode's second pass operates against exactly one prior group's output, never the whole batch.
+Before this task, "manufacturer class" and "physical chute" were the exact
+same integer everywhere in this codebase - confirmed by reading
+`dataset.py`'s own docstring ("a `SUCCEEDED` sort operation's own
+`terminal_fields.slot`") and `training.py`'s direct use of
+`example.slot` as the model's own classes: Phase 0's dataset recorded
+whatever chute the operator's own manual sort actually reached, so nothing
+ever needed the two concepts to differ. Neither did a "run"/"batch"
+boundary exist anywhere - `cs71d` admits every `sort` independently, with
+no batch identity on `OperationRecord` or anywhere else. Both had to be
+introduced for this task to mean anything real, not retrofitted onto an
+existing schema (Dependencies: PI-VISION-006 only, not the dataset/training
+pipeline PI-VISION-002/004 own).
+
+**`cs71vision.routing.RoutingSession`** is a new, entirely in-memory
+run concept, deliberately not persisted to `vision.db`: a run is ephemeral
+by nature (an operator starts one, it ends), the same reasoning
+`FrameBuffer` already uses for not persisting captured frames. It is
+shared between the api server (`start`/`stop`/`snapshot`) and the
+suggestion loop (`route`), the same "one shared, lock-guarded object" shape
+`DatasetStore` already uses across its own threads - a run started through
+the api is the run the suggestion loop actually routes against, not a
+second, disconnected one.
+
+**Three profile shapes, matching ADR-0013's own three exactly** -
+`FixedMapProfile`, `DynamicProfile`, `TwoPassProfile` - validated
+(`validate_profile`) before a run ever starts, never partway through one.
+`TwoPassProfile.source_group` names which prior pass's output chute a
+second pass refines, for display/audit only: this software cannot and does
+not verify that a second pass's physical input really came from that
+chute, the same honest limit this codebase already accepts for a manual
+sort's own frame-to-slot correspondence. What the software *does* enforce
+is narrower and real: a two-pass run's own routing computation only ever
+operates against the one `class_to_slot` map configured for that specific
+group's refinement - never the original, whole-batch class space - so
+"never the whole batch" is a property of what the run's own profile can
+express, not a physical verification.
+
+**`FrameSuggester` now routes before storing, closing the loop for free.**
+The classifier's raw output passes through `RoutingSession.route` before
+becoming `suggested_slot` (`classifier.Router`, a `Protocol` mirroring
+`Suggester`/`SortSubmitter`'s own shape). Because every downstream
+consumer - suggestion accuracy (PI-VISION-006), autonomous sort
+(PI-VISION-008) - already reads `suggested_slot` rather than re-deriving a
+class, both automatically operate in routed space with zero changes to
+either: an operator's manual sort is still compared to what was suggested,
+now correctly chute-to-chute rather than class-to-chute. When no run is
+active, `route()` is the identity function, so nothing about existing
+behaviour changes for an installation that never starts one.
+
+**Web side:** `/routing` lets an operator start any of the three shapes and
+shows the live chute↔class legend; the dashboard carries a one-line notice
+whenever a run is active (ADR-0013's "the active profile is visible
+throughout the run" is a property of the dashboard, not only `/routing`'s
+own page). Gated on `machine.operate`, not `vision.train`: a routing choice
+shapes where a live sort lands, the same operational weight as
+connect/home/sort/feed.
+
+- [x] An operator selects a routing profile before a run starts; the active profile is visible throughout the run.
+- [x] Dynamic per-batch mode shows a live, accurate chute↔class legend, updated the moment a new class is first seen in that run.
+- [x] Fixed-map mode supports pre-assigning specific classes to specific chutes with exactly one defined overflow chute.
+- [x] Two-pass mode's second pass operates against exactly one prior group's output, never the whole batch.
 
 ### PI-VISION-010 — Primer-presence axis with mandatory confirmation
 

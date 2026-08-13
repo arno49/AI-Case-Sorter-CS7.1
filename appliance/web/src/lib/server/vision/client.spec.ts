@@ -508,6 +508,187 @@ describe('reviewing an autonomous attempt', () => {
 	});
 });
 
+describe('reading routing', () => {
+	it('reports an inactive run', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: false,
+				kind: null,
+				started_at: null,
+				source_group: null,
+				legend: []
+			})
+		);
+
+		const result = await client.routing();
+
+		expect(result).toEqual({
+			active: false,
+			kind: null,
+			startedAt: null,
+			sourceGroup: null,
+			legend: []
+		});
+	});
+
+	it('parses an active run and its legend', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: true,
+				kind: 'fixed',
+				started_at: '2026-08-12T12:00:00.000Z',
+				source_group: null,
+				legend: [
+					{ slot: 3, class_id: 12, overflow: false },
+					{ slot: 7, class_id: null, overflow: true }
+				]
+			})
+		);
+
+		const result = await client.routing();
+
+		expect(result).toEqual({
+			active: true,
+			kind: 'fixed',
+			startedAt: '2026-08-12T12:00:00.000Z',
+			sourceGroup: null,
+			legend: [
+				{ slot: 3, classId: 12, overflow: false },
+				{ slot: 7, classId: null, overflow: true }
+			]
+		});
+	});
+
+	it('requests /v1/routing', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: false,
+				kind: null,
+				started_at: null,
+				source_group: null,
+				legend: []
+			})
+		);
+
+		await client.routing();
+
+		expect(vision.lastRequest().method).toBe('GET');
+		expect(vision.lastRequest().path).toBe('/v1/routing');
+	});
+
+	it('is malformed when the legend is missing', async () => {
+		vision.answerWith(
+			replying(200, { api_version: 'v1', active: false, kind: null, started_at: null })
+		);
+
+		const error = await raised(() => client.routing());
+
+		expect(error.kind).toBe('malformed');
+	});
+});
+
+describe('starting a routing run', () => {
+	it('is a POST to /v1/routing/start carrying a fixed-map body', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: true,
+				kind: 'fixed',
+				started_at: '2026-08-12T12:00:00.000Z',
+				source_group: null,
+				legend: []
+			})
+		);
+
+		await client.startRouting({ kind: 'fixed', classToSlot: { 12: 3 }, overflowSlot: 7 });
+
+		expect(vision.lastRequest().method).toBe('POST');
+		expect(vision.lastRequest().path).toBe('/v1/routing/start');
+		expect(JSON.parse(vision.lastRequest().body)).toEqual({
+			api_version: 'v1',
+			kind: 'fixed',
+			class_to_slot: { 12: 3 },
+			overflow_slot: 7
+		});
+	});
+
+	it('carries a dynamic body with available_slots, and nothing else', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: true,
+				kind: 'dynamic',
+				started_at: '2026-08-12T12:00:00.000Z',
+				source_group: null,
+				legend: []
+			})
+		);
+
+		await client.startRouting({ kind: 'dynamic', availableSlots: [1, 2, 3] });
+
+		expect(JSON.parse(vision.lastRequest().body)).toEqual({
+			api_version: 'v1',
+			kind: 'dynamic',
+			available_slots: [1, 2, 3]
+		});
+	});
+
+	it('carries source_group only when the caller supplied one', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: true,
+				kind: 'two_pass',
+				started_at: '2026-08-12T12:00:00.000Z',
+				source_group: null,
+				legend: []
+			})
+		);
+
+		await client.startRouting({ kind: 'two_pass', classToSlot: { 1: 2 }, overflowSlot: 0 });
+
+		expect(JSON.parse(vision.lastRequest().body)).toEqual({
+			api_version: 'v1',
+			kind: 'two_pass',
+			class_to_slot: { 1: 2 },
+			overflow_slot: 0
+		});
+	});
+
+	it('is rejected when cs71-vision refuses the profile', async () => {
+		vision.answerWith(replying(400, { code: 'VALIDATION_FAILED', message: 'no' }));
+
+		const error = await raised(() => client.startRouting({ kind: 'dynamic', availableSlots: [] }));
+
+		expect(error.kind).toBe('rejected');
+		expect(error.code).toBe('VALIDATION_FAILED');
+	});
+});
+
+describe('stopping a routing run', () => {
+	it('is a POST to /v1/routing/stop', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				active: false,
+				kind: null,
+				started_at: null,
+				source_group: null,
+				legend: []
+			})
+		);
+
+		const result = await client.stopRouting();
+
+		expect(vision.lastRequest().method).toBe('POST');
+		expect(vision.lastRequest().path).toBe('/v1/routing/stop');
+		expect(result.active).toBe(false);
+	});
+});
+
 describe('what goes wrong', () => {
 	it('is unreachable when nothing is listening', async () => {
 		await vision.close();

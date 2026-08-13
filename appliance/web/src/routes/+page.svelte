@@ -136,14 +136,23 @@
 			     permanently separate from the class suggestion above and always
 			     requires a person to look, whether primer was flagged or - as
 			     today, always - the axis is unknown. Informational only, the same
-			     as the suggestion above: nothing here is a gate yet, since sorting
-			     still only ever happens through the operator's own form submission
-			     below (no autonomous path exists until PI-VISION-008). -->
+			     as the suggestion above: a below-threshold or primer-flagged case
+			     is always held for the operator's own form submission below;
+			     PI-VISION-008's autonomous path only ever acts once this axis is
+			     confidently clear, which no build today can claim. -->
 			<p data-field="vision-primer-notice">
 				Primer status: {data.suggestion.primerPresent ? 'flagged' : 'unknown'} — confirm this case visually
 				before sorting.
 			</p>
 		{/if}
+	{/if}
+
+	{#if data.routing?.active}
+		<!-- PI-VISION-009, ADR-0013: "the active profile is visible throughout
+		     the run" - this banner, not only /routing's own page. -->
+		<p data-field="routing-active-notice">
+			Routing profile active: {data.routing.kind}. <a href={resolve('/routing')}>Details</a>
+		</p>
 	{/if}
 
 	<ManualControls
@@ -156,6 +165,7 @@
 	<p><a href={resolve('/operations')}>Operation history</a></p>
 	<p><a href={resolve('/system')}>System</a></p>
 	<p><a href={resolve('/dataset')}>Dataset</a></p>
+	<p><a href={resolve('/routing')}>Routing</a></p>
 
 	<section aria-labelledby="permitted">
 		<h2 id="permitted">Permitted for this account</h2>

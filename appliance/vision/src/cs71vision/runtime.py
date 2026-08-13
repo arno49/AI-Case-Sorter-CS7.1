@@ -19,6 +19,7 @@ from .config import Backend, ConfigError, VisionConfig
 from .correlator import Correlator, FrameBuffer
 from .daemon_client import DaemonClient
 from .dataset import DatasetExample, DatasetStore, TrainedCandidate
+from .routing import RoutingSession
 from .training import TrainingError, train_candidate
 
 _LOGGER = logging.getLogger("cs71vision.runtime")
@@ -272,18 +273,25 @@ class SuggestionLoop:
             self._stop.wait(self._interval)
 
 
-def build_suggestion_loop(config: VisionConfig, buffer: FrameBuffer) -> SuggestionLoop | None:
+def build_suggestion_loop(
+    config: VisionConfig, buffer: FrameBuffer, *, routing: RoutingSession
+) -> SuggestionLoop | None:
     """Build the suggestion loop, or None if this config never talks to cs71d.
 
     Same gate every other `vision.db`-backed component uses: without a
     token, correlation never runs, so no example is ever recorded and no
     model is ever trained - there is structurally never an active model
     this loop could suggest from.
+
+    `routing` is the same `RoutingSession` instance `build_api_server`
+    reports and controls (PI-VISION-009) - shared, not a second one, so a
+    run started through the api is the run this loop actually routes
+    against.
     """
     if config.daemon_service_token_path is None:
         return None
     store = DatasetStore.open(config.dataset_path)
-    suggester = FrameSuggester(store, buffer)
+    suggester = FrameSuggester(store, buffer, router=routing)
     return SuggestionLoop(suggester, store)
 
 
@@ -492,7 +500,7 @@ def build_training_job(config: VisionConfig) -> TrainingJob | None:
     return TrainingJob(store, trainer)
 
 
-def build_api_server(config: VisionConfig) -> VisionApiServer | None:
+def build_api_server(config: VisionConfig, *, routing: RoutingSession) -> VisionApiServer | None:
     """Build the vision API server, or None if this config never talks to cs71d.
 
     Same gate `build_correlation_loop`/`build_training_job` use: without a
@@ -504,7 +512,9 @@ def build_api_server(config: VisionConfig) -> VisionApiServer | None:
     `build_correlation_loop` opens, and its own `TrainingJob` (with its own
     independent `DatasetStore` handle in turn) rather than sharing either -
     see `VisionApiServer`'s own docstring for why that is safe and
-    deliberate. `VisionApiServer.close()` closes both.
+    deliberate. `VisionApiServer.close()` closes both. `routing` is shared
+    with the caller's suggestion loop instead (PI-VISION-009) - a run
+    started here is the run that loop actually routes against.
     """
     if config.daemon_service_token_path is None:
         return None
@@ -519,4 +529,5 @@ def build_api_server(config: VisionConfig) -> VisionApiServer | None:
         minimum_examples_per_class=config.minimum_examples_per_class,
         training_job=training_job,
         autonomy_thresholds=config.autonomy_thresholds,
+        routing=routing,
     )
