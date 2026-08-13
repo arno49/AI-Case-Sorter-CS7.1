@@ -395,3 +395,29 @@ owns the serial port.
 [`appliance/ops/README.md`](../ops/README.md) packages this console script as
 `cs71d.service`: which user runs it, what least-privilege sandbox it runs
 under, and how `install.sh` writes `service_token_path`'s file.
+
+## Software qualification (PI-SWQ-001)
+
+Property tests (`hypothesis`, a dev-only dependency) sit next to the
+existing example-based tests they generalize, not in a separate suite:
+`test_operations.py` for fingerprint/canonicalization invariants,
+`test_domain.py` for stale-generation and idempotency-conflict rejection
+over generated inputs, `test_events.py` for the event ring's bounded-
+retention and resume/overflow behavior over generated
+retention/publish-count/cursor combinations. Stress tests for concurrent,
+same-idempotency-key load exist at three layers: `test_domain.py` (Python
+calls racing the admission lock directly), `test_api.py` (real concurrent
+HTTP connections over the Unix socket - the actual wire a BFF speaks), and
+`appliance/web`'s `command-flow.spec.ts` (the real SvelteKit action under
+concurrent `Promise.all`).
+
+`scripts/measure_nfr.py` measures NFR-01 (priority-stop admission latency)
+and NFR-02 (snapshot read p99 latency) against a real `ApiServer` fronting
+the deterministic simulator, over a real Unix socket. It runs in CI on
+every push and always reports `evidence_status: NOT_EXECUTED`, because a
+GitHub-hosted runner is never the approved Raspberry Pi 5 rig this gate
+requires (`docs/architecture/testing-and-quality.md`) - the same
+"not performed, not failed" posture the Linux DTR gate already uses. The
+script detects the approved rig via `/proc/device-tree/model`, never
+`platform.machine()` alone, and stamps whichever status is actually true
+of the machine it ran on.

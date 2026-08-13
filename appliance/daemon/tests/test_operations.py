@@ -5,9 +5,12 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from cs71d.operations import (
     Actor,
+    BodyValue,
     IdempotencyRecord,
     OperationAction,
     OperationRecord,
@@ -88,6 +91,46 @@ def test_boolean_and_integer_bodies_are_not_conflated() -> None:
     numeric = request_fingerprint(OperationAction.SORT, {"slot": 1}, OPERATOR)
 
     assert truthy != numeric
+
+
+_BODY_FIELD_NAMES = st.sampled_from(["slot", "retry", "axis", "note", "count"])
+_BODY_VALUES = st.one_of(
+    st.integers(min_value=-1000, max_value=1000),
+    st.booleans(),
+    st.text(min_size=0, max_size=32),
+    st.none(),
+)
+_BODIES = st.dictionaries(_BODY_FIELD_NAMES, _BODY_VALUES, max_size=5)
+
+
+@given(body=_BODIES)
+def test_fingerprint_is_stable_under_field_reordering(body: dict[str, BodyValue]) -> None:
+    """PI-SWQ-001 property test: `canonical_request` sorts keys, so the
+    fingerprint of any body must not depend on the order Python happens to
+    iterate its keys in - `dict(reversed(body.items()))` is a different
+    object with the same entries, never a different request.
+    """
+    forward = request_fingerprint(OperationAction.SORT, body, OPERATOR)
+    reordered = request_fingerprint(OperationAction.SORT, dict(reversed(body.items())), OPERATOR)
+
+    assert forward == reordered
+
+
+@given(left=_BODIES, right=_BODIES)
+def test_fingerprint_equality_implies_equal_bodies(
+    left: dict[str, BodyValue], right: dict[str, BodyValue]
+) -> None:
+    """The converse of the reordering property: two bodies that are not the
+    same set of entries must never collide onto the same fingerprint - the
+    whole point of `IDEMPOTENCY_CONFLICT` is that a fingerprint match is
+    trusted as "the same request" without re-inspecting the body.
+    """
+    if left == right:
+        return  # not the property under test
+    left_print = request_fingerprint(OperationAction.SORT, left, OPERATOR)
+    right_print = request_fingerprint(OperationAction.SORT, right, OPERATOR)
+
+    assert left_print != right_print
 
 
 def test_canonical_request_is_compact_sorted_json() -> None:

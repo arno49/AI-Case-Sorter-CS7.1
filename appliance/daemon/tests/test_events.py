@@ -4,6 +4,8 @@ import threading
 from datetime import UTC, datetime
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from cs71d.events import DaemonEvent, EventRing
 
@@ -138,3 +140,54 @@ def test_a_cursor_from_a_previous_daemon_life_cannot_be_resumed() -> None:
     with ring.subscribe(after=99) as subscriber:
         assert subscriber.overflowed
         assert subscriber.drain(timeout=0.05) == []
+
+
+@given(
+    retention=st.integers(min_value=1, max_value=20),
+    published=st.integers(min_value=0, max_value=60),
+)
+def test_retained_never_exceeds_retention_however_many_events_are_published(
+    retention: int, published: int
+) -> None:
+    """PI-SWQ-001 property test: `retained` is bounded by `retention`, for
+    any number of publishes - not just the one worked example above.
+    """
+    ring = EventRing(retention=retention)
+
+    _publish(ring, published)
+
+    retained = ring.retained
+    assert len(retained) == min(retention, published)
+    if retained:
+        # The window is always the newest events, contiguous, nothing skipped.
+        assert [event.event_id for event in retained] == list(
+            range(retained[0].event_id, retained[0].event_id + len(retained))
+        )
+        assert retained[-1].event_id == published
+
+
+@given(
+    retention=st.integers(min_value=1, max_value=15),
+    published=st.integers(min_value=1, max_value=30),
+    cursor=st.integers(min_value=0, max_value=45),
+)
+def test_a_resumed_cursor_is_either_overflowed_or_exactly_the_newer_events(
+    retention: int, published: int, cursor: int
+) -> None:
+    """PI-SWQ-001 property test: for any retention/publish/cursor combination,
+    a resumed subscriber never silently skips an event and never fabricates
+    one - it is overflowed (cursor outside the retained window) or it is
+    primed with exactly the retained events newer than the cursor, in order.
+    """
+    ring = EventRing(retention=retention)
+    _publish(ring, published)
+    oldest = published - min(retention, published) + 1 if published else 1
+
+    with ring.subscribe(after=cursor) as subscriber:
+        if cursor > published or cursor + 1 < oldest:
+            assert subscriber.overflowed
+            assert subscriber.drain(timeout=0.05) == []
+        else:
+            assert not subscriber.overflowed
+            drained = subscriber.drain(timeout=0.05)
+            assert [event.event_id for event in drained] == list(range(cursor + 1, published + 1))

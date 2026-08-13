@@ -761,12 +761,96 @@ work.
 
 **Goal:** execute software quality matrix against deterministic environments. **Implementation notes:** capture versions/seeds and enforce flake policy; run the declared performance profile on Raspberry Pi 5 without requiring a controller. **Dependencies:** PI-UI-002, PI-OPS-002. **Hardware required:** Raspberry Pi 5 required for NFR-01/NFR-02; controller not required. **Size:** L.
 
-- Property tests cover request-id wrapping, stale generations, idempotency conflicts and bounded event overflow.
-- Stress tests demonstrate bounded queues/subscribers and no duplicate operation execution under concurrent BFF load.
-- Fault injection covers journal I/O, daemon reconnect and BFF restart with expected `UNCERTAIN` behavior.
-- Under the versioned Raspberry Pi load profile, accepted priority-stop admission is reported within 250 ms; the report excludes and separately labels firmware/physical stop time (NFR-01).
-- Under the same versioned profile, at least 99% of internal snapshot reads complete within 100 ms with sample count and percentile method recorded (NFR-02).
-- Test report labels every result simulator/software-only and retains seed/artifact references.
+This codebase already carried a great deal of what this task asks for,
+scattered across ten prior epics rather than consolidated - the real work
+here was distinguishing genuine gaps from existing coverage, extending only
+the former, and being honest in this write-up about which is which.
+
+**Property tests (bullet 1) - `hypothesis` newly added as a dev dependency,
+`appliance/daemon/requirements-dev.in`/`.txt` regenerated.** Request-id
+wrapping was already exhaustively covered before this task -
+`host/tests/test_software_preintegration.py::test_request_ids_wrap_across_all_values_without_reusing_active_ids`
+allocates and verifies all 65535 protocol request IDs including exhaustion
+and reuse-after-observe - genuine existing coverage, not duplicated here.
+New generative tests: `test_operations.py`'s
+`test_fingerprint_is_stable_under_field_reordering`/
+`test_fingerprint_equality_implies_equal_bodies` (any generated body, not
+the fixed examples `test_equivalent_requests_share_a_fingerprint...`
+already used); `test_domain.py`'s
+`test_any_generation_other_than_the_observed_one_is_always_rejected`/
+`test_reusing_a_key_for_any_differing_slot_always_conflicts` (any
+generation delta / any differing slot, not one parametrized list);
+`test_events.py`'s
+`test_retained_never_exceeds_retention_however_many_events_are_published`/
+`test_a_resumed_cursor_is_either_overflowed_or_exactly_the_newer_events`
+(any retention/publish-count/cursor combination - the existing worked
+examples like `test_retention_is_bounded` stay as the readable case,
+the property test is what actually proves it holds generally).
+
+**Stress tests (bullet 2) - the genuine gap was the HTTP/BFF-facing
+surface, not the domain layer.** `test_domain.py`'s pre-existing
+`test_only_one_command_can_be_admitted_against_one_observed_generation`
+already proved generation-exclusivity under concurrency; it does not use a
+shared idempotency key, so it never exercised the replay path under a
+real race. New: `test_domain.py::test_concurrent_submissions_sharing_one_idempotency_key_never_duplicate_execution`
+(8 threads, one key, one operation observed by all); `test_api.py::test_concurrent_http_replays_of_one_key_never_admit_more_than_one_operation`
+(real concurrent Unix-socket HTTP connections - the wire this daemon
+actually serves, not just concurrent Python calls); `command-flow.spec.ts::'handles concurrent presses independently, under real BFF load'`
+(the real SvelteKit action, real hook, concurrent `Promise.all` submissions
+each keeping its own render-minted idempotency key distinct - proving the
+BFF's own code has no shared mutable state a concurrent request could
+corrupt for another).
+
+**Fault injection (bullet 3) - verified, not rebuilt.** Read `domain.py`
+closely enough to confirm `UNCERTAIN` is specifically reserved for "reached
+the wire without a trusted terminal" (`_complete`/`_resolve`); a
+journal fault *before* transmission (`_dispatch`'s own gate) correctly
+never becomes `UNCERTAIN` - it is refused outright, already proven by
+`test_a_lifecycle_write_that_fails_stops_the_command_before_transmission`
+and `test_a_journal_failure_cannot_yield_an_unrecorded_success`. Daemon
+reconnect's `UNCERTAIN` path is PI-DOMAIN-001's own
+`test_an_unverified_terminal_makes_the_operation_uncertain` (already
+cross-referenced from PI-SIM-002's own evidence). BFF restart is
+PI-BFF-002's own `event-stream.spec.ts` `describe('restarting this
+service', ...)` - its second case already proves the browser is told
+`resync`/`cursor_too_old` rather than allowed to assume continuity across
+a restart, which is this system's own `UNCERTAIN`-equivalent posture at
+the browser layer ("never assume, always reconcile"). No new fault-
+injection test was added; three cross-references replace what would
+otherwise have been three duplicated suites.
+
+**NFR-01/NFR-02 (bullets 4-5) - built, executed, and honestly not
+closed.** `appliance/daemon/scripts/measure_nfr.py` implements load
+profile v1 (documented in its own docstring and in
+`testing-and-quality.md`): a real `cs71d.api.ApiServer` fronting the
+deterministic simulator, real Unix-socket HTTP requests, 200 priority-stop
+admissions and 500 snapshot reads, `statistics.quantiles(n=100,
+method="inclusive")` for the recorded percentile method. It runs in CI on
+every push (`.github/workflows/firmware.yml`, uploaded as
+`nfr-01-02-measurement.json`) and detects the approved rig via
+`/proc/device-tree/model` - never `platform.machine() == 'aarch64'` alone,
+since other ARM hardware exists. On every runner this project's CI
+actually has, and on the machine this task was implemented on, that
+detection correctly fails, and the report stamps its own
+`evidence_status: NOT_EXECUTED` - `testing-and-quality.md` already says
+"simulator or desktop measurements cannot replace this Pi profile," and
+this script does not pretend otherwise. **These two bullets stay
+unchecked below.** Closing them needs the identical script re-run, once,
+on an approved Raspberry Pi 5.
+
+**Labeling (bullet 6).** Every report this task produces already carries
+`evidence_status`/`evidence_note` (`measure_nfr.py`) or ran inside this
+project's existing `EVIDENCE_CLASS: SOFTWARE_SIMULATOR_ONLY` CI convention
+(`firmware.yml`, unchanged by this task); hypothesis's own seed is printed
+on any property-test failure by default, and CI's existing artifact
+upload retains it.
+
+- [x] Property tests cover request-id wrapping, stale generations, idempotency conflicts and bounded event overflow.
+- [x] Stress tests demonstrate bounded queues/subscribers and no duplicate operation execution under concurrent BFF load.
+- [x] Fault injection covers journal I/O, daemon reconnect and BFF restart with expected `UNCERTAIN` behavior.
+- [ ] Under the versioned Raspberry Pi load profile, accepted priority-stop admission is reported within 250 ms; the report excludes and separately labels firmware/physical stop time (NFR-01). **Harness built and CI-executed (`measure_nfr.py`); the load profile itself has never run on an approved Raspberry Pi 5, so this is `NOT_EXECUTED`, matching SAF-07's own posture - not claimed as passing on simulator/desktop evidence.**
+- [ ] Under the same versioned profile, at least 99% of internal snapshot reads complete within 100 ms with sample count and percentile method recorded (NFR-02). **Same harness, same `NOT_EXECUTED` status, same reason.**
+- [x] Test report labels every result simulator/software-only and retains seed/artifact references.
 
 ### PI-SWQ-002 — Qualify security and accessibility controls
 

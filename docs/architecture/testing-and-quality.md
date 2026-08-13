@@ -28,7 +28,13 @@ versions, load generator, sample count and percentile method. Priority-stop
 admission must be reported within 250 ms, excluding firmware and physical stop
 time. At least 99% of internal snapshot reads must complete within 100 ms.
 Failure blocks software qualification; simulator or desktop measurements cannot
-replace this Pi profile.
+replace this Pi profile. `appliance/daemon/scripts/measure_nfr.py`
+(PI-SWQ-001) implements load profile v1 and runs in CI on every push, but a
+GitHub-hosted runner is never the approved rig, so its own report always
+stamps `evidence_status: NOT_EXECUTED`; re-running the identical script on
+the approved Raspberry Pi 5 is what actually closes this gate, the same
+"NOT_EXECUTED is not performed, not failed" posture SAF-07 already uses for
+the Linux DTR gate.
 
 ## Browser, accessibility and security
 

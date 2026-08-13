@@ -77,6 +77,15 @@ jobs:
       - name: Run daemon tests
         working-directory: appliance/daemon
         run: pytest
+      - name: Record NFR-01/NFR-02 harness sanity measurement (PI-SWQ-001)
+        working-directory: appliance/daemon
+        run: |
+          # Software/simulator evidence only - this runner is never the
+          # approved Raspberry Pi 5 rig, so the report always stamps itself
+          # NOT_EXECUTED (see the script's own docstring). What this step
+          # proves in CI is that the harness and report format keep working,
+          # not a release-gate pass/fail.
+          python scripts/measure_nfr.py > reports/nfr-01-02-measurement.json
       - name: Build daemon distributions
         run: python -m build --no-isolation --wheel --sdist appliance/daemon
       - name: Audit daemon dependencies
