@@ -481,6 +481,70 @@ def test_suggestion_reports_the_most_recently_recorded_one(workspace: Path) -> N
             "confidence": 0.87,
             "model_version": version,
             "suggested_at": START.isoformat(),
+            "primer_present": None,
+            "requires_confirmation": True,
+        }
+    finally:
+        server.close()
+
+
+def test_suggestion_reports_requires_confirmation_false_only_for_a_confidently_clear_primer_axis(
+    workspace: Path,
+) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.87,
+        frame_captured_at=START,
+        suggested_at=START,
+        primer_present=False,
+    )
+    server = _server(workspace, store=store)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion")
+
+        assert status == 200
+        assert body["suggestion"] == {
+            "slot": 3,
+            "confidence": 0.87,
+            "model_version": version,
+            "suggested_at": START.isoformat(),
+            "primer_present": False,
+            "requires_confirmation": False,
+        }
+    finally:
+        server.close()
+
+
+def test_suggestion_reports_requires_confirmation_true_when_primer_is_flagged(
+    workspace: Path,
+) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.87,
+        frame_captured_at=START,
+        suggested_at=START,
+        primer_present=True,
+    )
+    server = _server(workspace, store=store)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/suggestion")
+
+        assert status == 200
+        assert body["suggestion"] == {
+            "slot": 3,
+            "confidence": 0.87,
+            "model_version": version,
+            "suggested_at": START.isoformat(),
+            "primer_present": True,
+            "requires_confirmation": True,
         }
     finally:
         server.close()

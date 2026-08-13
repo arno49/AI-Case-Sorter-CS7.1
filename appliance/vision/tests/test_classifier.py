@@ -34,6 +34,15 @@ def test_classify_frame_picks_the_matching_class_with_high_confidence() -> None:
     assert suggestion.confidence > 0.5
 
 
+def test_classify_frame_never_claims_a_confident_primer_reading() -> None:
+    """PI-VISION-010: no trained primer detector exists; this is always None, never a guess."""
+    model_blob = _trained_model_blob()
+
+    suggestion = classify_frame(model_blob, _png(10))
+
+    assert suggestion.primer_present is None
+
+
 def test_classify_frame_confidence_is_a_probability() -> None:
     model_blob = _trained_model_blob()
 

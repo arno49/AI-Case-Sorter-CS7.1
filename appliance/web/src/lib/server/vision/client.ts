@@ -79,6 +79,15 @@ export interface Suggestion {
 	readonly confidence: number;
 	readonly modelVersion: number;
 	readonly suggestedAt: string;
+	/**
+	 * The primer-presence axis (PI-VISION-010, ADR-0013/SAF-09), permanently
+	 * separate from slot/confidence. Null means unknown/ambiguous, not "no
+	 * primer" - see `requiresConfirmation`, which is the single source of
+	 * truth for what this means; nothing in this workspace re-derives it.
+	 */
+	readonly primerPresent: boolean | null;
+	/** Whether a person must explicitly confirm this case before it may be acted on. */
+	readonly requiresConfirmation: boolean;
 }
 
 export interface SuggestionResult {
@@ -399,11 +408,15 @@ function parseSuggestion(item: unknown, status: number): Suggestion {
 	const confidence = record?.confidence;
 	const modelVersion = record?.model_version;
 	const suggestedAt = record?.suggested_at;
+	const primerPresent = record?.primer_present;
+	const requiresConfirmation = record?.requires_confirmation;
 	if (
 		typeof slot !== 'number' ||
 		typeof confidence !== 'number' ||
 		typeof modelVersion !== 'number' ||
-		typeof suggestedAt !== 'string'
+		typeof suggestedAt !== 'string' ||
+		(primerPresent !== null && typeof primerPresent !== 'boolean') ||
+		typeof requiresConfirmation !== 'boolean'
 	) {
 		throw new VisionError({
 			kind: 'malformed',
@@ -411,7 +424,14 @@ function parseSuggestion(item: unknown, status: number): Suggestion {
 			detail: 'cs71-vision answered with an unusable suggestion'
 		});
 	}
-	return { slot, confidence, modelVersion, suggestedAt };
+	return {
+		slot,
+		confidence,
+		modelVersion,
+		suggestedAt,
+		primerPresent,
+		requiresConfirmation
+	};
 }
 
 function parseSuggestionAccuracy(body: unknown, status: number): SuggestionAccuracy {

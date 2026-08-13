@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .dataset import DatasetError, DatasetStore
+from .primer import requires_operator_confirmation
 
 _LOGGER = logging.getLogger("cs71vision.api")
 
@@ -240,6 +241,13 @@ class VisionApiServer:
                 "confidence": suggestion.confidence,
                 "model_version": suggestion.model_version,
                 "suggested_at": suggestion.suggested_at,
+                # Primer-presence axis (PI-VISION-010): permanently separate
+                # from slot/confidence. `requires_confirmation` is the single
+                # source of truth for this axis - `cs71vision.primer` - so no
+                # caller ever needs to reimplement "None or True means ask a
+                # person" for itself.
+                "primer_present": suggestion.primer_present,
+                "requires_confirmation": requires_operator_confirmation(suggestion.primer_present),
             },
         }
 

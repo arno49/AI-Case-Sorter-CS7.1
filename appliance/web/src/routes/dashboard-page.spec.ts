@@ -91,6 +91,8 @@ interface PageSuggestion {
 	readonly confidence: number;
 	readonly modelVersion: number;
 	readonly suggestedAt: string;
+	readonly primerPresent: boolean | null;
+	readonly requiresConfirmation: boolean;
 }
 
 function rendered(
@@ -198,7 +200,9 @@ describe('what the dashboard shows', () => {
 				slot: 3,
 				confidence: 0.87,
 				modelVersion: 2,
-				suggestedAt: '2026-08-11T12:00:00.000Z'
+				suggestedAt: '2026-08-11T12:00:00.000Z',
+				primerPresent: false,
+				requiresConfirmation: false
 			}
 		});
 
@@ -211,6 +215,53 @@ describe('what the dashboard shows', () => {
 		const html = rendered(snapshot(), { suggestion: null });
 
 		expect(fieldText(html, 'vision-suggestion')).toEqual([]);
+	});
+
+	it('shows a primer confirmation notice when the primer axis is unknown', () => {
+		// PI-VISION-010: today primer_present is always null/unknown from
+		// cs71-vision, so requiresConfirmation is always true.
+		const html = rendered(snapshot(), {
+			suggestion: {
+				slot: 3,
+				confidence: 0.87,
+				modelVersion: 2,
+				suggestedAt: '2026-08-11T12:00:00.000Z',
+				primerPresent: null,
+				requiresConfirmation: true
+			}
+		});
+
+		expect(fieldText(html, 'vision-primer-notice').join(' ')).toContain('unknown');
+	});
+
+	it('shows a primer confirmation notice as flagged, never as clear, when primer is present', () => {
+		const html = rendered(snapshot(), {
+			suggestion: {
+				slot: 3,
+				confidence: 0.87,
+				modelVersion: 2,
+				suggestedAt: '2026-08-11T12:00:00.000Z',
+				primerPresent: true,
+				requiresConfirmation: true
+			}
+		});
+
+		expect(fieldText(html, 'vision-primer-notice').join(' ')).toContain('flagged');
+	});
+
+	it('shows no primer notice when the axis is confidently clear', () => {
+		const html = rendered(snapshot(), {
+			suggestion: {
+				slot: 3,
+				confidence: 0.87,
+				modelVersion: 2,
+				suggestedAt: '2026-08-11T12:00:00.000Z',
+				primerPresent: false,
+				requiresConfirmation: false
+			}
+		});
+
+		expect(fieldText(html, 'vision-primer-notice')).toEqual([]);
 	});
 });
 
@@ -376,7 +427,9 @@ describe('the suggested slot, end to end', () => {
 						slot: 3,
 						confidence: 0.87,
 						model_version: 2,
-						suggested_at: '2026-08-11T12:00:00.000Z'
+						suggested_at: '2026-08-11T12:00:00.000Z',
+						primer_present: null,
+						requires_confirmation: true
 					}
 				})(call, response);
 			} else {

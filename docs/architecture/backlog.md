@@ -1306,6 +1306,58 @@ web-workspace logic changed.
 
 **Goal:** treat primer presence as a permanently separate signal that always requires operator confirmation. **Implementation notes:** no configuration surface, including administrator-level ones, may disable this. **Dependencies:** PI-VISION-006. **Hardware required:** Pi and camera for the software wiring; real primer-bearing cases and physical trial evidence, reviewed with the same weight as DTR/HIL evidence, before this is ever trusted in practice — never closed on software evidence alone. **Size:** M.
 
-- A primer-flagged or ambiguous case always routes to operator confirmation, regardless of manufacturer-class confidence or the autonomy configuration in PI-VISION-008.
-- No code path, configuration flag or role can bypass this — verified the same way `protocol.direct` is verified as unreachable by any role today.
-- This is explicitly documented as never closing on software evidence alone, matching SAF-07's DTR posture.
+Primer presence was 100% greenfield before this task: no schema column, API
+field, UI element or model output referenced it anywhere, only prose in
+ADR-0013/`traceability.md`/`roadmap.md`. There is also no PI-VISION-008 yet
+for this task to gate - the acceptance criteria explicitly reference a
+*future* autonomy configuration ("the autonomy configuration in
+PI-VISION-008"). What this task delivers is the uncircumventable primitive
+that future task must consult, built and exhaustively tested now, before
+any autonomous code path exists to consult it.
+
+**`cs71vision.primer.requires_operator_confirmation(primer_present)`** is
+the single answer, on this axis alone: `True` unless `primer_present` is
+exactly `False`. It takes no configuration parameter, by construction -
+there is no argument that could ever be passed to bypass it, mirroring
+`appliance/web/src/lib/server/auth/capabilities.ts`'s own structural
+non-grant for `protocol.direct` (declared as a capability, granted to no
+role, so `can(role, 'protocol.direct')` is always `false` rather than an
+`if` a future change could forget). A parametrized test proves the three
+possible readings (`True`/`None`/`False`) map to exactly the intended
+result, and a signature-introspection test proves no second parameter
+exists to smuggle a bypass through.
+
+**Nothing in this codebase claims a confident primer reading yet, and that
+is deliberate, not an oversight.** No primer-labeled training data exists -
+extending the dataset/labeling pipeline to capture one is out of this
+task's scope (Dependencies: PI-VISION-006 only, not PI-VISION-002's
+labeling UI). `classifier.classify_frame` therefore always returns
+`primer_present=None`, and a test pins that down: `classify_frame` may
+never fabricate a `False` reading. Because `requires_operator_confirmation`
+treats `None` the same as a positive flag, the mandatory-confirmation
+property holds today by construction, not by convention - there is
+structurally nothing yet that could produce the one value that would relax
+it.
+
+**Storage: one additive column, not a new table or a mutation of an
+existing one.** Schema version 5 is a single `ALTER TABLE suggestions ADD
+COLUMN primer_present INTEGER` (nullable: `NULL` unknown, `0`/`1`
+confidently clear/flagged). `record_suggestion`'s new `primer_present`
+parameter defaults to `None` rather than being required - the safe default,
+not a convenience one: a caller that forgets to pass it gets the
+conservative reading, never an unsafe one.
+
+`GET /v1/suggestion` (`cs71vision.api`) now reports both `primer_present`
+and a server-computed `requires_confirmation`, so `cs71-web` never
+reimplements the safety logic for itself - one source of truth, consulted
+through an import, not re-derived. The dashboard shows an explicit primer
+confirmation notice next to the existing class suggestion whenever
+`requires_confirmation` is true (today, always) - informational, the same
+as PI-VISION-006's own suggestion display: nothing here newly blocks a
+sort, since every sort already only ever happens through the operator's own
+form submission, and there is no autonomous path in this codebase yet to
+gate.
+
+- [x] A primer-flagged or ambiguous case always routes to operator confirmation, regardless of manufacturer-class confidence or the autonomy configuration in PI-VISION-008.
+- [x] No code path, configuration flag or role can bypass this — verified the same way `protocol.direct` is verified as unreachable by any role today.
+- [x] This is explicitly documented as never closing on software evidence alone, matching SAF-07's DTR posture.
