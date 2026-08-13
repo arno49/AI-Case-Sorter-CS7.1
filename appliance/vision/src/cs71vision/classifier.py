@@ -34,6 +34,11 @@ class ClassificationError(RuntimeError):
 class Suggestion:
     slot: int
     confidence: float
+    #: The primer-presence axis (PI-VISION-010, ADR-0013/SAF-09), permanently
+    #: separate from `slot`/`confidence`. `None` means unknown/ambiguous, not
+    #: "no primer" - see `cs71vision.primer` for why this is always `None`
+    #: today and what that means for `requires_operator_confirmation`.
+    primer_present: bool | None
 
 
 def classify_frame(model_blob: bytes, frame_png: bytes) -> Suggestion:
@@ -58,7 +63,10 @@ def classify_frame(model_blob: bytes, frame_png: bytes) -> Suggestion:
     best_index = int(probabilities.argmax())
     slot = int(classifier.classes_[best_index])
     confidence = float(probabilities[best_index])
-    return Suggestion(slot=slot, confidence=confidence)
+    # No trained primer detector exists yet (cs71vision.primer) - this is
+    # never anything but None until real primer-labeled training data and a
+    # validated model for it exist, neither of which this task builds.
+    return Suggestion(slot=slot, confidence=confidence, primer_present=None)
 
 
 class FrameSuggester:
@@ -107,6 +115,7 @@ class FrameSuggester:
             model_version=active_version,
             suggested_slot=suggestion.slot,
             confidence=suggestion.confidence,
+            primer_present=suggestion.primer_present,
             frame_captured_at=frame.captured_at,
             suggested_at=self._now(),
         )

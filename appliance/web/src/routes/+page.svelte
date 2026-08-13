@@ -131,6 +131,19 @@
 			Suggested slot: {data.suggestion.slot} ({Math.round(data.suggestion.confidence * 100)}%
 			confidence)
 		</p>
+		{#if data.suggestion.requiresConfirmation}
+			<!-- PI-VISION-010, ADR-0013/SAF-09: the primer-presence axis is
+			     permanently separate from the class suggestion above and always
+			     requires a person to look, whether primer was flagged or - as
+			     today, always - the axis is unknown. Informational only, the same
+			     as the suggestion above: nothing here is a gate yet, since sorting
+			     still only ever happens through the operator's own form submission
+			     below (no autonomous path exists until PI-VISION-008). -->
+			<p data-field="vision-primer-notice">
+				Primer status: {data.suggestion.primerPresent ? 'flagged' : 'unknown'} — confirm this case visually
+				before sorting.
+			</p>
+		{/if}
 	{/if}
 
 	<ManualControls

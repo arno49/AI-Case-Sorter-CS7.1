@@ -54,5 +54,17 @@ Caddy terminates TLS and proxies only to loopback SvelteKit. Production/pilot ce
 | SAF-06 | Node/SvelteKit availability is not a serial ownership dependency; its restart does not interrupt an active daemon operation. |
 | SAF-07 | POSIX/Linux DTR behavior is **NOT_EXECUTED** and unqualified until physical experiment evidence closes the gate. |
 | SAF-08 | Simulator evidence cannot satisfy any hardware, DTR, physical-stop or production-release gate. |
+| SAF-09 | Primer-presence classification never authorizes autonomous action; a flagged or ambiguous case always requires operator confirmation, independent of manufacturer-classification confidence or the autonomy configuration. |
+
+`cs71vision.primer.requires_operator_confirmation` (PI-VISION-010) is
+SAF-09's enforcement point: `True` unless the primer axis is confidently
+`False`, taking no configuration parameter - there is no argument that
+could ever be passed to bypass it. No trained primer detector exists yet,
+so the axis is always `None` (unknown) today, meaning confirmation is
+currently always required; this matches SAF-07/SAF-08's own posture that
+this axis is not "closed" by software evidence alone. PI-VISION-008's
+future autonomy policy must consult this function before ever attempting
+an autonomous sort, in addition to its own separate manufacturer-class
+confidence gate.
 
 Unsafe or uncertain behavior is explicit: a disconnect or non-correlatable result disables dependent actions, prominently displays `UNCERTAIN`, preserves evidence, and requires the authorized recovery procedure. “Ready” is not a claim of physical clearance, homing, energy isolation, or E-stop availability. A physical emergency stop and guarded motor-power path are mandatory operational controls outside the software trust boundary.

@@ -287,7 +287,9 @@ describe('reading the current suggestion', () => {
 					slot: 3,
 					confidence: 0.87,
 					model_version: 2,
-					suggested_at: '2026-08-12T12:00:00.000Z'
+					suggested_at: '2026-08-12T12:00:00.000Z',
+					primer_present: null,
+					requires_confirmation: true
 				}
 			})
 		);
@@ -298,8 +300,31 @@ describe('reading the current suggestion', () => {
 			slot: 3,
 			confidence: 0.87,
 			modelVersion: 2,
-			suggestedAt: '2026-08-12T12:00:00.000Z'
+			suggestedAt: '2026-08-12T12:00:00.000Z',
+			primerPresent: null,
+			requiresConfirmation: true
 		});
+	});
+
+	it('parses a confidently clear primer reading', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				suggestion: {
+					slot: 3,
+					confidence: 0.87,
+					model_version: 2,
+					suggested_at: '2026-08-12T12:00:00.000Z',
+					primer_present: false,
+					requires_confirmation: false
+				}
+			})
+		);
+
+		const result = await client.suggestion();
+
+		expect(result.suggestion?.primerPresent).toBe(false);
+		expect(result.suggestion?.requiresConfirmation).toBe(false);
 	});
 
 	it('requests /v1/suggestion', async () => {

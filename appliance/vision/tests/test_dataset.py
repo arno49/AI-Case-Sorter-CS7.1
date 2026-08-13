@@ -393,7 +393,50 @@ def test_record_suggestion_then_read_it_back(workspace: Path) -> None:
         assert latest.model_version == version
         assert latest.suggested_slot == 3
         assert latest.confidence == 0.87
+        assert latest.primer_present is None
         assert latest.suggested_at == START.isoformat()
+    finally:
+        store.close()
+
+
+def test_record_suggestion_stores_a_confidently_clear_primer_reading(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.87,
+            frame_captured_at=START,
+            suggested_at=START,
+            primer_present=False,
+        )
+
+        latest = store.latest_suggestion()
+        assert latest is not None
+        assert latest.primer_present is False
+    finally:
+        store.close()
+
+
+def test_record_suggestion_stores_a_flagged_primer_reading(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.87,
+            frame_captured_at=START,
+            suggested_at=START,
+            primer_present=True,
+        )
+
+        latest = store.latest_suggestion()
+        assert latest is not None
+        assert latest.primer_present is True
     finally:
         store.close()
 

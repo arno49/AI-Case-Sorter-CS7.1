@@ -119,6 +119,17 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=5,
+        name="suggestion_primer_axis",
+        statements=(
+            # Nullable: NULL means unknown/ambiguous (the only value this
+            # codebase ever writes today, PI-VISION-010), 0/1 mean a
+            # confidently clear/flagged reading from a future trained
+            # detector this task does not build.
+            "ALTER TABLE suggestions ADD COLUMN primer_present INTEGER",
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -188,6 +199,9 @@ class SuggestionRecord:
     model_version: int
     suggested_slot: int
     confidence: float
+    #: The primer-presence axis (PI-VISION-010). `None` is unknown/ambiguous,
+    #: not "no primer" - see `cs71vision.primer.requires_operator_confirmation`.
+    primer_present: bool | None
     frame_captured_at: str
     suggested_at: str
 
@@ -456,17 +470,26 @@ class DatasetStore:
         confidence: float,
         frame_captured_at: datetime,
         suggested_at: datetime,
+        primer_present: bool | None = None,
     ) -> int:
-        """Record one read-only classification. Always a new row, never an edit."""
+        """Record one read-only classification. Always a new row, never an edit.
+
+        `primer_present` defaults to `None` (unknown/ambiguous) rather than
+        being required - the safe reading, not a convenience one (PI-VISION-010):
+        a caller that forgets to pass it gets the conservative value, never
+        an unsafe one.
+        """
         with self._transaction() as cursor:
             cursor.execute(
                 "INSERT INTO suggestions"
-                " (model_version, suggested_slot, confidence, frame_captured_at, suggested_at)"
-                " VALUES (?, ?, ?, ?, ?)",
+                " (model_version, suggested_slot, confidence, primer_present,"
+                " frame_captured_at, suggested_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     model_version,
                     suggested_slot,
                     confidence,
+                    None if primer_present is None else int(primer_present),
                     _encode_time(frame_captured_at),
                     _encode_time(suggested_at),
                 ),
@@ -480,7 +503,7 @@ class DatasetStore:
         """The most recently recorded suggestion, or None if none exists yet."""
         with self._guard() as cursor:
             row = cursor.execute(
-                "SELECT suggestion_id, model_version, suggested_slot, confidence,"
+                "SELECT suggestion_id, model_version, suggested_slot, confidence, primer_present,"
                 " frame_captured_at, suggested_at"
                 " FROM suggestions ORDER BY suggestion_id DESC LIMIT 1"
             ).fetchone()
@@ -495,7 +518,7 @@ class DatasetStore:
         with self._guard() as cursor:
             row = cursor.execute(
                 "SELECT s.suggestion_id, s.model_version, s.suggested_slot, s.confidence,"
-                " s.frame_captured_at, s.suggested_at"
+                " s.primer_present, s.frame_captured_at, s.suggested_at"
                 " FROM suggestions s"
                 " LEFT JOIN suggestion_outcomes o ON o.suggestion_id = s.suggestion_id"
                 " WHERE o.suggestion_id IS NULL AND s.suggested_at <= ?"
@@ -649,11 +672,13 @@ def _candidate_summary_from(row: sqlite3.Row) -> CandidateSummary:
 
 
 def _suggestion_record_from(row: sqlite3.Row) -> SuggestionRecord:
+    primer_present = row["primer_present"]
     return SuggestionRecord(
         suggestion_id=int(row["suggestion_id"]),
         model_version=int(row["model_version"]),
         suggested_slot=int(row["suggested_slot"]),
         confidence=float(row["confidence"]),
+        primer_present=None if primer_present is None else bool(primer_present),
         frame_captured_at=str(row["frame_captured_at"]),
         suggested_at=str(row["suggested_at"]),
     )

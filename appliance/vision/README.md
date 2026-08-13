@@ -280,6 +280,40 @@ already carry. Nothing here runs against a real camera or a model trained on
 real frames; every suggestion in this test suite classifies small, fast
 synthetic solid-color images on ordinary CI hardware.
 
+## Primer-presence axis (PI-VISION-010)
+
+A permanently separate signal from `slot`/`confidence`, matching ADR-0013's
+`machine`-actor design intent and SAF-09: primer presence must always
+require a person to confirm, regardless of manufacturer-class confidence or
+any future autonomy configuration (PI-VISION-008), and no configuration
+surface may ever disable that.
+
+- `cs71vision.primer.requires_operator_confirmation(primer_present)` is the
+  single, uncircumventable answer: `True` unless `primer_present` is exactly
+  `False`. It takes no configuration parameter - there is no argument that
+  could ever be passed to bypass it, the same structural non-grant
+  `appliance/web/src/lib/server/auth/capabilities.ts` already uses for
+  `protocol.direct` (declared, never granted to any role).
+- `classifier.Suggestion` and `dataset.SuggestionRecord` both gained a
+  `primer_present: bool | None` field (schema version 5, one additive
+  `ALTER TABLE`, not a mutation of an existing column). It is always `None`
+  today: no trained primer detector exists anywhere in this codebase, since
+  nothing has ever seen a labeled primer example - so nothing may ever
+  fabricate a confident `False` reading. This mirrors SAF-07/SAF-08's own
+  posture: this axis is not "closed" by software evidence.
+- `GET /v1/suggestion` reports both `primer_present` and
+  `requires_confirmation` (computed server-side from the same function, so
+  no caller reimplements the safety logic for itself).
+
+**Web side:** the dashboard shows an explicit primer confirmation notice
+next to the class suggestion whenever `requires_confirmation` is true -
+today, always. This is informational, the same as the suggestion itself:
+nothing here is a gate yet, since every sort still only ever happens
+through the operator's own form submission - there is no autonomous path to
+gate until PI-VISION-008 exists. What this task actually delivers is the
+uncircumventable primitive PI-VISION-008 must consult before it may ever
+attempt one.
+
 ## Camera
 
 `cs71vision.camera.Camera` is a two-method protocol: `read()` returns a
