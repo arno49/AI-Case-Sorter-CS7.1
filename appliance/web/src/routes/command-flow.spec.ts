@@ -166,6 +166,31 @@ describe('pressing stop', () => {
 		const [first, second] = daemon.requests.map((sent) => sent.headers['idempotency-key']);
 		expect(first).not.toBe(second);
 	});
+
+	it('handles concurrent presses independently, under real BFF load', async () => {
+		// PI-SWQ-001 stress test: several distinct browser sessions pressing
+		// stop at the same moment - a real shape of "concurrent BFF load" -
+		// each gets its own render-minted idempotency key and its own
+		// answer; nothing here is a single global slot one request could
+		// clobber for another.
+		daemon.answerWith((_request, response) => {
+			response.writeHead(202, { 'content-type': 'application/json' });
+			response.end(JSON.stringify(acceptedOperation()));
+		});
+		const cookies = await signedIn('operator');
+		const racers = 6;
+		const events = await Promise.all(Array.from({ length: racers }, () => pressStop(cookies)));
+
+		const results = await Promise.all(
+			events.map((event) => dashboardActions.stop(event as never) as Promise<{ state: string }>)
+		);
+
+		expect(results).toHaveLength(racers);
+		expect(results.every((result) => result.state === 'ACCEPTED')).toBe(true);
+		expect(daemon.requests).toHaveLength(racers);
+		const keys = daemon.requests.map((sent) => sent.headers['idempotency-key']);
+		expect(new Set(keys).size).toBe(racers); // every render minted its own key
+	});
 });
 
 describe('when the daemon refuses', () => {

@@ -586,6 +586,52 @@ def test_a_replayed_key_returns_the_original_operation(
     assert first.body["operation_id"] == replayed.body["operation_id"]
 
 
+def test_concurrent_http_replays_of_one_key_never_admit_more_than_one_operation(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    """PI-SWQ-001 stress test: this is the shape "concurrent BFF load" takes
+    on the wire this daemon actually serves - several real HTTP connections
+    over the Unix socket, not just concurrent Python calls into the domain.
+    Every connection sharing one idempotency key must see the same 202 and
+    the same `operation_id`, never a duplicate admission. Kept within the
+    socket's own default listen backlog (`socketserver`'s `request_queue_size`,
+    5) - this test is about idempotent replay under concurrency, not about
+    the separate, real bound on simultaneous pending connections a private,
+    one-client Unix socket deliberately does not over-provision for.
+    """
+    harness = make_api()
+    generation = harness.domain.snapshot.generation
+    responses: list[Response] = []
+    failures: list[BaseException] = []
+    lock = threading.Lock()
+    racers = 4
+    barrier = threading.Barrier(racers)
+
+    def replay() -> None:
+        try:
+            barrier.wait(2.0)
+            response = _command(
+                harness, "/v1/operations/home", _home_payload(), generation=generation
+            )
+            with lock:
+                responses.append(response)
+        except BaseException as exc:  # noqa: BLE001 - reported to the main thread
+            with lock:
+                failures.append(exc)
+
+    threads = [threading.Thread(target=replay) for _ in range(racers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5.0)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert failures == []
+    assert len(responses) == racers
+    assert all(response.status == 202 for response in responses)
+    assert len({response.body["operation_id"] for response in responses}) == 1
+
+
 def test_a_stale_generation_conflicts_without_admitting_anything(
     make_api: Callable[..., ApiHarness],
 ) -> None:

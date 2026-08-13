@@ -8,6 +8,8 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from cs71d.adapters import FEED_LIFECYCLE_GATE
 from cs71d.domain import (
@@ -468,6 +470,31 @@ def test_a_different_actor_reusing_a_key_conflicts(
         harness.submit(key="retry-3", actor=Actor(user_id="someone-else", role="operator"))
 
 
+@settings(
+    max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(
+    first_slot=st.integers(min_value=0, max_value=63),
+    second_slot=st.integers(min_value=0, max_value=63),
+)
+def test_reusing_a_key_for_any_differing_slot_always_conflicts(
+    first_slot: int, second_slot: int, make_harness: Callable[..., Harness]
+) -> None:
+    """PI-SWQ-001 property test: a key bound to one request never silently
+    admits a different one - only an exact repeat is ever a no-conflict replay.
+    """
+    if first_slot == second_slot:
+        return  # not the property under test - equivalent requests must NOT conflict
+    harness = make_harness()
+    harness.home()
+    harness.submit(key="prop-idem", body={"slot": first_slot})
+
+    with pytest.raises(IdempotencyConflictError) as raised:
+        harness.submit(key="prop-idem", body={"slot": second_slot})
+
+    assert raised.value.code == "IDEMPOTENCY_CONFLICT"
+
+
 def test_a_stale_generation_is_rejected_before_any_serial_io(
     make_harness: Callable[..., Harness],
 ) -> None:
@@ -482,6 +509,31 @@ def test_a_stale_generation_is_rejected_before_any_serial_io(
     # Nothing was journaled, nothing was published, nothing reached the wire.
     assert harness.watcher.transitions == ()
     assert harness.sort_commands() == 0
+
+
+@settings(
+    max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(delta=st.integers(min_value=-5000, max_value=5000).filter(lambda value: value != 0))
+def test_any_generation_other_than_the_observed_one_is_always_rejected(
+    delta: int, make_harness: Callable[..., Harness]
+) -> None:
+    """PI-SWQ-001 property test: every generation but the current one is stale.
+
+    One harness reused across every generated `delta` - a rejected submission
+    provably never advances the generation or writes anything (asserted by
+    `test_a_stale_generation_is_rejected_before_any_serial_io` above), so
+    reusing it across examples is exactly as safe as a fresh one each time,
+    at a fraction of the cost of restarting a serial worker per example.
+    """
+    harness = make_harness()
+    current = harness.domain.snapshot.generation
+
+    with pytest.raises(StaleGenerationError) as raised:
+        harness.submit(generation=current + delta, key=f"prop-stale-{delta}")
+
+    assert raised.value.code == "STALE_GENERATION"
+    assert harness.domain.snapshot.generation == current
     assert harness.domain.snapshot.generation == current
 
 
@@ -630,6 +682,59 @@ def test_only_one_command_can_be_admitted_against_one_observed_generation(
     assert harness.simulator.wait_until_scheduled(timeout=1.0)
     harness.simulator.advance(10_000)
     harness.watcher.wait_for(admitted[0].operation_id, OperationState.SUCCEEDED, timeout=5.0)
+
+
+def test_concurrent_submissions_sharing_one_idempotency_key_never_duplicate_execution(
+    make_harness: Callable[..., Harness],
+) -> None:
+    """PI-SWQ-001 stress test: N callers racing the exact same key and body -
+    the shape a resubmitted BFF form under concurrent load actually takes -
+    all observe the one admitted operation, and the command reaches the wire
+    exactly once. `submit`'s replay check runs inside the same admission
+    lock as the admit itself, so this is the property that lock protects.
+    """
+    harness = make_harness(normal_capacity=16)
+    observed = harness.domain.snapshot.generation
+    admitted: list[OperationRecord] = []
+    failures: list[BaseException] = []
+    lock = threading.Lock()
+    racers = 8
+    barrier = threading.Barrier(racers)
+
+    def submit_shared() -> None:
+        try:
+            barrier.wait(2.0)
+            record = harness.submit(
+                OperationAction.HOME,
+                HOME_BODY,
+                key="shared-concurrent-key",
+                generation=observed,
+            )
+            with lock:
+                admitted.append(record)
+        except BaseException as exc:  # noqa: BLE001 - reported to the main thread
+            with lock:
+                failures.append(exc)
+
+    threads = [threading.Thread(target=submit_shared) for _ in range(racers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5.0)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert failures == []
+    assert len(admitted) == racers
+    # Every racer observed the same durable operation - never a duplicate.
+    assert len({record.operation_id for record in admitted}) == 1
+    assert harness.simulator.wait_until_scheduled(timeout=1.0)
+    harness.simulator.advance(10_000)
+    harness.watcher.wait_for(admitted[0].operation_id, OperationState.SUCCEEDED, timeout=5.0)
+    # Every published transition belongs to that one operation - the worker
+    # only ever had one intent to dispatch, whatever its own wire encoding.
+    assert {transition.operation_id for transition in harness.watcher.transitions} == {
+        admitted[0].operation_id
+    }
 
 
 def test_a_priority_stop_creates_an_attributable_operation_and_clears_queued_work(
