@@ -3,3 +3,4 @@ ArduinoCode/.vscode/**
 ArduinoCode/.vscode
 .FCBak
 .pio/
+.venv
