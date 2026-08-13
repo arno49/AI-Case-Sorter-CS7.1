@@ -162,6 +162,18 @@ else
 	log "a service credential already exists; leaving it in place"
 fi
 
+log "== machine actor credential (PI-VISION-007) =="
+# Provisioned unconditionally, the same as the shared credential above, even
+# though cs71d.toml does not enable the machine actor kind by default and
+# nothing yet presents this file (PI-VISION-008): the file existing is not
+# the same thing as the capability being active, and an installation should
+# not have to re-run part of install.sh later just to get it.
+if [ ! -s /etc/cs71d/machine-service-token ]; then
+	write_machine_service_token "$(generate_token)"
+else
+	log "a machine actor credential already exists; leaving it in place"
+fi
+
 log "== building the web workspace on this host =="
 build_web_workspace "$SOURCE_ROOT"
 

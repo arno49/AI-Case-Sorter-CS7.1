@@ -264,8 +264,11 @@ export interface components {
         readonly Actor: {
             /** @description Opaque SvelteKit attribution; not a daemon authentication credential. */
             readonly user_id: string;
-            /** @enum {string} */
-            readonly role: "viewer" | "operator" | "administrator";
+            /**
+             * @description 'machine' (PI-VISION-007, ADR-0013) is the one non-human role: a narrowly-scoped autonomous actor, never a browser session, restricted by the daemon to submitting sort and authenticated with its own distinct service credential - never reachable with the BFF's own credential, and never any other role's, under any configuration.
+             * @enum {string}
+             */
+            readonly role: "viewer" | "operator" | "administrator" | "machine";
         };
         readonly ActorCommand: {
             readonly api_version: components["schemas"]["ApiVersion"];

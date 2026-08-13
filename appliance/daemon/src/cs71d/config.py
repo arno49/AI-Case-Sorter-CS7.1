@@ -29,6 +29,13 @@ PRODUCTION_DEVICE_PATH = "/dev/cs71"
 PRODUCTION_SOCKET_PATH = "/run/cs71/cs71d.sock"
 PRODUCTION_DATABASE_PATH = "/var/lib/cs71d/machine.db"
 PRODUCTION_SERVICE_TOKEN_PATH = "/etc/cs71d/service-token"
+#: The machine actor kind's own credential (PI-VISION-007, ADR-0013) - a
+#: distinct secret from PRODUCTION_SERVICE_TOKEN_PATH, never the BFF's. Kept
+#: optional even in production: an installation may run PI-VISION-007's
+#: daemon capability for years before PI-VISION-008 ever configures anything
+#: to present this credential, and that must not force provisioning a file
+#: nothing yet reads.
+PRODUCTION_MACHINE_SERVICE_TOKEN_PATH = "/etc/cs71d/machine-service-token"
 
 _ALLOWED_FIELDS = {
     "profile",
@@ -37,6 +44,7 @@ _ALLOWED_FIELDS = {
     "socket_path",
     "database_path",
     "service_token_path",
+    "machine_service_token_path",
 }
 
 
@@ -48,6 +56,7 @@ class DaemonConfig:
     socket_path: str
     database_path: str
     service_token_path: str | None = None
+    machine_service_token_path: str | None = None
 
     @classmethod
     def development(cls) -> DaemonConfig:
@@ -58,6 +67,7 @@ class DaemonConfig:
             socket_path="/tmp/cs71/cs71d.sock",
             database_path="/tmp/cs71/machine.db",
             service_token_path=None,
+            machine_service_token_path=None,
         )
 
     @classmethod
@@ -77,6 +87,7 @@ class DaemonConfig:
         socket_path = _required_string(raw, "socket_path")
         database_path = _required_string(raw, "database_path")
         service_token_path = _optional_string(raw, "service_token_path")
+        machine_service_token_path = _optional_string(raw, "machine_service_token_path")
 
         if backend is Backend.SIMULATOR and device_path is not None:
             raise ConfigError("simulator backend cannot specify device_path")
@@ -94,6 +105,14 @@ class DaemonConfig:
                 raise ConfigError(
                     f"production service_token_path must be {PRODUCTION_SERVICE_TOKEN_PATH}"
                 )
+            if (
+                machine_service_token_path is not None
+                and machine_service_token_path != PRODUCTION_MACHINE_SERVICE_TOKEN_PATH
+            ):
+                raise ConfigError(
+                    "production machine_service_token_path must be"
+                    f" {PRODUCTION_MACHINE_SERVICE_TOKEN_PATH} when set"
+                )
         elif backend is Backend.SERIAL:
             raise ConfigError("serial backend is reserved for the production profile")
 
@@ -104,6 +123,7 @@ class DaemonConfig:
             socket_path=socket_path,
             database_path=database_path,
             service_token_path=service_token_path,
+            machine_service_token_path=machine_service_token_path,
         )
 
 

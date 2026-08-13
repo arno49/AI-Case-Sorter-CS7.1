@@ -28,6 +28,7 @@ from cs71d.simulator import SimulatorConfig, SimulatorTransport
 from cs71d.storage_health import DurabilityMonitor, DurabilityThreatError
 
 TOKEN = "installation-local-service-credential"  # noqa: S105 - test fixture, not a secret
+MACHINE_TOKEN = "installation-local-machine-credential"  # noqa: S105 - test fixture, not a secret
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
 OPERATOR = Actor(user_id="opaque-bff-attribution", role="operator")
 
@@ -157,6 +158,7 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
         retention: int = 64,
         heartbeat_ms: int = 60_000,
         durability_monitor: DurabilityMonitor | None = None,
+        machine_service_token: str | None = None,
     ) -> ApiHarness:
         simulators: list[SimulatorTransport] = []
         journal = Journal.open(IN_MEMORY, now=lambda: NOW)
@@ -199,6 +201,7 @@ def make_api() -> Iterator[Callable[..., ApiHarness]]:
             journal,
             socket_path=directory / f"{len(built)}.sock",
             service_token=TOKEN,
+            machine_service_token=machine_service_token,
             now=lambda: NOW,
         )
         server.start()
@@ -526,6 +529,30 @@ def _home_payload(role: str = "operator") -> dict[str, Any]:
     }
 
 
+def _sort_payload(*, role: str = "operator", user_id: str = "u", slot: int = 3) -> dict[str, Any]:
+    return {"api_version": "v1", "actor": {"user_id": user_id, "role": role}, "slot": slot}
+
+
+def _command_with_token(
+    harness: ApiHarness,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    token: str | None,
+    method: str = "POST",
+) -> Response:
+    return harness.client.request(
+        method,
+        path,
+        token=token,
+        headers={
+            **COMMAND_HEADERS,
+            "If-Match-Generation": str(harness.domain.snapshot.generation),
+        },
+        body=json.dumps(payload).encode(),
+    )
+
+
 def test_a_home_command_is_accepted_and_becomes_a_durable_operation(
     make_api: Callable[..., ApiHarness],
 ) -> None:
@@ -685,6 +712,157 @@ def test_a_viewer_may_not_command_the_machine(make_api: Callable[..., ApiHarness
 
     assert response.status == 403
     assert_conforms(response.body, "ForbiddenError")
+
+
+# PI-VISION-007 / ADR-0013: the machine actor kind. Every test below proves
+# one half of a deliberately bidirectional guarantee - the machine role is
+# only ever reachable from its own credential, that credential can only ever
+# be used for the machine role, and the one thing it grants is `sort` and
+# nothing else, under any configuration. See `cs71d.api._commanding_actor`.
+
+
+def test_the_machine_role_may_submit_sort_with_its_own_credential(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+    home = harness.home()
+    harness.terminals.await_terminal(home.operation_id)
+
+    response = _command_with_token(
+        harness,
+        "/v1/operations/sort",
+        _sort_payload(role="machine", user_id="cs71-vision"),
+        token=MACHINE_TOKEN,
+    )
+
+    assert response.status == 202
+    assert_conforms(response.body, "OperationAccepted")
+    recorded = harness.domain.operation(response.body["operation_id"])
+    assert recorded is not None
+    assert recorded.actor.role == "machine"
+
+
+def test_the_machine_role_is_unreachable_when_no_machine_credential_is_configured(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    # Production's own default until PI-VISION-008 ever configures one: no
+    # machine_service_token means nothing to compare a claimed machine role
+    # against, so it is refused no matter which valid token is presented.
+    harness = make_api()
+
+    response = _command_with_token(
+        harness, "/v1/operations/sort", _sort_payload(role="machine"), token=TOKEN
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+def test_the_machine_credential_cannot_claim_a_human_role(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+
+    response = _command_with_token(
+        harness, "/v1/operations/home", _home_payload(role="operator"), token=MACHINE_TOKEN
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+def test_the_bff_credential_cannot_claim_the_machine_role(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+
+    response = _command_with_token(
+        harness, "/v1/operations/sort", _sort_payload(role="machine"), token=TOKEN
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/operations/home", _home_payload(role="machine")),
+        (
+            "/v1/operations/feed",
+            {"api_version": "v1", "actor": {"user_id": "u", "role": "machine"}},
+        ),
+        ("/v1/machine/stop", {"api_version": "v1", "actor": {"user_id": "u", "role": "machine"}}),
+        (
+            "/v1/session/connect",
+            {"api_version": "v1", "actor": {"user_id": "u", "role": "machine"}},
+        ),
+    ],
+)
+def test_the_machine_role_may_never_submit_anything_but_sort(
+    make_api: Callable[..., ApiHarness],
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+
+    response = _command_with_token(harness, path, payload, token=MACHINE_TOKEN)
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+def test_the_machine_role_may_never_change_configuration(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+
+    response = _command_with_token(
+        harness,
+        "/v1/configuration",
+        {
+            "api_version": "v1",
+            "actor": {"user_id": "u", "role": "machine"},
+            "changes": {"heartbeat_interval_ms": 30_000},
+        },
+        token=MACHINE_TOKEN,
+        method="PATCH",
+    )
+
+    assert response.status == 403
+    assert_conforms(response.body, "ForbiddenError")
+
+
+def test_a_machine_attributed_operation_is_distinguishable_in_the_audit_trail(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    """The one thing ARCH-06 requires this actor kind prove: a completed
+    autonomous sort is durably, visibly machine-attributed - never presented
+    as a person's decision."""
+    harness = make_api(machine_service_token=MACHINE_TOKEN)
+    home = harness.home()
+    harness.terminals.await_terminal(home.operation_id)
+
+    admitted = _command_with_token(
+        harness,
+        "/v1/operations/sort",
+        _sort_payload(role="machine", user_id="cs71-vision"),
+        token=MACHINE_TOKEN,
+    )
+    assert admitted.status == 202
+
+    fetched = harness.client.request("GET", f"/v1/operations/{admitted.body['operation_id']}")
+
+    assert fetched.status == 200
+    assert_conforms(fetched.body, "Operation")
+    assert fetched.body["actor"] == {"user_id": "cs71-vision", "role": "machine"}
+
+
+def test_constructing_an_api_server_refuses_an_empty_machine_token(
+    make_api: Callable[..., ApiHarness],
+) -> None:
+    with pytest.raises(ValueError, match="machine_service_token"):
+        make_api(machine_service_token="")
 
 
 @pytest.mark.parametrize("slot", [-1, 64, "3", True])

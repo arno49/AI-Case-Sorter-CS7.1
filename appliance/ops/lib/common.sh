@@ -80,6 +80,20 @@ write_service_tokens() {
 	printf '%s\n' "$token" >/etc/cs71-vision/service-token
 }
 
+# The machine actor kind's own credential (PI-VISION-007, ADR-0013) - a
+# distinct secret from write_service_tokens' shared one, held by only the two
+# identities that ever need it: cs71d (which validates it) and cs71-vision
+# (which will present it once PI-VISION-008 wires that up). cs71-web never
+# receives this file - it has no legitimate reason to ever act as the
+# machine actor, and must not be able to forge that attribution.
+write_machine_service_token() {
+	local token="$1"
+	install -o cs71d -g cs71d -m 0600 /dev/null /etc/cs71d/machine-service-token
+	printf '%s\n' "$token" >/etc/cs71d/machine-service-token
+	install -o cs71-vision -g cs71-vision -m 0600 /dev/null /etc/cs71-vision/machine-service-token
+	printf '%s\n' "$token" >/etc/cs71-vision/machine-service-token
+}
+
 # $1 source template  $2 destination  remaining args are NAME=value, replacing
 # every @@NAME@@ in the template.
 substitute_template() {

@@ -162,6 +162,49 @@ of "which slot" a sort reached; `cs71-vision`'s self-labeled dataset
 (PI-VISION-002) is what first needed it, reading `/v1/operations` to
 correlate a captured frame with a confirmed outcome.
 
+## The machine actor kind
+
+`role: "machine"` (PI-VISION-007, ADR-0013) is the one non-human role the
+contract's `Actor` schema allows — a narrowly-scoped autonomous actor, never
+a browser session, never any capability a human role already has reused.
+`cs71d.api.COMMANDING_ROLES` includes it, but two further checks in
+`_commanding_actor` exist for no other role:
+
+- **The claimed role and the authenticating identity must agree, both
+  ways.** `ApiServer.authenticate()` now returns a `ServiceIdentity`
+  (`BFF` or `MACHINE`) — which of up to two distinct bearer secrets was
+  actually presented, never inferred from the request body. A request
+  claiming `role: "machine"` while authenticated as `BFF` is refused, and
+  a request authenticated as `MACHINE` claiming any other role is refused
+  too. Without this, "the body says machine" would be nothing more than a
+  self-declaration any caller holding the ordinary shared credential could
+  make; with it, the machine role is only ever real when the distinct
+  machine credential was actually presented.
+- **It may only ever submit `sort`.** Every other command path —
+  `home`/`feed`/`stop`/`connect`/`recover`/`configure` — is refused for the
+  machine role regardless of which credential presented it, under any
+  configuration. This is checked at the same boundary as the role-vs-human
+  gate, not left to a caller's discipline.
+
+The machine credential (`machine_service_token_path` in `cs71d.toml`,
+`ApiServer(machine_service_token=...)`) is optional, including in the
+production profile: an installation may run this daemon capability for a
+long time before anything is configured to present it — PI-VISION-007 adds
+the daemon-side capability and the credential file's provisioning
+(`appliance/ops/lib/common.sh#write_machine_service_token`, two files this
+time, `cs71d` and `cs71-vision` only, never `cs71-web`); PI-VISION-008 is
+what actually configures `cs71-vision` to use it. `None` (unconfigured)
+means the machine role is unreachable no matter what a request claims,
+since there is nothing to authenticate a `MACHINE` identity against.
+
+A machine-attributed operation is durably and visibly distinguishable: the
+journal's `actor_role` column and every API response's `actor.role` carry
+`"machine"` exactly the way a human role's own value would, satisfying
+ARCH-06's own requirement without any journal schema change — `Actor` was
+already `{user_id: str, role: str}` with no enum constraint at that layer,
+so a new role value needed no migration, only the API boundary's own
+vocabulary (`COMMANDING_ROLES`, `API_ROLES`) to grow.
+
 ## Operation adapters and firmware gates
 
 The worker gathers the required snapshots — advertised capabilities and

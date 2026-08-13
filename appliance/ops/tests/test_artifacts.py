@@ -25,6 +25,8 @@ PRODUCTION_WEB_DATABASE_PATH = "/var/lib/cs71-web/web.db"
 PRODUCTION_DEVICE_PATH = "/dev/cs71"
 DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71d/service-token"
 WEB_SERVICE_TOKEN_PATH = "/etc/cs71-web/service-token"
+MACHINE_SERVICE_TOKEN_PATH = "/etc/cs71d/machine-service-token"
+VISION_MACHINE_SERVICE_TOKEN_PATH = "/etc/cs71-vision/machine-service-token"
 DAEMON_CONFIG_PATH = "/etc/cs71/cs71d.toml"
 BACKUP_MARKER_PATH = "/var/lib/cs71d/backup-status.json"
 PRODUCTION_CAMERA_DEVICE_PATH = "/dev/cs71vision"
@@ -366,6 +368,15 @@ class InstallScriptIsConsistentWithTheUnitsAndTheCode(unittest.TestCase):
         self.assertIn(WEB_SERVICE_TOKEN_PATH, common)
         self.assertIn(VISION_SERVICE_TOKEN_PATH, common)
 
+    def test_writes_the_machine_credential_to_only_daemon_and_vision(self) -> None:
+        common = (OPS_DIR / "lib/common.sh").read_text(encoding="utf-8")
+        self.assertIn(MACHINE_SERVICE_TOKEN_PATH, common)
+        self.assertIn(VISION_MACHINE_SERVICE_TOKEN_PATH, common)
+        # cs71-web never receives this credential: it has no legitimate
+        # reason to ever act as the machine actor kind (PI-VISION-007).
+        write_machine_service_token = common[common.index("write_machine_service_token()") :]
+        self.assertNotIn("cs71-web", write_machine_service_token.split("\n}", 1)[0])
+
     def test_names_every_production_path_it_actually_needs_to_write(self) -> None:
         # The socket path and the device path are never installer-supplied:
         # the daemon binds the one production.example.toml already names, and
@@ -471,6 +482,7 @@ class BackupRestoreUpgradeScriptsAgreeWithTheDaemonsDurabilityMonitor(unittest.T
         # either token's path, which is the only way it could touch one.
         self.assertNotIn(DAEMON_SERVICE_TOKEN_PATH, self.backup_text)
         self.assertNotIn(WEB_SERVICE_TOKEN_PATH, self.backup_text)
+        self.assertNotIn(MACHINE_SERVICE_TOKEN_PATH, self.backup_text)
 
     def test_restore_sh_stops_web_before_daemon_and_starts_daemon_before_web(self) -> None:
         stop_index = self.restore_text.index("systemctl stop cs71-web.service")
@@ -543,6 +555,7 @@ class DaemonAndWebConfigAgreeOnTheProductionPaths(unittest.TestCase):
         self.assertIn(f'"{PRODUCTION_SOCKET_PATH}"', text)
         self.assertIn(f'"{PRODUCTION_DAEMON_DATABASE_PATH}"', text)
         self.assertIn(f'"{DAEMON_SERVICE_TOKEN_PATH}"', text)
+        self.assertIn(f'"{MACHINE_SERVICE_TOKEN_PATH}"', text)
 
     def test_web_config_module_still_uses_the_paths_this_suite_assumes(self) -> None:
         text = (
@@ -551,6 +564,9 @@ class DaemonAndWebConfigAgreeOnTheProductionPaths(unittest.TestCase):
         self.assertIn(f"'{PRODUCTION_SOCKET_PATH}'", text)
         self.assertIn(f"'{PRODUCTION_WEB_DATABASE_PATH}'", text)
         self.assertIn(f"'{WEB_SERVICE_TOKEN_PATH}'", text)
+        # cs71-web must never be able to present the machine actor's own
+        # credential - it has no legitimate reason to act as that identity.
+        self.assertNotIn("machine-service-token", text)
 
     def test_production_example_toml_matches_the_fixed_production_paths(self) -> None:
         text = (

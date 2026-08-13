@@ -17,6 +17,7 @@ from cs71d.runtime import Daemon, durability_monitor_for, read_service_token
 from cs71d.storage_health import DiskSpaceMonitor
 
 TOKEN = "installation-local-service-credential"  # noqa: S105 - test fixture, not a secret
+MACHINE_TOKEN = "installation-local-machine-credential"  # noqa: S105 - test fixture, not a secret
 
 
 @pytest.fixture
@@ -27,14 +28,21 @@ def workspace() -> Iterator[Path]:
     shutil.rmtree(directory, ignore_errors=True)
 
 
-def _token_file(directory: Path, *, mode: int = 0o640, content: str = TOKEN) -> Path:
-    path = directory / "service-token"
+def _token_file(
+    directory: Path, *, name: str = "service-token", mode: int = 0o640, content: str = TOKEN
+) -> Path:
+    path = directory / name
     path.write_text(content, encoding="utf-8")
     path.chmod(mode)
     return path
 
 
-def _config(directory: Path, *, token_path: Path | None) -> DaemonConfig:
+def _config(
+    directory: Path,
+    *,
+    token_path: Path | None,
+    machine_token_path: Path | None = None,
+) -> DaemonConfig:
     return DaemonConfig(
         profile=Profile.DEVELOPMENT,
         backend=Backend.SIMULATOR,
@@ -42,6 +50,9 @@ def _config(directory: Path, *, token_path: Path | None) -> DaemonConfig:
         socket_path=str(directory / "cs71d.sock"),
         database_path=str(directory / "machine.db"),
         service_token_path=None if token_path is None else str(token_path),
+        machine_service_token_path=(
+            None if machine_token_path is None else str(machine_token_path)
+        ),
     )
 
 
@@ -142,6 +153,37 @@ def test_a_failed_start_releases_what_it_already_opened(workspace: Path) -> None
             _ = second.api
     finally:
         occupied.close(timeout=2.0)
+
+
+def test_the_daemon_runs_with_no_machine_credential_configured(workspace: Path) -> None:
+    # PI-VISION-007's own default: nothing changes for an installation that
+    # never sets machine_service_token_path.
+    config = _config(workspace, token_path=_token_file(workspace))
+    daemon = Daemon(config)
+    daemon.start(timeout=2.0)
+    try:
+        assert _get(config.socket_path, "/v1/health/live")[0] == 200
+    finally:
+        daemon.close(timeout=2.0)
+
+
+def test_the_daemon_accepts_a_configured_machine_credential(workspace: Path) -> None:
+    config = _config(
+        workspace,
+        token_path=_token_file(workspace),
+        machine_token_path=_token_file(
+            workspace, name="machine-service-token", content=MACHINE_TOKEN
+        ),
+    )
+    daemon = Daemon(config)
+    daemon.start(timeout=2.0)
+    try:
+        # A read needs only a valid credential, not a particular role or
+        # identity - this proves runtime.py actually read and wired the
+        # second, distinct file through to a working ApiServer.
+        assert _get(config.socket_path, "/v1/health/live", token=MACHINE_TOKEN)[0] == 200
+    finally:
+        daemon.close(timeout=2.0)
 
 
 def test_check_config_still_validates_without_serving(capsys: pytest.CaptureFixture[str]) -> None:
