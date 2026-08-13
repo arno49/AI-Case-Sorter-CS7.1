@@ -51,6 +51,19 @@ async function pressStop(cookies: CookieJar): Promise<RequestEvent> {
 	return event;
 }
 
+/** A manual command submitted from the dashboard, through the hook. */
+async function pressCommand(
+	cookies: CookieJar,
+	extra: Record<string, string> = {}
+): Promise<RequestEvent> {
+	const event = request('/', cookies, {
+		form: { [CSRF_FIELD]: csrfFor(cookies), generation: '41', idempotency_key: 'x', ...extra },
+		routeId: '/'
+	});
+	await throughHook(event);
+	return event;
+}
+
 function asLoadEvent(event: RequestEvent): ServerLoadEvent {
 	return event as unknown as ServerLoadEvent;
 }
@@ -190,6 +203,27 @@ describe('pressing stop', () => {
 		expect(daemon.requests).toHaveLength(racers);
 		const keys = daemon.requests.map((sent) => sent.headers['idempotency-key']);
 		expect(new Set(keys).size).toBe(racers); // every render minted its own key
+	});
+});
+
+describe('operating the machine requires machine.operate', () => {
+	// PI-SWQ-002: manual-controls-page.spec.ts already proves a viewer never
+	// sees these controls; that is a UI courtesy, not the authorization
+	// boundary. These prove the server itself refuses a forged direct POST,
+	// the same way recovery-page.spec.ts already proves for machine.recover.
+	it.each([
+		['connect', {}],
+		['home', { target: 'both' }],
+		['sort', { slot: '3' }],
+		['feed', {}]
+	] as const)('refuses %s from a viewer, sending nothing to the daemon', async (control, extra) => {
+		const cookies = await signedIn('viewer');
+		const event = await pressCommand(cookies, extra);
+
+		await expect(dashboardActions[control](event as never)).rejects.toMatchObject({
+			status: 403
+		});
+		expect(daemon.requests).toHaveLength(0);
 	});
 });
 

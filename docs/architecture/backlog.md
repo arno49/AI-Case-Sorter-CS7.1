@@ -856,10 +856,92 @@ upload retains it.
 
 **Goal:** review attack controls and operator usability. **Implementation notes:** include manual assistive-technology sample as release input. **Dependencies:** PI-SWQ-001. **Hardware required:** No. **Size:** M.
 
-- Automated tests cover authentication, session revocation, RBAC, CSRF, rate limits and secret redaction.
-- Socket exposure/service-permission verification is recorded for staging Pi profile.
-- MVP browser flows meet automated WCAG 2.2 AA checks and keyboard navigation checks.
-- Manual review documents stop/recovery/fault announcements and any remediation before pilot.
+Same discipline as PI-SWQ-001: distinguish what nine prior epics
+(PI-WEB-001/002, PI-UI-001/002, PI-OPS-001) already built from what this
+task actually needed to add, and only add the latter.
+
+**Authentication/session revocation/CSRF/rate limits/secret redaction
+(bullet 1) - already thorough before this task, cross-reference only.**
+`sessions.spec.ts` (20 tests) already covers revocation, revoke-everywhere
+(`revokeSessionsForUser`), rotation-revokes-the-replaced-session, and a
+database-level invariant that a revoked session cannot be un-revoked.
+`passwords.spec.ts` covers Argon2id encoding/salting/timing-safe failure.
+`csrf-flow.spec.ts` exercises the real hook's `guardStateChange`, applied
+centrally to every state-changing request before routing (`hooks.server.ts`)
+- not a per-route opt-in, so one spec against the real hook already proves
+it for every route by construction. `limits.ts`'s `RateLimiter`/
+`ConcurrencyLimit` were already implemented and wired into the hook and the
+login action, with full unit coverage (`limits.spec.ts`) and real-hook
+coverage (`csrf-flow.spec.ts`); rate limiting was not a gap. Secret
+redaction: `command-flow.spec.ts`'s `'holds no credential, cookie or token
+of any kind'` already asserts the audit trail never contains a password,
+CSRF token or cookie value.
+
+**RBAC (bullet 1) - one genuine gap found and closed.** `policy.spec.ts`
+is exhaustive over the *route* table, but `policy.ts` documents its own
+boundary: "the table cannot express a per-action rule." Routes like `/`
+mix capabilities per action (`stop`→`machine.stop`, `recover`→
+`machine.recover`, but `connect`/`home`/`sort`/`feed`→`machine.operate`).
+`recover` already had a direct negative test; `connect`/`home`/`sort`/
+`feed` did not - `manual-controls-page.spec.ts` only proved the UI *hides*
+these controls from an under-privileged role, never that a forged direct
+POST is refused. New: `command-flow.spec.ts`'s `'operating the machine
+requires machine.operate'` (parametrized over all four actions), proving a
+viewer's forged POST is refused with 403 before anything reaches the
+daemon.
+
+**Socket exposure (bullet 2) - already recorded, and "staging Pi profile"
+resolved as a wording gap, not a hardware gate like PI-SWQ-001's NFR-01/02.**
+`smoke-test.sh` already asserts both daemon and vision socket mode
+(`660`)/ownership under `sudo` on plain `ubuntu-latest`
+(`EVIDENCE_CLASS: SOFTWARE_SIMULATOR_ONLY`), and `test_artifacts.py` adds
+static structural checks explicitly documented as needing "no Pi, root, or
+even Linux." Confirmed: no `staging` profile exists anywhere in
+`cs71d.config`/`web/.../config.ts` - only `development`/`production`.
+Unlike NFR-01/02's real Pi-5 timing requirement, Unix socket permission
+bits are OS-level, not hardware-specific, and this repo's only CI runner
+type (generic Linux) already evidences them. "Staging Pi profile" reads as
+loose language for "the production software profile, deployed to a Pi
+ahead of pilot" - the same target `PI-OPS-001`/`PI-OPS-002` already build
+and verify, not a distinct software concept this task needed to invent.
+
+**Accessibility (bullet 3) - genuine net-new tooling, not a gap in
+existing tests.** No axe-core, Playwright, or any automated WCAG-checking
+tool existed anywhere in this codebase before this task; page tests render
+via `svelte/server` into a plain HTML string with no DOM at all.
+`appliance/web/src/routes/accessibility.ts` adds `checkAccessibility`: a
+fresh, isolated jsdom window per check (axe-core loaded as a real
+`<script>` inside that window - reusing one `axe` instance across
+documents corrupts its internal state, confirmed by hand before settling
+on this design) running axe-core's WCAG 2.1/2.2 A/AA rule set. New devDependencies:
+`axe-core`, `jsdom`, `@types/jsdom`. Wired into every MVP page's own spec
+(`/`, `/dataset`, `/routing` in both its active and inactive states,
+`/system`, `/operations`, `/login`) - all pass with zero violations today.
+`document-title`/`html-has-lang` are deliberately disabled: `render()`
+only ever returns one component's own body fragment, and those two rules
+are the static page shell's (`src/app.html`) job, not any page component's.
+Keyboard navigation: `focusOrderIsDocumentOrder` already existed
+(PI-UI-001/002) for the dashboard/manual-controls/recovery/operations
+pages; extended to `/dataset` and `/routing`, the two pages with
+interactive forms that had not been covered.
+
+**Manual review (bullet 4) - a real template, deliberately not a
+completed review.** No AI process can operate a screen reader or claim a
+human's judgment about what was actually announced, so this task does not
+fabricate one. `docs/architecture/manual-accessibility-review.md` is a new
+document enumerating every `role="alert"`/`role="status"` live region in
+the current codebase (extracted by reading every component, not written
+from memory), grouped by page, with session-record/findings/remediation/
+sign-off tables to fill in - matching this project's own "template, not a
+claim" discipline for HIL/DTR/pilot evidence. **This bullet stays
+unchecked below.** Closing it needs an actual reviewer session with real
+assistive technology, the same way NFR-01/02 needed an actual Raspberry Pi
+5.
+
+- [x] Automated tests cover authentication, session revocation, RBAC, CSRF, rate limits and secret redaction.
+- [x] Socket exposure/service-permission verification is recorded for staging Pi profile.
+- [x] MVP browser flows meet automated WCAG 2.2 AA checks and keyboard navigation checks.
+- [ ] Manual review documents stop/recovery/fault announcements and any remediation before pilot. **Template built (`manual-accessibility-review.md`), enumerating every live region in the current codebase; no reviewer session has been run yet, so this is not claimed as complete.**
 
 ## Epic PI-HIL — Hardware qualification
 
