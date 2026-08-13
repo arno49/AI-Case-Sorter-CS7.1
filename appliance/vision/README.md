@@ -372,6 +372,51 @@ class may ever be sorted autonomously until an installation explicitly
 configures one, per class, after reviewing that class's own recorded
 evidence.
 
+## Configurable routing profiles (PI-VISION-009)
+
+Before this task, "manufacturer class" and "physical chute" were the same
+integer everywhere in this codebase - `classify_frame`'s own output,
+`Suggestion.slot`, `example.slot`, all of it - with zero indirection,
+because Phase 0's dataset recorded exactly what the operator's own manual
+sort actually reached. Several dozen manufacturer classes do not fit 8-10
+physical chutes, and different runs want different mappings (ADR-0013);
+this module is the missing layer between a class label and the chute a
+suggestion or an autonomous sort actually targets.
+
+- `cs71vision.routing.RoutingSession` owns the one active run, if any -
+  shared between the api server (`start`/`stop`/`snapshot`, on request
+  threads) and the suggestion loop (`route`, on its own thread), the same
+  "one shared, lock-guarded object" shape `DatasetStore` already uses.
+  `route(class_id)` is the identity function whenever no run is active, so
+  nothing about existing behaviour changes unless an operator explicitly
+  starts one.
+- Three profile shapes, matching ADR-0013 exactly: `FixedMapProfile` (an
+  explicit class-to-chute map plus one overflow chute for everything else),
+  `DynamicProfile` (the first N distinct classes seen in this run claim a
+  chute, in order, from N chutes named up front), and `TwoPassProfile` (the
+  same shape as fixed, plus an optional `source_group` naming which prior
+  pass's output chute this run refines - for display/audit only; this
+  software does not and cannot verify that a second pass's physical input
+  really came from that chute).
+- `FrameSuggester` routes the classifier's raw output before it is ever
+  stored or suggested (`classifier.Router`, PI-VISION-009's own addition to
+  PI-VISION-006's suggester). Because the routed value becomes
+  `suggested_slot`, live suggestion accuracy (PI-VISION-006) and autonomous
+  sort (PI-VISION-008) both automatically operate in routed space with zero
+  changes to either - an operator's actual sort is still compared to what
+  was suggested, now correctly comparing chute to chute.
+- `GET /v1/routing` (state and live legend), `POST /v1/routing/start`
+  (replaces any previous run entirely - never merges), `POST /v1/routing/stop`
+  (idempotent: stopping with no active run is not an error).
+
+**Web side:** `/routing` lets an operator start any of the three profile
+shapes and see the live chute<->class legend and, per ADR-0013's "the
+active profile is visible throughout the run", the dashboard shows a
+one-line notice whenever a run is active, linking to the details. Starting
+or stopping a run is gated on `machine.operate`, not `vision.train`: it
+shapes where a live sort actually lands, the same operational weight as
+connect/home/sort/feed, not a model-quality decision.
+
 ## Camera
 
 `cs71vision.camera.Camera` is a two-method protocol: `read()` returns a

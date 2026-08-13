@@ -13,6 +13,7 @@ import pytest
 
 from cs71vision.api import Trainable, VisionApiServer
 from cs71vision.dataset import IN_MEMORY, DatasetStore, TrainedCandidate
+from cs71vision.routing import RoutingSession
 
 TOKEN = "cs71-vision-test-credential"  # noqa: S105 - test fixture, not a secret
 START = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
@@ -130,6 +131,7 @@ def _server(
     minimum_examples_per_class: int = 40,
     training_job: Trainable | None = None,
     autonomy_thresholds: dict[int, float] | None = None,
+    routing: RoutingSession | None = None,
     now: Callable[[], datetime] = lambda: START,
 ) -> VisionApiServer:
     return VisionApiServer(
@@ -139,6 +141,7 @@ def _server(
         minimum_examples_per_class=minimum_examples_per_class,
         training_job=training_job if training_job is not None else FakeTrainingJob(),
         autonomy_thresholds=autonomy_thresholds if autonomy_thresholds is not None else {},
+        routing=routing,
         now=now,
     )
 
@@ -751,5 +754,233 @@ def test_autonomous_review_refuses_a_missing_body(workspace: Path) -> None:
 
         assert status == 400
         assert body["code"] == "VALIDATION_FAILED"
+    finally:
+        server.close()
+
+
+def test_routing_reports_inactive_before_any_run_starts(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/routing")
+
+        assert status == 200
+        assert body == {
+            "api_version": "v1",
+            "active": False,
+            "kind": None,
+            "started_at": None,
+            "source_group": None,
+            "legend": [],
+        }
+    finally:
+        server.close()
+
+
+def test_routing_start_fixed_reports_the_map_and_one_overflow_entry(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "fixed",
+                "class_to_slot": {"12": 3, "45": 5},
+                "overflow_slot": 7,
+            },
+        )
+
+        assert status == 200
+        assert body["active"] is True
+        assert body["kind"] == "fixed"
+        assert body["source_group"] is None
+        # _legend_for already sorts by slot - fixed/two-pass legends are
+        # deterministic, not just "eventually consistent" in some order.
+        assert body["legend"] == [
+            {"slot": 3, "class_id": 12, "overflow": False},
+            {"slot": 5, "class_id": 45, "overflow": False},
+            {"slot": 7, "class_id": None, "overflow": True},
+        ]
+    finally:
+        server.close()
+
+
+def test_routing_start_fixed_refuses_an_overflow_slot_that_is_also_mapped(
+    workspace: Path,
+) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "fixed",
+                "class_to_slot": {"12": 3},
+                "overflow_slot": 3,
+            },
+        )
+
+        assert status == 400
+        assert body["code"] == "VALIDATION_FAILED"
+    finally:
+        server.close()
+
+
+def test_routing_start_dynamic_reports_kind_and_no_claims_yet(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={"api_version": "v1", "kind": "dynamic", "available_slots": [1, 2, 3]},
+        )
+
+        assert status == 200
+        assert body["kind"] == "dynamic"
+        assert body["legend"] == []
+    finally:
+        server.close()
+
+
+def test_routing_start_two_pass_reports_its_source_group(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "two_pass",
+                "class_to_slot": {"12": 3},
+                "overflow_slot": 7,
+                "source_group": 9,
+            },
+        )
+
+        assert status == 200
+        assert body["kind"] == "two_pass"
+        assert body["source_group"] == 9
+    finally:
+        server.close()
+
+
+def test_routing_start_two_pass_source_group_is_optional(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "two_pass",
+                "class_to_slot": {"12": 3},
+                "overflow_slot": 7,
+            },
+        )
+
+        assert status == 200
+        assert body["source_group"] is None
+    finally:
+        server.close()
+
+
+def test_routing_start_refuses_an_unknown_kind(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={"api_version": "v1", "kind": "unknown"},
+        )
+
+        assert status == 400
+        assert body["code"] == "VALIDATION_FAILED"
+    finally:
+        server.close()
+
+
+def test_routing_start_refuses_extra_fields(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "dynamic",
+                "available_slots": [1],
+                "note": "extra",
+            },
+        )
+
+        assert status == 400
+        assert body["code"] == "VALIDATION_FAILED"
+    finally:
+        server.close()
+
+
+def test_routing_stop_deactivates_the_run(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={"api_version": "v1", "kind": "dynamic", "available_slots": [1]},
+        )
+
+        status, body = _post(server.socket_path, "/v1/routing/stop")
+
+        assert status == 200
+        assert body["active"] is False
+        assert _get(server.socket_path, "/v1/routing")[1]["active"] is False
+    finally:
+        server.close()
+
+
+def test_routing_stop_without_an_active_run_is_a_noop_not_an_error(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(server.socket_path, "/v1/routing/stop")
+
+        assert status == 200
+        assert body["active"] is False
+    finally:
+        server.close()
+
+
+def test_routing_start_replaces_the_previous_run_entirely(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={"api_version": "v1", "kind": "dynamic", "available_slots": [1]},
+        )
+
+        status, body = _post(
+            server.socket_path,
+            "/v1/routing/start",
+            body={
+                "api_version": "v1",
+                "kind": "fixed",
+                "class_to_slot": {"5": 2},
+                "overflow_slot": 9,
+            },
+        )
+
+        assert status == 200
+        assert body["kind"] == "fixed"
     finally:
         server.close()

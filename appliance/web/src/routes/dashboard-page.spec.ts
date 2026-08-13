@@ -95,9 +95,21 @@ interface PageSuggestion {
 	readonly requiresConfirmation: boolean;
 }
 
+interface PageRouting {
+	readonly active: boolean;
+	readonly kind: 'fixed' | 'dynamic' | 'two_pass' | null;
+	readonly startedAt: string | null;
+	readonly sourceGroup: number | null;
+	readonly legend: readonly unknown[];
+}
+
 function rendered(
 	view: MachineSnapshot | null,
-	options: { form?: PageForm; suggestion?: PageSuggestion | null } = {}
+	options: {
+		form?: PageForm;
+		suggestion?: PageSuggestion | null;
+		routing?: PageRouting | null;
+	} = {}
 ): string {
 	return render(Page as never, {
 		props: {
@@ -108,7 +120,8 @@ function rendered(
 				csrfToken: 'a-token-for-this-browser',
 				snapshot: view,
 				unavailable: view === null ? 'The machine service is not answering.' : null,
-				suggestion: options.suggestion ?? null
+				suggestion: options.suggestion ?? null,
+				routing: options.routing ?? null
 			},
 			form: options.form ?? null
 		} as never
@@ -262,6 +275,28 @@ describe('what the dashboard shows', () => {
 		});
 
 		expect(fieldText(html, 'vision-primer-notice')).toEqual([]);
+	});
+
+	it('shows the active routing profile throughout the run', () => {
+		const html = rendered(snapshot(), {
+			routing: {
+				active: true,
+				kind: 'fixed',
+				startedAt: '2026-08-11T12:00:00.000Z',
+				sourceGroup: null,
+				legend: []
+			}
+		});
+
+		expect(fieldText(html, 'routing-active-notice').join(' ')).toContain('fixed');
+	});
+
+	it('shows no routing notice when no run is active', () => {
+		const html = rendered(snapshot(), {
+			routing: { active: false, kind: null, startedAt: null, sourceGroup: null, legend: [] }
+		});
+
+		expect(fieldText(html, 'routing-active-notice')).toEqual([]);
 	});
 });
 

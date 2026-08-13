@@ -40,6 +40,11 @@ export const ROUTE_POLICIES: RoutePolicies = Object.freeze({
 	 *  of cs71d's; nothing here is a command either - training itself is
 	 *  PI-VISION-004/005's `vision.train` capability, not this one. */
 	'/dataset': { access: 'capability', capability: 'machine.read' },
+	/** The active routing run and its live legend (PI-VISION-009). A read of
+	 *  cs71-vision's own state, same precedent as `/dataset`'s; starting or
+	 *  stopping a run is `machine.operate`, checked inside the action, since
+	 *  it shapes where a live sort actually lands. */
+	'/routing': { access: 'capability', capability: 'machine.read' },
 	'/login': { access: 'public' },
 	'/logout': { access: 'authenticated' }
 });

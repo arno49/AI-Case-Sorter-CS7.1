@@ -137,6 +137,43 @@ export interface AutonomousReviewResult {
 	readonly reviewedAt: string;
 }
 
+/**
+ * One row of the chute<->class legend (PI-VISION-009, ADR-0013).
+ *
+ * `classId` is null only for the one overflow entry a fixed/two-pass
+ * profile carries - "everything not named above", not a claim about a
+ * specific class. A dynamic profile's not-yet-claimed chutes are absent
+ * entirely, never listed with a fabricated class.
+ */
+export interface RoutingLegendEntry {
+	readonly slot: number;
+	readonly classId: number | null;
+	readonly overflow: boolean;
+}
+
+export type RoutingProfileRequest =
+	| {
+			readonly kind: 'fixed';
+			readonly classToSlot: Readonly<Record<number, number>>;
+			readonly overflowSlot: number;
+	  }
+	| { readonly kind: 'dynamic'; readonly availableSlots: readonly number[] }
+	| {
+			readonly kind: 'two_pass';
+			readonly classToSlot: Readonly<Record<number, number>>;
+			readonly overflowSlot: number;
+			readonly sourceGroup?: number;
+	  };
+
+/** The active routing run, if any - `active: false` means every other field is empty/null. */
+export interface RoutingState {
+	readonly active: boolean;
+	readonly kind: 'fixed' | 'dynamic' | 'two_pass' | null;
+	readonly startedAt: string | null;
+	readonly sourceGroup: number | null;
+	readonly legend: readonly RoutingLegendEntry[];
+}
+
 export interface VisionClientOptions {
 	readonly socketPath: string;
 	readonly serviceTokenPath: string;
@@ -251,6 +288,41 @@ export class VisionClient {
 			throw rejection(reply.status, reply.body);
 		}
 		return parseAutonomousReviewResult(reply.body, reply.status);
+	}
+
+	/** The active routing run, if any, and its live chute<->class legend. */
+	async routing(): Promise<RoutingState> {
+		const reply = await this.#get('/v1/routing');
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseRoutingState(reply.body, reply.status);
+	}
+
+	/**
+	 * Start a new routing run, replacing any previous one entirely
+	 * (PI-VISION-009). `cs71-vision` validates the profile itself
+	 * (`RoutingError` -> `VALIDATION_FAILED`) - this method only shapes the
+	 * wire body, it does not re-check what the profile means.
+	 */
+	async startRouting(profile: RoutingProfileRequest): Promise<RoutingState> {
+		const reply = await this.#post(
+			'/v1/routing/start',
+			JSON.stringify({ api_version: API_VERSION, ...routingProfileWireBody(profile) })
+		);
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseRoutingState(reply.body, reply.status);
+	}
+
+	/** End the active routing run. A no-op, not an error, when none is active. */
+	async stopRouting(): Promise<RoutingState> {
+		const reply = await this.#post('/v1/routing/stop');
+		if (reply.status !== 200) {
+			throw rejection(reply.status, reply.body);
+		}
+		return parseRoutingState(reply.body, reply.status);
 	}
 
 	async #get(path: string): Promise<DaemonReply> {
@@ -626,6 +698,70 @@ function parseAutonomousReviewResult(body: unknown, status: number): AutonomousR
 		});
 	}
 	return { attemptId, correct, reviewedAt };
+}
+
+function routingProfileWireBody(profile: RoutingProfileRequest): Record<string, unknown> {
+	if (profile.kind === 'dynamic') {
+		return { kind: 'dynamic', available_slots: profile.availableSlots };
+	}
+	const wire: Record<string, unknown> = {
+		kind: profile.kind,
+		class_to_slot: profile.classToSlot,
+		overflow_slot: profile.overflowSlot
+	};
+	if (profile.kind === 'two_pass' && profile.sourceGroup !== undefined) {
+		wire.source_group = profile.sourceGroup;
+	}
+	return wire;
+}
+
+function parseRoutingState(body: unknown, status: number): RoutingState {
+	const record = asRecord(body);
+	const active = record?.active;
+	const kind = record?.kind;
+	const startedAt = record?.started_at;
+	const sourceGroup = record?.source_group;
+	const legend = record?.legend;
+	if (
+		record?.api_version !== API_VERSION ||
+		typeof active !== 'boolean' ||
+		(kind !== null && kind !== 'fixed' && kind !== 'dynamic' && kind !== 'two_pass') ||
+		(startedAt !== null && typeof startedAt !== 'string') ||
+		(sourceGroup !== null && typeof sourceGroup !== 'number') ||
+		!Array.isArray(legend)
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered without the expected routing shape'
+		});
+	}
+	return {
+		active,
+		kind,
+		startedAt,
+		sourceGroup,
+		legend: legend.map((item) => parseRoutingLegendEntry(item, status))
+	};
+}
+
+function parseRoutingLegendEntry(item: unknown, status: number): RoutingLegendEntry {
+	const record = asRecord(item);
+	const slot = record?.slot;
+	const classId = record?.class_id;
+	const overflow = record?.overflow;
+	if (
+		typeof slot !== 'number' ||
+		(classId !== null && typeof classId !== 'number') ||
+		typeof overflow !== 'boolean'
+	) {
+		throw new VisionError({
+			kind: 'malformed',
+			status,
+			detail: 'cs71-vision answered with an unusable routing legend entry'
+		});
+	}
+	return { slot, classId, overflow };
 }
 
 function asRecord(body: unknown): Record<string, unknown> | undefined {

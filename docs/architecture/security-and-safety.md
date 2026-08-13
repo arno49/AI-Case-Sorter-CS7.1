@@ -19,7 +19,7 @@ Attack surfaces are HTTPS forms/SSE, Caddy configuration, Node dependency tree, 
 | --- | :---: | :---: | :---: |
 | Read snapshot/history/faults | yes | yes | yes |
 | Software stop | yes | yes | yes |
-| Connect, home, sort, feed | no | yes | yes |
+| Connect, home, sort, feed, start/stop a routing run (PI-VISION-009) | no | yes | yes |
 | Retrain/activate/roll back classifier model (`vision.train`) | no | yes | yes |
 | Recovery/reset | no | no | yes, explicit confirmation |
 | Change permitted configuration | no | no | yes |

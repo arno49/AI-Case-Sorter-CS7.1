@@ -13,6 +13,7 @@ from types import FrameType
 from .camera import Frame
 from .config import ConfigError, load_config
 from .correlator import FrameBuffer
+from .routing import RoutingSession
 from .runtime import (
     CaptureLoop,
     build_api_server,
@@ -59,12 +60,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     buffer = FrameBuffer()
+    # One shared instance: a routing run started through the api server is
+    # the run the suggestion loop actually routes against (PI-VISION-009).
+    routing = RoutingSession()
     try:
         camera = build_camera(config)
         correlation_loop = build_correlation_loop(config, buffer)
-        suggestion_loop = build_suggestion_loop(config, buffer)
+        suggestion_loop = build_suggestion_loop(config, buffer, routing=routing)
         autonomy_loop = build_autonomy_loop(config)
-        api_server = build_api_server(config)
+        api_server = build_api_server(config, routing=routing)
     except Exception as exc:  # noqa: BLE001 - startup failure paths are device-specific
         print(f"cs71vision: startup failed: {exc}", file=sys.stderr)
         return 1

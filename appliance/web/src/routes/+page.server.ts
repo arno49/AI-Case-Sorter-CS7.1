@@ -29,6 +29,10 @@
  * shown as no suggestion, not as an error banner, because sorting does not
  * depend on `cs71-vision` at all (ADR-0013) and this screen must not imply
  * otherwise.
+ *
+ * The active routing profile (PI-VISION-009), if any, is read the same
+ * silent-on-failure way - "the active profile is visible throughout the
+ * run" (ADR-0013) means this dashboard, not only `/routing`'s own page.
  */
 
 import { fail, type Actions, type RequestEvent, type ServerLoad } from '@sveltejs/kit';
@@ -47,7 +51,7 @@ import {
 } from '$lib/server/daemon/client';
 import { DaemonError, safeResponseFor } from '$lib/server/daemon/errors';
 import { webRuntime } from '$lib/server/runtime';
-import type { Suggestion } from '$lib/server/vision';
+import type { RoutingState, Suggestion } from '$lib/server/vision';
 
 /** What this workspace calls the intent, in audit entries and nowhere on the wire. */
 const STOP_ACTION = 'machine.stop';
@@ -80,6 +84,14 @@ export const load: ServerLoad = async ({ locals }) => {
 		reportToServerLog(error, locals.requestId);
 	}
 
+	let routing: RoutingState | null = null;
+	try {
+		routing = await vision.routing();
+	} catch (error) {
+		// Silent by design, same reasoning as the suggestion read above.
+		reportToServerLog(error, locals.requestId);
+	}
+
 	const capabilities = locals.user === null ? [] : capabilitiesFor(locals.user.role);
 
 	return {
@@ -90,6 +102,7 @@ export const load: ServerLoad = async ({ locals }) => {
 		snapshot,
 		unavailable,
 		suggestion,
+		routing,
 		// One key per command form, fresh for this render: resubmitting the form
 		// this response carries is the same command, and the next render is a new
 		// intent. Minted only for a role that can use them.

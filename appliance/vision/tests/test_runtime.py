@@ -24,6 +24,7 @@ from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
 from cs71vision.daemon_client import DaemonClient
 from cs71vision.dataset import IN_MEMORY, DatasetExample, DatasetStore, TrainedCandidate
+from cs71vision.routing import RoutingSession
 from cs71vision.runtime import (
     AutonomyLoop,
     CaptureLoop,
@@ -349,7 +350,7 @@ def test_build_correlation_loop_builds_a_working_loop_given_a_token_path(
 def test_build_api_server_is_none_without_a_token_path() -> None:
     config = VisionConfig.development()
 
-    assert build_api_server(config) is None
+    assert build_api_server(config, routing=RoutingSession()) is None
 
 
 def test_build_api_server_builds_a_working_server_given_a_token_path(
@@ -370,7 +371,7 @@ def test_build_api_server_builds_a_working_server_given_a_token_path(
         minimum_examples_per_class=5,
     )
 
-    server = build_api_server(config)
+    server = build_api_server(config, routing=RoutingSession())
 
     assert server is not None
     assert isinstance(server, VisionApiServer)
@@ -654,7 +655,7 @@ def test_suggestion_loop_refuses_a_nonpositive_interval() -> None:
 def test_build_suggestion_loop_is_none_without_a_token_path() -> None:
     config = VisionConfig.development()
 
-    assert build_suggestion_loop(config, FrameBuffer()) is None
+    assert build_suggestion_loop(config, FrameBuffer(), routing=RoutingSession()) is None
 
 
 def test_build_suggestion_loop_builds_a_working_loop_given_a_token_path(
@@ -673,7 +674,7 @@ def test_build_suggestion_loop_builds_a_working_loop_given_a_token_path(
         daemon_service_token_path=str(token_path),
     )
 
-    loop = build_suggestion_loop(config, FrameBuffer())
+    loop = build_suggestion_loop(config, FrameBuffer(), routing=RoutingSession())
 
     assert loop is not None
     assert isinstance(loop, SuggestionLoop)
@@ -715,6 +716,59 @@ def test_suggestion_loop_records_a_real_suggestion_end_to_end(token_workspace: P
             raise AssertionError("no suggestion was ever recorded")
     finally:
         loop.close()
+
+
+class FakeRouter:
+    """A `Router` double that records what class it was asked to route."""
+
+    def __init__(self, *, routes_to: int) -> None:
+        self.routes_to = routes_to
+        self.asked: list[int] = []
+
+    def route(self, class_id: int) -> int:
+        self.asked.append(class_id)
+        return self.routes_to
+
+
+def test_frame_suggester_stores_the_routed_slot_not_the_raw_class() -> None:
+    """PI-VISION-009: routing sits between the classifier's raw output and
+    what is stored/suggested - with a router configured, the stored slot is
+    the routed chute, never the model's own raw class label.
+    """
+    store = DatasetStore.open(IN_MEMORY)
+    version = store.record_candidate(
+        TrainedCandidate(
+            model_blob=_trained_model_blob(),
+            included_classes=(3, 5),
+            excluded_classes=(),
+            accuracy_by_class={3: 1.0, 5: 1.0},
+            minimum_examples_per_class=5,
+            training_example_count=20,
+            holdout_example_count=0,
+        ),
+        trained_at=START,
+    )
+    store.activate(version, activated_at=START)
+    buffer = FrameBuffer()
+    buffer.add(Frame(png=_png(10), width=4, height=4, captured_at=START))
+    router = FakeRouter(routes_to=99)
+    suggester = FrameSuggester(store, buffer, router=router, now=lambda: START)
+
+    result = suggester.suggest_once()
+
+    assert result == 1
+    latest = store.latest_suggestion()
+    assert latest is not None
+    assert latest.suggested_slot == 99
+    assert router.asked == [3]  # the model's own raw class, before routing
+
+
+def _trained_model_blob() -> bytes:
+    examples = [
+        *[DatasetExample(slot=3, frame_png=_png(10)) for _ in range(10)],
+        *[DatasetExample(slot=5, frame_png=_png(240)) for _ in range(10)],
+    ]
+    return train_candidate(examples, minimum_examples_per_class=5, seed=0).model_blob
 
 
 class CountingAutonomist:
