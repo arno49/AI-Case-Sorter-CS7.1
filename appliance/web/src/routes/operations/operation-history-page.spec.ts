@@ -25,6 +25,7 @@ import type { Operation, OperationPage } from '$lib/machine';
 import Page from './+page.svelte';
 import { load as historyLoad } from './+page.server';
 import { handle } from '../../hooks.server';
+import { checkAccessibility } from '../accessibility';
 import { browser, request, throughHook } from '../harness';
 import { fieldText, focusOrder, visibleText } from '../rendered';
 
@@ -255,5 +256,19 @@ describe('reading the history, end to end', () => {
 
 		expect((data as PageData).page).toBeNull();
 		expect((data as PageData).unavailable).toBeTruthy();
+	});
+});
+
+describe('automated accessibility checks (PI-SWQ-002)', () => {
+	it('meets WCAG 2.1/2.2 A/AA rules axe-core can evaluate without CSS layout', async () => {
+		const html = rendered({
+			page: page([operation()]),
+			unavailable: null,
+			filter: { state: null, type: null }
+		});
+
+		const report = await checkAccessibility(html);
+
+		expect(report.violations).toEqual([]);
 	});
 });

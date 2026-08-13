@@ -23,6 +23,7 @@ import type { MachineSnapshot, System } from '$lib/machine';
 import Page from './+page.svelte';
 import { load as systemLoad } from './+page.server';
 import { handle } from '../../hooks.server';
+import { checkAccessibility } from '../accessibility';
 import { browser, request, throughHook } from '../harness';
 import { fieldText, visibleText } from '../rendered';
 
@@ -200,5 +201,15 @@ describe('reading the system view, end to end', () => {
 		expect((data as PageData).snapshot).toBeNull();
 		expect((data as PageData).system).toBeNull();
 		expect((data as PageData).unavailable).toBeTruthy();
+	});
+});
+
+describe('automated accessibility checks (PI-SWQ-002)', () => {
+	it('meets WCAG 2.1/2.2 A/AA rules axe-core can evaluate without CSS layout', async () => {
+		const html = rendered({ snapshot: snapshot(), system: system(), unavailable: null });
+
+		const report = await checkAccessibility(html);
+
+		expect(report.violations).toEqual([]);
 	});
 });

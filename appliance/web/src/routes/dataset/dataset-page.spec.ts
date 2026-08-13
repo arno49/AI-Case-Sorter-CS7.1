@@ -31,8 +31,9 @@ import type {
 import Page from './+page.svelte';
 import { actions as datasetActions, load as datasetLoad } from './+page.server';
 import { handle } from '../../hooks.server';
+import { checkAccessibility } from '../accessibility';
 import { browser, csrfFor, request, throughHook, type CookieJar } from '../harness';
-import { fieldText, visibleText } from '../rendered';
+import { fieldText, focusOrderIsDocumentOrder, visibleText } from '../rendered';
 
 function dataset(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
 	return {
@@ -564,5 +565,19 @@ describe('reading and acting on the dataset view, end to end', () => {
 			action: 'vision.rollback',
 			outcome: 'refused'
 		});
+	});
+});
+
+describe('automated accessibility checks (PI-SWQ-002)', () => {
+	it('meets WCAG 2.1/2.2 A/AA rules axe-core can evaluate without CSS layout', async () => {
+		const html = rendered(pageData());
+
+		const report = await checkAccessibility(html);
+
+		expect(report.violations).toEqual([]);
+	});
+
+	it('declares no tabindex that could pull a control ahead of document order', () => {
+		expect(focusOrderIsDocumentOrder(rendered(pageData()))).toBe(true);
 	});
 });

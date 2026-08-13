@@ -25,8 +25,9 @@ import type { RoutingState } from '$lib/routing';
 import Page from './+page.svelte';
 import { actions as routingActions, load as routingLoad } from './+page.server';
 import { handle } from '../../hooks.server';
+import { checkAccessibility } from '../accessibility';
 import { browser, csrfFor, request, throughHook, type CookieJar } from '../harness';
-import { fieldText, visibleText } from '../rendered';
+import { fieldText, focusOrderIsDocumentOrder, visibleText } from '../rendered';
 
 function routing(overrides: Partial<RoutingState> = {}): RoutingState {
 	return {
@@ -376,5 +377,34 @@ describe('reading and acting on the routing view, end to end', () => {
 			routingActions.startFixed(pressed as unknown as RequestEvent)
 		).rejects.toMatchObject({ status: 403 });
 		expect(vision.requests.some((call) => call.path === '/v1/routing/start')).toBe(false);
+	});
+});
+
+describe('automated accessibility checks (PI-SWQ-002)', () => {
+	it('meets WCAG 2.1/2.2 A/AA rules with no run active (the start forms)', async () => {
+		const report = await checkAccessibility(rendered(pageData()));
+
+		expect(report.violations).toEqual([]);
+	});
+
+	it('meets WCAG 2.1/2.2 A/AA rules with a run active (the legend table)', async () => {
+		const report = await checkAccessibility(
+			rendered(
+				pageData({
+					routing: routing({
+						active: true,
+						kind: 'fixed',
+						startedAt: '2026-08-11T12:00:00.000Z',
+						legend: [{ slot: 3, classId: 12, overflow: false }]
+					})
+				})
+			)
+		);
+
+		expect(report.violations).toEqual([]);
+	});
+
+	it('declares no tabindex that could pull a control ahead of document order', () => {
+		expect(focusOrderIsDocumentOrder(rendered(pageData()))).toBe(true);
 	});
 });

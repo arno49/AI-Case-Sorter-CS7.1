@@ -30,6 +30,7 @@ import { COMPLETION_WORDS } from '$lib/machine-status';
 import Page from './+page.svelte';
 import { actions as dashboardActions, load as dashboardLoad } from './+page.server';
 import { handle } from '../hooks.server';
+import { checkAccessibility } from './accessibility';
 import { browser, request, throughHook } from './harness';
 import { fieldText, firstFocusable, focusOrderIsDocumentOrder, visibleText } from './rendered';
 import type { RequestEvent, ServerLoadEvent } from '@sveltejs/kit';
@@ -488,5 +489,31 @@ describe('the suggested slot, end to end', () => {
 		expect(fieldText(html, 'vision-suggestion')).toEqual([]);
 		// The machine itself is unaffected: cs71d is still answering normally.
 		expect(fieldText(html, 'connection').join(' ')).toContain('Connected');
+	});
+});
+
+describe('automated accessibility checks (PI-SWQ-002)', () => {
+	it('meets WCAG 2.1/2.2 A/AA rules axe-core can evaluate without CSS layout', async () => {
+		const html = rendered(snapshot({ active_operation: operation() }), {
+			suggestion: {
+				slot: 3,
+				confidence: 0.87,
+				modelVersion: 2,
+				suggestedAt: '2026-08-11T12:00:00.000Z',
+				primerPresent: null,
+				requiresConfirmation: true
+			},
+			routing: {
+				active: true,
+				kind: 'fixed',
+				startedAt: '2026-08-11T12:00:00.000Z',
+				sourceGroup: null,
+				legend: []
+			}
+		});
+
+		const report = await checkAccessibility(html);
+
+		expect(report.violations).toEqual([]);
 	});
 });
