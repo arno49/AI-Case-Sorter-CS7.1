@@ -16,6 +16,7 @@ from .correlator import FrameBuffer
 from .runtime import (
     CaptureLoop,
     build_api_server,
+    build_autonomy_loop,
     build_camera,
     build_correlation_loop,
     build_suggestion_loop,
@@ -62,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera = build_camera(config)
         correlation_loop = build_correlation_loop(config, buffer)
         suggestion_loop = build_suggestion_loop(config, buffer)
+        autonomy_loop = build_autonomy_loop(config)
         api_server = build_api_server(config)
     except Exception as exc:  # noqa: BLE001 - startup failure paths are device-specific
         print(f"cs71vision: startup failed: {exc}", file=sys.stderr)
@@ -82,6 +84,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if suggestion_loop is not None:
         suggestion_loop.start()
+    if autonomy_loop is not None:
+        autonomy_loop.start()
+        logging.getLogger("cs71vision").info("autonomous sort is armed against cs71d")
+    else:
+        logging.getLogger("cs71vision").info(
+            "no machine_service_token_path configured; autonomous sort is unreachable"
+        )
     if api_server is not None:
         api_server.start()
         logging.getLogger("cs71vision").info("dataset api is serving %s", api_server.socket_path)
@@ -102,6 +111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             correlation_loop.close()
         if suggestion_loop is not None:
             suggestion_loop.close()
+        if autonomy_loop is not None:
+            autonomy_loop.close()
         if api_server is not None:
             api_server.close()
     return 0

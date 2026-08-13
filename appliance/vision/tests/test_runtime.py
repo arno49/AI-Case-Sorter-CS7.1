@@ -1,29 +1,37 @@
 from __future__ import annotations
 
+import json
 import shutil
+import socketserver
 import tempfile
 import threading
 import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 import pytest
 
 from cs71vision.api import VisionApiServer
+from cs71vision.autonomy import Autonomist
 from cs71vision.camera import CameraError, Frame
 from cs71vision.classifier import FrameSuggester
 from cs71vision.config import Backend, ConfigError, Profile, VisionConfig
 from cs71vision.correlator import FrameBuffer
+from cs71vision.daemon_client import DaemonClient
 from cs71vision.dataset import IN_MEMORY, DatasetExample, DatasetStore, TrainedCandidate
 from cs71vision.runtime import (
+    AutonomyLoop,
     CaptureLoop,
     CorrelationLoop,
     SuggestionLoop,
     TrainingJob,
     build_api_server,
+    build_autonomy_loop,
     build_camera,
     build_correlation_loop,
     build_suggestion_loop,
@@ -271,8 +279,14 @@ def token_workspace() -> Iterator[Path]:
     shutil.rmtree(directory, ignore_errors=True)
 
 
-def _token_file(directory: Path, *, mode: int = 0o600, content: str = "a-real-token") -> Path:
-    path = directory / "service-token"
+def _token_file(
+    directory: Path,
+    *,
+    name: str = "service-token",
+    mode: int = 0o600,
+    content: str = "a-real-token",
+) -> Path:
+    path = directory / name
     path.write_text(content, encoding="utf-8")
     path.chmod(mode)
     return path
@@ -701,3 +715,241 @@ def test_suggestion_loop_records_a_real_suggestion_end_to_end(token_workspace: P
             raise AssertionError("no suggestion was ever recorded")
     finally:
         loop.close()
+
+
+class CountingAutonomist:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def attempt_once(self) -> int:
+        self.calls += 1
+        return 0
+
+
+class ExplodingAutonomist:
+    def attempt_once(self) -> int:
+        raise RuntimeError("autonomy tick exploded")
+
+
+def test_autonomy_loop_ticks_repeatedly() -> None:
+    autonomist = CountingAutonomist()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = AutonomyLoop(autonomist, store, interval_ms=1)
+
+    loop.start()
+    try:
+        deadline = threading.Event()
+        deadline.wait(0.05)
+    finally:
+        loop.close()
+
+    assert autonomist.calls >= 1
+
+
+def test_autonomy_loop_survives_a_tick_that_raises() -> None:
+    store = DatasetStore.open(IN_MEMORY)
+    loop = AutonomyLoop(ExplodingAutonomist(), store, interval_ms=1)
+
+    loop.start()
+    deadline = threading.Event()
+    deadline.wait(0.05)
+    loop.close()  # must not raise or hang
+
+
+def test_autonomy_loop_closes_its_store() -> None:
+    autonomist = CountingAutonomist()
+    store = DatasetStore.open(IN_MEMORY)
+    loop = AutonomyLoop(autonomist, store, interval_ms=1000)
+
+    loop.start()
+    loop.close()
+
+    with pytest.raises(Exception, match="closed"):
+        store.total_examples()
+
+
+def test_autonomy_loop_refuses_a_nonpositive_interval() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        AutonomyLoop(CountingAutonomist(), DatasetStore.open(IN_MEMORY), interval_ms=0)
+
+
+def test_build_autonomy_loop_is_none_without_a_daemon_token_path() -> None:
+    config = VisionConfig.development()
+
+    assert build_autonomy_loop(config) is None
+
+
+def test_build_autonomy_loop_is_none_without_a_machine_token_path(
+    token_workspace: Path,
+) -> None:
+    token_path = _token_file(token_workspace)
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=IN_MEMORY,
+        daemon_service_token_path=str(token_path),
+        # machine_service_token_path left unset: the capability may be
+        # provisioned long before it is ever configured (PI-VISION-007/008).
+    )
+
+    assert build_autonomy_loop(config) is None
+
+
+def test_build_autonomy_loop_builds_a_working_loop_given_both_token_paths(
+    token_workspace: Path,
+) -> None:
+    token_path = _token_file(token_workspace)
+    machine_token_path = _token_file(token_workspace, name="machine-service-token")
+    config = VisionConfig(
+        profile=Profile.DEVELOPMENT,
+        backend=Backend.FIXTURE,
+        device_path=None,
+        capture_interval_ms=1000,
+        frame_width=4,
+        frame_height=4,
+        daemon_socket_path=str(token_workspace / "cs71d.sock"),
+        dataset_path=IN_MEMORY,
+        daemon_service_token_path=str(token_path),
+        machine_service_token_path=str(machine_token_path),
+        autonomy_thresholds={3: 0.95},
+    )
+
+    loop = build_autonomy_loop(config)
+
+    assert loop is not None
+    assert isinstance(loop, AutonomyLoop)
+    loop.close()
+
+
+class _FakeDaemonHandler(BaseHTTPRequestHandler):
+    server: _FakeDaemon
+
+    def log_message(self, *args: object) -> None:  # quiet the test output
+        return
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server's own naming convention
+        if self.path == "/v1/snapshot":
+            self._respond(200, {"api_version": "v1", "generation": 41})
+            return
+        self._respond(404, {"code": "RESOURCE_NOT_FOUND"})
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server's own naming convention
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length) if length else b""
+        if self.path != "/v1/operations/sort":
+            self._respond(404, {"code": "RESOURCE_NOT_FOUND"})
+            return
+        presented = self.headers.get("Authorization", "")
+        if presented != f"Bearer {self.server.require_machine_token}":
+            self._respond(401, {"code": "UNAUTHENTICATED"})
+            return
+        payload = json.loads(raw_body)
+        self.server.sort_requests.append(payload)
+        self._respond(
+            202,
+            {
+                "api_version": "v1",
+                "operation_id": f"op-{len(self.server.sort_requests)}",
+                "state": "ACCEPTED",
+                "generation": 42,
+            },
+        )
+
+    def _respond(self, status: int, body: Any) -> None:
+        payload = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+class _FakeDaemon(socketserver.ThreadingUnixStreamServer):
+    """A minimal fake `cs71d`: a real snapshot generation, and a
+    machine-credential-gated sort route.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+    require_machine_token: str
+    sort_requests: list[dict[str, Any]]
+
+    def __init__(self, socket_path: Path) -> None:
+        super().__init__(str(socket_path), _FakeDaemonHandler)
+        self.sort_requests = []
+        self._socket_path = str(socket_path)
+        self._thread: threading.Thread | None = None
+
+    @property
+    def socket_path(self) -> str:
+        return self._socket_path
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self.serve_forever, daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self.shutdown()
+        self.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+
+def test_autonomy_loop_submits_a_real_autonomous_sort_end_to_end(
+    token_workspace: Path,
+) -> None:
+    """`Autonomist` wired to a real `DaemonClient` against a fake `cs71d`."""
+    db_path = token_workspace / "vision.db"
+    store = DatasetStore.open(db_path)
+    version = store.record_candidate(
+        TrainedCandidate(
+            model_blob=b"unused-by-this-test",
+            included_classes=(3,),
+            excluded_classes=(),
+            accuracy_by_class={3: 1.0},
+            minimum_examples_per_class=1,
+            training_example_count=1,
+            holdout_example_count=0,
+        ),
+        trained_at=START,
+    )
+    store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.97,
+        primer_present=False,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+
+    server = _FakeDaemon(token_workspace / "cs71d.sock")
+    server.start()
+    try:
+        client = DaemonClient(
+            server.socket_path, "bff-token", machine_service_token="machine-token"
+        )
+        server.require_machine_token = "machine-token"
+        autonomist = Autonomist(store, client, {3: 0.95}, now=lambda: START)
+        loop = AutonomyLoop(autonomist, store, interval_ms=1)
+
+        loop.start()
+        try:
+            deadline = threading.Event()
+            for _ in range(200):
+                if server.sort_requests:
+                    break
+                deadline.wait(0.01)
+            else:
+                raise AssertionError("no autonomous sort was ever submitted")
+        finally:
+            loop.close()
+
+        assert server.sort_requests[0]["slot"] == 3
+        assert server.sort_requests[0]["actor"] == {"user_id": "cs71-vision", "role": "machine"}
+    finally:
+        server.close()

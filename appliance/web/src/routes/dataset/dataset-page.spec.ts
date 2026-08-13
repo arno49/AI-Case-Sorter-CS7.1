@@ -21,7 +21,12 @@ import { createUser } from '$lib/server/auth/users';
 import { recentAudit } from '$lib/server/audit';
 import { replying, startFakeDaemon, type FakeDaemon } from '$lib/server/daemon/harness';
 import { closeWebRuntime, webRuntime } from '$lib/server/runtime';
-import type { DatasetSummary, ModelsSummary, SuggestionAccuracy } from '$lib/dataset';
+import type {
+	AutonomySummary,
+	DatasetSummary,
+	ModelsSummary,
+	SuggestionAccuracy
+} from '$lib/dataset';
 
 import Page from './+page.svelte';
 import { actions as datasetActions, load as datasetLoad } from './+page.server';
@@ -65,9 +70,27 @@ interface PageData {
 	readonly dataset: DatasetSummary | null;
 	readonly models: ModelsSummary | null;
 	readonly suggestionAccuracy: SuggestionAccuracy | null;
+	readonly autonomy: AutonomySummary | null;
 	readonly unavailable: string | null;
 	readonly canTrain: boolean;
 	readonly csrfToken: string;
+}
+
+function autonomy(overrides: Partial<AutonomySummary> = {}): AutonomySummary {
+	return {
+		thresholds: { 3: 0.95 },
+		accuracyByClass: {},
+		pendingReview: [
+			{
+				attemptId: 7,
+				suggestionId: 42,
+				operationId: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c',
+				slot: 3,
+				attemptedAt: '2026-08-12T12:07:00.000Z'
+			}
+		],
+		...overrides
+	};
 }
 
 function rendered(data: PageData, form: unknown = null): string {
@@ -79,6 +102,7 @@ function pageData(overrides: Partial<PageData> = {}): PageData {
 		dataset: dataset(),
 		models: models(),
 		suggestionAccuracy: { total: 4, correct: 3, accuracy: 0.75 },
+		autonomy: autonomy(),
 		unavailable: null,
 		canTrain: true,
 		csrfToken: 'csrf',
@@ -203,6 +227,41 @@ describe('what the dataset view shows', () => {
 			'No suggestion has been matched'
 		);
 	});
+
+	it('shows a pending autonomous attempt with correct/incorrect controls, to an account with vision.train', () => {
+		const html = rendered(pageData());
+
+		expect(fieldText(html, 'autonomy-pending-7').join(' ')).toContain('Slot 3');
+		expect(html).toContain('Correct');
+		expect(html).toContain('Incorrect');
+	});
+
+	it('offers no review controls to an account without vision.train', () => {
+		const html = rendered(pageData({ canTrain: false }));
+
+		expect(html).not.toContain('>Correct<');
+		expect(html).not.toContain('>Incorrect<');
+	});
+
+	it('says no threshold is configured when autonomy has neither a threshold nor a review', () => {
+		const html = rendered(
+			pageData({ autonomy: autonomy({ thresholds: {}, accuracyByClass: {}, pendingReview: [] }) })
+		);
+
+		expect(fieldText(html, 'autonomy-empty')).not.toEqual([]);
+	});
+
+	it('never reports an unreviewed class as a fabricated zero-percent false rate', () => {
+		const html = rendered(
+			pageData({
+				autonomy: autonomy({ thresholds: { 3: 0.95 }, accuracyByClass: {}, pendingReview: [] })
+			})
+		);
+
+		const shown = fieldText(html, 'autonomy-class-3').join(' ');
+		expect(shown).toContain('No autonomous attempt has been reviewed yet');
+		expect(shown).not.toContain('0%');
+	});
 });
 
 describe('reading and acting on the dataset view, end to end', () => {
@@ -254,6 +313,28 @@ describe('reading and acting on the dataset view, end to end', () => {
 				})(call, response);
 			} else if (call.path === '/v1/suggestion-accuracy') {
 				replying(200, { api_version: 'v1', total: 4, correct: 3, accuracy: 0.75 })(call, response);
+			} else if (call.path === '/v1/autonomy') {
+				replying(200, {
+					api_version: 'v1',
+					thresholds: { '3': 0.95 },
+					accuracy_by_class: {},
+					pending_review: [
+						{
+							attempt_id: 7,
+							suggestion_id: 42,
+							operation_id: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c',
+							slot: 3,
+							attempted_at: '2026-08-12T12:07:00.000Z'
+						}
+					]
+				})(call, response);
+			} else if (call.path === '/v1/autonomous-reviews') {
+				replying(200, {
+					api_version: 'v1',
+					attempt_id: 7,
+					correct: true,
+					reviewed_at: '2026-08-12T12:08:00.000Z'
+				})(call, response);
 			} else {
 				replying(404, { code: 'RESOURCE_NOT_FOUND', message: 'no' })(call, response);
 			}
@@ -403,6 +484,39 @@ describe('reading and acting on the dataset view, end to end', () => {
 			action: 'vision.rollback',
 			outcome: 'accepted'
 		});
+	});
+
+	it('lets an operator record a verdict on an autonomous attempt, and audits it', async () => {
+		const cookies = await signedIn('operator');
+		const pressed = request('/dataset', cookies, {
+			form: { [CSRF_FIELD]: csrfFor(cookies), attempt_id: '7', correct: 'true' },
+			routeId: '/dataset'
+		});
+		await throughHook(pressed, handle);
+
+		const answer = await datasetActions.reviewAutonomousAttempt(pressed as unknown as RequestEvent);
+
+		expect(answer).toMatchObject({ control: 'reviewAutonomousAttempt', attemptId: 7 });
+		expect(vision.requests.some((call) => call.path === '/v1/autonomous-reviews')).toBe(true);
+		const { database } = webRuntime();
+		expect(recentAudit(database, 1)[0]).toMatchObject({
+			action: 'vision.reviewAutonomousAttempt',
+			outcome: 'accepted'
+		});
+	});
+
+	it('refuses a viewer permission to review an autonomous attempt, before anything reaches cs71-vision', async () => {
+		const cookies = await signedIn('viewer');
+		const pressed = request('/dataset', cookies, {
+			form: { [CSRF_FIELD]: csrfFor(cookies), attempt_id: '7', correct: 'true' },
+			routeId: '/dataset'
+		});
+		await throughHook(pressed, handle);
+
+		await expect(
+			datasetActions.reviewAutonomousAttempt(pressed as unknown as RequestEvent)
+		).rejects.toMatchObject({ status: 403 });
+		expect(vision.requests.some((call) => call.path === '/v1/autonomous-reviews')).toBe(false);
 	});
 
 	it('refuses a viewer permission to train, before anything reaches cs71-vision', async () => {

@@ -7,3 +7,10 @@ dataset_path = "/var/lib/cs71-vision/vision.db"
 daemon_service_token_path = "/etc/cs71-vision/service-token"
 api_socket_path = "/run/cs71-vision/cs71vision.sock"
 minimum_examples_per_class = 40
+# PI-VISION-008: enables the mechanism (cs71-vision may now present the
+# machine credential), not the policy - autonomy_thresholds is deliberately
+# left empty below, so no class may autonomously sort until an installation
+# explicitly configures one (ADR-0013: "starting conservative... mostly
+# manual").
+machine_service_token_path = "/etc/cs71-vision/machine-service-token"
+autonomy_thresholds = []

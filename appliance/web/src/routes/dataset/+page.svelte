@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import {
+		autonomyClassReadings,
 		classReadings,
 		modelReadings,
+		pendingReviewDetail,
 		suggestionAccuracyDetail,
 		trainingReadinessDetail
 	} from '$lib/dataset-view';
@@ -15,6 +17,7 @@
 	const suggestionAccuracy = $derived(
 		data.suggestionAccuracy ? suggestionAccuracyDetail(data.suggestionAccuracy) : null
 	);
+	const autonomyClasses = $derived(data.autonomy ? autonomyClassReadings(data.autonomy) : []);
 
 	function percent(accuracy: number | null): string {
 		return accuracy === null ? 'not evaluated' : `${Math.round(accuracy * 100)}%`;
@@ -172,6 +175,65 @@
 				     after a suggestion was shown, not a held-out split of the training
 				     data (PI-VISION-006). -->
 				<p data-field="suggestion-accuracy">{suggestionAccuracy}</p>
+			</section>
+		{/if}
+
+		{#if data.autonomy}
+			<section aria-labelledby="autonomy">
+				<h2 id="autonomy">Autonomous sort (PI-VISION-008)</h2>
+				<!-- The false-autonomous-sort rate ADR-0013 requires be recorded
+				     before a class's threshold may be lowered: there is no operator
+				     confirmation step for an autonomous sort to compare itself
+				     against, so this is only ever a human's own recorded verdict. -->
+				{#if autonomyClasses.length > 0}
+					<dl>
+						{#each autonomyClasses as reading (reading.slot)}
+							<dt>Slot {reading.slot}</dt>
+							<dd data-field="autonomy-class-{reading.slot}" data-tone={reading.tone}>
+								{reading.detail}
+								{#if reading.threshold !== null}
+									<span>(threshold {Math.round(reading.threshold * 100)}%)</span>
+								{/if}
+							</dd>
+						{/each}
+					</dl>
+				{:else}
+					<p data-field="autonomy-empty">No autonomy threshold is configured for any class yet.</p>
+				{/if}
+
+				{#if data.autonomy.pendingReview.length > 0}
+					<h3>Awaiting review</h3>
+					<ul>
+						{#each data.autonomy.pendingReview as attempt (attempt.attemptId)}
+							<li data-field="autonomy-pending-{attempt.attemptId}">
+								{pendingReviewDetail(attempt.slot, attempt.attemptedAt)}
+								{#if data.canTrain}
+									<form method="POST" action="?/reviewAutonomousAttempt" style="display: inline">
+										<input type="hidden" name="csrf_token" value={data.csrfToken} />
+										<input type="hidden" name="attempt_id" value={attempt.attemptId} />
+										<input type="hidden" name="correct" value="true" />
+										<button type="submit">Correct</button>
+									</form>
+									<form method="POST" action="?/reviewAutonomousAttempt" style="display: inline">
+										<input type="hidden" name="csrf_token" value={data.csrfToken} />
+										<input type="hidden" name="attempt_id" value={attempt.attemptId} />
+										<input type="hidden" name="correct" value="false" />
+										<button type="submit">Incorrect</button>
+									</form>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if form?.control === 'reviewAutonomousAttempt'}
+					{#if form.error}
+						<p role="alert" data-field="autonomy-review-error">{form.error}</p>
+					{:else if form.attemptId}
+						<p role="status" data-field="autonomy-review-status">
+							Recorded a verdict for attempt {form.attemptId}.
+						</p>
+					{/if}
+				{/if}
 			</section>
 		{/if}
 	{/if}

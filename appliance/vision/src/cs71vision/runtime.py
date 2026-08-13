@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .api import VisionApiServer
+from .autonomy import Autonomist
 from .camera import Camera, CameraError, FixtureCamera, Frame, V4L2Camera
 from .classifier import FrameSuggester
 from .config import Backend, ConfigError, VisionConfig
@@ -286,6 +287,100 @@ def build_suggestion_loop(config: VisionConfig, buffer: FrameBuffer) -> Suggesti
     return SuggestionLoop(suggester, store)
 
 
+#: How often the autonomy loop reconsiders the latest suggestion for an
+#: autonomous sort. Independent of the suggestion interval - a fresh
+#: suggestion is only ever acted on once (`autonomous_attempt_exists`), so
+#: this can tick more often without risk of a duplicate submission.
+_DEFAULT_AUTONOMY_INTERVAL_MS = 1_000
+
+
+class AutonomyAttempter(Protocol):
+    """What the autonomy loop needs - `Autonomist` today, a fake in tests."""
+
+    def attempt_once(self) -> int: ...
+
+
+class AutonomyLoop:
+    """Call `Autonomist.attempt_once` on a fixed interval, on its own thread.
+
+    Same shape as `SuggestionLoop` deliberately - a separate loop, not a
+    step bolted onto `SuggestionLoop`'s own tick, so "never issues a `cs71d`
+    command, under any configuration" stays true of `SuggestionLoop` by
+    construction: this is the only loop that can ever call
+    `DaemonClient.submit_sort` (PI-VISION-008).
+    """
+
+    def __init__(
+        self,
+        autonomist: AutonomyAttempter,
+        store: DatasetStore,
+        *,
+        interval_ms: int = _DEFAULT_AUTONOMY_INTERVAL_MS,
+    ) -> None:
+        if interval_ms <= 0:
+            raise ValueError("interval_ms must be positive")
+        self._autonomist = autonomist
+        self._store = store
+        self._interval = interval_ms / 1000.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="cs71vision-autonomy", daemon=True)
+        self._thread.start()
+
+    def close(self, *, timeout: float = 5.0) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout)
+        self._store.close()
+
+    def __enter__(self) -> AutonomyLoop:
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._autonomist.attempt_once()
+            except Exception:  # noqa: BLE001 - one bad tick must not kill the loop
+                _LOGGER.exception("cs71-vision's autonomy tick raised")
+            self._stop.wait(self._interval)
+
+
+def build_autonomy_loop(config: VisionConfig) -> AutonomyLoop | None:
+    """Build the autonomy loop, or None if no machine credential is configured.
+
+    Distinct from `build_suggestion_loop`'s own gate
+    (`daemon_service_token_path`): a machine credential can be entirely
+    unset while ordinary suggestion/correlation keeps running - the same
+    "provisioned does not mean active" posture `cs71d`'s own
+    `machine_service_token_path` uses (PI-VISION-007). An empty
+    `autonomy_thresholds` still leaves this loop structurally unable to ever
+    submit anything (`may_autonomously_sort`), so building it is always
+    safe even before any class is configured.
+    """
+    if config.daemon_service_token_path is None or config.machine_service_token_path is None:
+        return None
+    token = read_service_token(config.daemon_service_token_path)
+    machine_token = read_service_token(config.machine_service_token_path)
+    client = DaemonClient(config.daemon_socket_path, token, machine_service_token=machine_token)
+    store = DatasetStore.open(config.dataset_path)
+    autonomist = Autonomist(store, client, config.autonomy_thresholds)
+    return AutonomyLoop(autonomist, store)
+
+
 def build_correlation_loop(config: VisionConfig, buffer: FrameBuffer) -> CorrelationLoop | None:
     """Build the correlation loop, or None if this config never talks to cs71d.
 
@@ -423,4 +518,5 @@ def build_api_server(config: VisionConfig) -> VisionApiServer | None:
         service_token=token,
         minimum_examples_per_class=config.minimum_examples_per_class,
         training_job=training_job,
+        autonomy_thresholds=config.autonomy_thresholds,
     )

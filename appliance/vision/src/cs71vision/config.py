@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,11 @@ PRODUCTION_DAEMON_SOCKET_PATH = "/run/cs71/cs71d.sock"
 #: cs71-vision's own copy of the shared service credential, the same
 #: two-file (now three) pattern PI-OPS-001 established for cs71d/cs71-web.
 PRODUCTION_DAEMON_SERVICE_TOKEN_PATH = "/etc/cs71-vision/service-token"
+#: cs71-vision's own copy of the *distinct* machine credential PI-VISION-007
+#: provisions to only cs71d and cs71-vision, never cs71-web
+#: (`write_machine_service_token`, `appliance/ops/lib/common.sh`). Presenting
+#: it is the only way `submit_sort` can ever act (PI-VISION-008).
+PRODUCTION_MACHINE_SERVICE_TOKEN_PATH = "/etc/cs71-vision/machine-service-token"
 #: The self-labeled dataset store (PI-VISION-002); cs71-vision exclusively
 #: owns it, the same separate-ownership rule machine.db/web.db follow.
 PRODUCTION_DATASET_PATH = "/var/lib/cs71-vision/vision.db"
@@ -63,7 +68,15 @@ _ALLOWED_FIELDS = {
     "dataset_path",
     "api_socket_path",
     "minimum_examples_per_class",
+    "machine_service_token_path",
+    "autonomy_thresholds",
 }
+
+#: A per-class confidence threshold outside this range could never mean
+#: anything: 0.0 would make every class trivially eligible (a threshold, not
+#: a real judgment call), and `predict_proba` never exceeds 1.0.
+_MINIMUM_THRESHOLD = 0.0
+_MAXIMUM_THRESHOLD = 1.0
 
 _DEFAULT_INTERVAL_MS = 1_000
 #: The CameraV2 USB VGA module's native resolution
@@ -95,6 +108,16 @@ class VisionConfig:
     daemon_service_token_path: str | None = None
     api_socket_path: str = _DEVELOPMENT_API_SOCKET_PATH
     minimum_examples_per_class: int = _DEFAULT_MINIMUM_EXAMPLES_PER_CLASS
+    #: None means "the machine role is unreachable" - the same structural
+    #: gate `cs71d.config.DaemonConfig.machine_service_token_path` uses
+    #: (PI-VISION-007): this capability can be provisioned long before it is
+    #: ever used. Optional even in production.
+    machine_service_token_path: str | None = None
+    #: Per-class autonomous-sort confidence threshold (PI-VISION-008,
+    #: ADR-0013). A class absent here can never autonomously sort - the
+    #: empty default is the conservative "mostly manual" starting point the
+    #: ADR calls for, not a placeholder to fill in later.
+    autonomy_thresholds: Mapping[int, float] = field(default_factory=dict)
 
     @classmethod
     def development(cls) -> VisionConfig:
@@ -110,6 +133,8 @@ class VisionConfig:
             daemon_service_token_path=None,
             api_socket_path=_DEVELOPMENT_API_SOCKET_PATH,
             minimum_examples_per_class=_DEFAULT_MINIMUM_EXAMPLES_PER_CLASS,
+            machine_service_token_path=None,
+            autonomy_thresholds={},
         )
 
     @classmethod
@@ -142,6 +167,8 @@ class VisionConfig:
         minimum_examples_per_class = _positive_int(
             raw, "minimum_examples_per_class", _DEFAULT_MINIMUM_EXAMPLES_PER_CLASS
         )
+        machine_service_token_path = _optional_string(raw, "machine_service_token_path")
+        autonomy_thresholds = _autonomy_thresholds(raw)
 
         if backend is Backend.FIXTURE and device_path is not None:
             raise ConfigError("fixture backend cannot specify device_path")
@@ -166,6 +193,14 @@ class VisionConfig:
                 raise ConfigError(
                     f"production api_socket_path must be {PRODUCTION_API_SOCKET_PATH}"
                 )
+            if (
+                machine_service_token_path is not None
+                and machine_service_token_path != PRODUCTION_MACHINE_SERVICE_TOKEN_PATH
+            ):
+                raise ConfigError(
+                    "production machine_service_token_path must be"
+                    f" {PRODUCTION_MACHINE_SERVICE_TOKEN_PATH} when set"
+                )
         elif backend is Backend.V4L2:
             raise ConfigError("v4l2 backend is reserved for the production profile")
 
@@ -181,6 +216,8 @@ class VisionConfig:
             daemon_service_token_path=daemon_service_token_path,
             api_socket_path=api_socket_path,
             minimum_examples_per_class=minimum_examples_per_class,
+            machine_service_token_path=machine_service_token_path,
+            autonomy_thresholds=autonomy_thresholds,
         )
 
 
@@ -201,6 +238,40 @@ def load_config(path: str | Path | None = None) -> VisionConfig:
     if not isinstance(vision, dict):
         raise ConfigError("[vision] must be a table")
     return VisionConfig.from_mapping(vision)
+
+
+#: Mirrors `cs71d.api.MAX_API_SLOT` - a threshold for a slot the daemon
+#: could never accept would be dead configuration, never reachable.
+_MAX_SLOT = 63
+
+
+def _autonomy_thresholds(raw: Mapping[str, Any]) -> dict[int, float]:
+    entries = raw.get("autonomy_thresholds", [])
+    if not isinstance(entries, list):
+        raise ConfigError("autonomy_thresholds must be a list of {slot, threshold} tables")
+    thresholds: dict[int, float] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"slot", "threshold"}:
+            raise ConfigError(
+                "each autonomy_thresholds entry must carry exactly slot and threshold"
+            )
+        slot = entry["slot"]
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot <= _MAX_SLOT:
+            raise ConfigError(f"autonomy_thresholds slot must be between 0 and {_MAX_SLOT}")
+        if slot in thresholds:
+            raise ConfigError(f"autonomy_thresholds has more than one entry for slot {slot}")
+        threshold = entry["threshold"]
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not _MINIMUM_THRESHOLD < threshold <= _MAXIMUM_THRESHOLD
+        ):
+            raise ConfigError(
+                "autonomy_thresholds threshold must be greater than"
+                f" {_MINIMUM_THRESHOLD} and at most {_MAXIMUM_THRESHOLD}"
+            )
+        thresholds[slot] = float(threshold)
+    return thresholds
 
 
 def _required_string(raw: Mapping[str, Any], name: str) -> str:

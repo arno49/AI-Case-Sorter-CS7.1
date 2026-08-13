@@ -39,18 +39,28 @@ def _get(
 
 
 def _post(
-    socket_path: str, path: str, *, token: str | None = TOKEN
+    socket_path: str,
+    path: str,
+    *,
+    token: str | None = TOKEN,
+    body: dict[str, object] | None = None,
 ) -> tuple[int, dict[str, object]]:
-    return _request(socket_path, "POST", path, token=token)
+    return _request(socket_path, "POST", path, token=token, body=body)
 
 
 def _request(
-    socket_path: str, method: str, path: str, *, token: str | None
+    socket_path: str,
+    method: str,
+    path: str,
+    *,
+    token: str | None,
+    body: dict[str, object] | None = None,
 ) -> tuple[int, dict[str, object]]:
     connection = _UnixHTTPConnection(socket_path)
     try:
         headers = {} if token is None else {"Authorization": f"Bearer {token}"}
-        connection.request(method, path, headers=headers)
+        encoded = None if body is None else json.dumps(body).encode("utf-8")
+        connection.request(method, path, body=encoded, headers=headers)
         response = connection.getresponse()
         payload = response.read()
     finally:
@@ -119,6 +129,7 @@ def _server(
     service_token: str = TOKEN,
     minimum_examples_per_class: int = 40,
     training_job: Trainable | None = None,
+    autonomy_thresholds: dict[int, float] | None = None,
     now: Callable[[], datetime] = lambda: START,
 ) -> VisionApiServer:
     return VisionApiServer(
@@ -127,6 +138,7 @@ def _server(
         service_token=service_token,
         minimum_examples_per_class=minimum_examples_per_class,
         training_job=training_job if training_job is not None else FakeTrainingJob(),
+        autonomy_thresholds=autonomy_thresholds if autonomy_thresholds is not None else {},
         now=now,
     )
 
@@ -582,5 +594,162 @@ def test_suggestion_accuracy_reports_matched_outcomes(workspace: Path) -> None:
 
         assert status == 200
         assert body == {"api_version": "v1", "total": 1, "correct": 1, "accuracy": 1.0}
+    finally:
+        server.close()
+
+
+def test_autonomy_reports_configured_thresholds_with_no_activity_yet(workspace: Path) -> None:
+    server = _server(workspace, autonomy_thresholds={3: 0.95, 5: 0.9})
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/autonomy")
+
+        assert status == 200
+        assert body == {
+            "api_version": "v1",
+            "thresholds": {"3": 0.95, "5": 0.9},
+            "accuracy_by_class": {},
+            "pending_review": [],
+        }
+    finally:
+        server.close()
+
+
+def test_autonomy_lists_a_pending_review_and_excludes_it_from_accuracy(
+    workspace: Path,
+) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    suggestion_id = store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.97,
+        primer_present=False,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    attempt_id = store.record_autonomous_attempt(
+        suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+    )
+    server = _server(workspace, store=store, autonomy_thresholds={3: 0.95})
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/autonomy")
+
+        assert status == 200
+        assert body["accuracy_by_class"] == {}
+        assert body["pending_review"] == [
+            {
+                "attempt_id": attempt_id,
+                "suggestion_id": suggestion_id,
+                "operation_id": "op-1",
+                "slot": 3,
+                "attempted_at": START.isoformat(),
+            }
+        ]
+    finally:
+        server.close()
+
+
+def test_autonomy_reports_the_false_rate_for_a_reviewed_class(workspace: Path) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    suggestion_id = store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.97,
+        primer_present=False,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    attempt_id = store.record_autonomous_attempt(
+        suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+    )
+    store.record_autonomous_review(attempt_id=attempt_id, correct=False, reviewed_at=START)
+    server = _server(workspace, store=store, autonomy_thresholds={3: 0.95})
+    server.start()
+    try:
+        status, body = _get(server.socket_path, "/v1/autonomy")
+
+        assert status == 200
+        assert body["accuracy_by_class"] == {"3": {"total": 1, "correct": 0, "false_rate": 1.0}}
+        assert body["pending_review"] == []
+    finally:
+        server.close()
+
+
+def test_autonomous_review_records_a_verdict(workspace: Path) -> None:
+    store = _store_with({})
+    version = store.record_candidate(_candidate(), trained_at=START)
+    suggestion_id = store.record_suggestion(
+        model_version=version,
+        suggested_slot=3,
+        confidence=0.97,
+        primer_present=False,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+    attempt_id = store.record_autonomous_attempt(
+        suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+    )
+    server = _server(workspace, store=store)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/autonomous-reviews",
+            body={"api_version": "v1", "attempt_id": attempt_id, "correct": True},
+        )
+
+        assert status == 200
+        assert body["attempt_id"] == attempt_id
+        assert body["correct"] is True
+
+        follow_up = _get(server.socket_path, "/v1/autonomy")[1]
+        assert follow_up["pending_review"] == []
+    finally:
+        server.close()
+
+
+def test_autonomous_review_for_an_unknown_attempt_is_not_found(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/autonomous-reviews",
+            body={"api_version": "v1", "attempt_id": 999, "correct": True},
+        )
+
+        assert status == 404
+        assert body["code"] == "RESOURCE_NOT_FOUND"
+    finally:
+        server.close()
+
+
+def test_autonomous_review_refuses_extra_fields(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(
+            server.socket_path,
+            "/v1/autonomous-reviews",
+            body={"api_version": "v1", "attempt_id": 1, "correct": True, "note": "looks fine"},
+        )
+
+        assert status == 400
+        assert body["code"] == "VALIDATION_FAILED"
+    finally:
+        server.close()
+
+
+def test_autonomous_review_refuses_a_missing_body(workspace: Path) -> None:
+    server = _server(workspace)
+    server.start()
+    try:
+        status, body = _post(server.socket_path, "/v1/autonomous-reviews")
+
+        assert status == 400
+        assert body["code"] == "VALIDATION_FAILED"
     finally:
         server.close()

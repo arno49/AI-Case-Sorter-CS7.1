@@ -130,6 +130,38 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE suggestions ADD COLUMN primer_present INTEGER",
         ),
     ),
+    Migration(
+        version=6,
+        name="autonomous_sort",
+        statements=(
+            # One row per suggestion actually submitted as an autonomous
+            # sort (PI-VISION-008) - `suggestion_id UNIQUE` makes a second
+            # attempt against the same suggestion impossible to record, the
+            # same discipline `suggestion_outcomes` already uses.
+            """
+            CREATE TABLE autonomous_attempts (
+                attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id INTEGER NOT NULL UNIQUE REFERENCES suggestions(suggestion_id),
+                operation_id TEXT NOT NULL UNIQUE,
+                slot INTEGER NOT NULL,
+                attempted_at TEXT NOT NULL
+            )
+            """,
+            # A human-recorded verdict, never inferred: an autonomous sort
+            # has no operator confirmation to compare against, so the only
+            # honest source of "was this actually right" is a person who
+            # later checked (ADR-0013: "recorded... not a general 'it seems
+            # to work'"). `attempt_id UNIQUE` means one verdict per attempt.
+            """
+            CREATE TABLE autonomous_reviews (
+                review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id INTEGER NOT NULL UNIQUE REFERENCES autonomous_attempts(attempt_id),
+                correct INTEGER NOT NULL,
+                reviewed_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -222,6 +254,40 @@ class SuggestionAccuracy:
     @property
     def fraction(self) -> float | None:
         return None if self.total == 0 else self.correct / self.total
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomousAttempt:
+    """One suggestion that crossed its class's threshold and was submitted
+    to `cs71d` as an autonomous sort (PI-VISION-008), before any human has
+    said whether it was actually right.
+    """
+
+    attempt_id: int
+    suggestion_id: int
+    operation_id: str
+    slot: int
+    attempted_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomousAccuracy:
+    """One class's reviewed autonomous-sort record: the false-autonomous-sort
+    rate ADR-0013 requires be measured and recorded before that class's
+    threshold may be lowered - never a general "it seems to work."
+
+    `total`/`correct` count only *reviewed* attempts: an attempt nobody has
+    checked yet contributes to neither, the same "no evidence, not a guess"
+    posture `SuggestionAccuracy.fraction`/`Correlator` already keep.
+    """
+
+    slot: int
+    total: int
+    correct: int
+
+    @property
+    def false_rate(self) -> float | None:
+        return None if self.total == 0 else (self.total - self.correct) / self.total
 
 
 _CREATE_MIGRATION_LEDGER = """
@@ -557,6 +623,98 @@ class DatasetStore:
                 " FROM suggestion_outcomes"
             ).fetchone()
         return SuggestionAccuracy(total=int(row["total"]), correct=int(row["correct"]))
+
+    def autonomous_attempt_exists(self, suggestion_id: int) -> bool:
+        """Whether this suggestion has already been submitted autonomously.
+
+        `Autonomist.attempt_once` checks this before ever calling `cs71d`,
+        so a suggestion still latest on a later tick is never submitted
+        twice (PI-VISION-008).
+        """
+        with self._guard() as cursor:
+            row = cursor.execute(
+                "SELECT 1 FROM autonomous_attempts WHERE suggestion_id = ?", (suggestion_id,)
+            ).fetchone()
+        return row is not None
+
+    def record_autonomous_attempt(
+        self, *, suggestion_id: int, operation_id: str, slot: int, attempted_at: datetime
+    ) -> int:
+        """Record one autonomous sort submission. Always a new row, never an edit."""
+        with self._transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO autonomous_attempts"
+                " (suggestion_id, operation_id, slot, attempted_at) VALUES (?, ?, ?, ?)",
+                (suggestion_id, operation_id, slot, _encode_time(attempted_at)),
+            )
+            attempt_id = cursor.lastrowid
+        if attempt_id is None:
+            raise DatasetError("recording an autonomous attempt did not yield an attempt id")
+        return attempt_id
+
+    def pending_autonomous_reviews(self) -> tuple[AutonomousAttempt, ...]:
+        """Every autonomous attempt no human has recorded a verdict for yet."""
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                "SELECT a.attempt_id, a.suggestion_id, a.operation_id, a.slot, a.attempted_at"
+                " FROM autonomous_attempts a"
+                " LEFT JOIN autonomous_reviews r ON r.attempt_id = a.attempt_id"
+                " WHERE r.attempt_id IS NULL"
+                " ORDER BY a.attempt_id ASC"
+            ).fetchall()
+        return tuple(
+            AutonomousAttempt(
+                attempt_id=int(row["attempt_id"]),
+                suggestion_id=int(row["suggestion_id"]),
+                operation_id=str(row["operation_id"]),
+                slot=int(row["slot"]),
+                attempted_at=str(row["attempted_at"]),
+            )
+            for row in rows
+        )
+
+    def record_autonomous_review(
+        self, *, attempt_id: int, correct: bool, reviewed_at: datetime
+    ) -> int:
+        """Record a human's verdict on one autonomous attempt. Never edited afterward."""
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                "SELECT 1 FROM autonomous_attempts WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                raise DatasetError(f"no autonomous attempt at id {attempt_id}")
+            cursor.execute(
+                "INSERT INTO autonomous_reviews (attempt_id, correct, reviewed_at)"
+                " VALUES (?, ?, ?)",
+                (attempt_id, int(correct), _encode_time(reviewed_at)),
+            )
+            review_id = cursor.lastrowid
+        if review_id is None:
+            raise DatasetError("recording an autonomous review did not yield a review id")
+        return review_id
+
+    def autonomous_accuracy_by_class(self) -> tuple[AutonomousAccuracy, ...]:
+        """The reviewed false-autonomous-sort record for every class with a review.
+
+        A class with autonomous attempts but zero reviews yet is absent
+        here, not reported as 0% false: "not yet reviewed" and "reviewed
+        clean" must never look the same (ADR-0013's own "not a general 'it
+        seems to work'").
+        """
+        with self._guard() as cursor:
+            rows = cursor.execute(
+                "SELECT a.slot AS slot, COUNT(*) AS total, COALESCE(SUM(r.correct), 0) AS correct"
+                " FROM autonomous_reviews r"
+                " JOIN autonomous_attempts a ON a.attempt_id = r.attempt_id"
+                " GROUP BY a.slot"
+                " ORDER BY a.slot ASC"
+            ).fetchall()
+        return tuple(
+            AutonomousAccuracy(
+                slot=int(row["slot"]), total=int(row["total"]), correct=int(row["correct"])
+            )
+            for row in rows
+        )
 
     def _configure(self) -> None:
         try:

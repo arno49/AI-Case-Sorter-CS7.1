@@ -599,3 +599,167 @@ def test_suggestion_accuracy_fraction_is_none_before_anything_is_matched(
         assert accuracy.fraction is None
     finally:
         store.close()
+
+
+def _suggestion_id(store: DatasetStore, version: int, *, slot: int = 3) -> int:
+    return store.record_suggestion(
+        model_version=version,
+        suggested_slot=slot,
+        confidence=0.97,
+        frame_captured_at=START,
+        suggested_at=START,
+    )
+
+
+def test_autonomous_attempt_exists_is_false_before_anything_is_recorded(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+
+        assert store.autonomous_attempt_exists(suggestion_id) is False
+    finally:
+        store.close()
+
+
+def test_record_autonomous_attempt_then_it_is_found_to_exist(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+
+        store.record_autonomous_attempt(
+            suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+
+        assert store.autonomous_attempt_exists(suggestion_id) is True
+    finally:
+        store.close()
+
+
+def test_recording_a_second_attempt_for_the_same_suggestion_is_refused(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+        store.record_autonomous_attempt(
+            suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+
+        with pytest.raises(DatasetError, match="UNIQUE constraint failed"):
+            store.record_autonomous_attempt(
+                suggestion_id=suggestion_id, operation_id="op-2", slot=3, attempted_at=START
+            )
+    finally:
+        store.close()
+
+
+def test_pending_autonomous_reviews_is_empty_before_anything_is_attempted(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        assert store.pending_autonomous_reviews() == ()
+    finally:
+        store.close()
+
+
+def test_pending_autonomous_reviews_lists_an_unreviewed_attempt(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+        attempt_id = store.record_autonomous_attempt(
+            suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+
+        pending = store.pending_autonomous_reviews()
+
+        assert len(pending) == 1
+        assert pending[0].attempt_id == attempt_id
+        assert pending[0].suggestion_id == suggestion_id
+        assert pending[0].operation_id == "op-1"
+        assert pending[0].slot == 3
+    finally:
+        store.close()
+
+
+def test_pending_autonomous_reviews_excludes_an_already_reviewed_attempt(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+        attempt_id = store.record_autonomous_attempt(
+            suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+        store.record_autonomous_review(attempt_id=attempt_id, correct=True, reviewed_at=START)
+
+        assert store.pending_autonomous_reviews() == ()
+    finally:
+        store.close()
+
+
+def test_recording_a_review_for_an_unknown_attempt_is_refused(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        with pytest.raises(DatasetError, match="no autonomous attempt at id"):
+            store.record_autonomous_review(attempt_id=999, correct=True, reviewed_at=START)
+    finally:
+        store.close()
+
+
+def test_autonomous_accuracy_by_class_is_empty_before_any_review(workspace: Path) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+        suggestion_id = _suggestion_id(store, version)
+        store.record_autonomous_attempt(
+            suggestion_id=suggestion_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+
+        # Attempted but never reviewed must not look like "reviewed clean".
+        assert store.autonomous_accuracy_by_class() == ()
+    finally:
+        store.close()
+
+
+def test_autonomous_accuracy_by_class_reports_the_false_rate_per_class(
+    workspace: Path,
+) -> None:
+    store = DatasetStore.open(workspace / "vision.db", now=lambda: START)
+    try:
+        version = store.record_candidate(_candidate(), trained_at=START)
+
+        correct_id = _suggestion_id(store, version, slot=3)
+        correct_attempt = store.record_autonomous_attempt(
+            suggestion_id=correct_id, operation_id="op-1", slot=3, attempted_at=START
+        )
+        store.record_autonomous_review(attempt_id=correct_attempt, correct=True, reviewed_at=START)
+
+        wrong_id = store.record_suggestion(
+            model_version=version,
+            suggested_slot=3,
+            confidence=0.97,
+            frame_captured_at=START,
+            suggested_at=START + timedelta(seconds=1),
+        )
+        wrong_attempt = store.record_autonomous_attempt(
+            suggestion_id=wrong_id, operation_id="op-2", slot=3, attempted_at=START
+        )
+        store.record_autonomous_review(attempt_id=wrong_attempt, correct=False, reviewed_at=START)
+
+        by_class = store.autonomous_accuracy_by_class()
+
+        assert len(by_class) == 1
+        assert by_class[0].slot == 3
+        assert by_class[0].total == 2
+        assert by_class[0].correct == 1
+        assert by_class[0].false_rate == pytest.approx(0.5)
+    finally:
+        store.close()

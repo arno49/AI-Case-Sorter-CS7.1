@@ -10,6 +10,7 @@ from cs71vision.config import (
     PRODUCTION_DAEMON_SOCKET_PATH,
     PRODUCTION_DATASET_PATH,
     PRODUCTION_DEVICE_PATH,
+    PRODUCTION_MACHINE_SERVICE_TOKEN_PATH,
     Backend,
     ConfigError,
     Profile,
@@ -31,6 +32,8 @@ def test_development_defaults_are_a_fixture_backend() -> None:
     assert config.daemon_service_token_path is None
     assert config.api_socket_path
     assert config.minimum_examples_per_class > 0
+    assert config.machine_service_token_path is None
+    assert config.autonomy_thresholds == {}
 
 
 def test_load_config_with_no_path_returns_development_defaults() -> None:
@@ -133,6 +136,106 @@ def test_production_requires_the_fixed_api_socket_path() -> None:
         )
 
 
+def test_production_rejects_an_arbitrary_machine_service_token_path() -> None:
+    with pytest.raises(ConfigError, match="machine_service_token_path must be"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "production",
+                "backend": "v4l2",
+                "device_path": PRODUCTION_DEVICE_PATH,
+                "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+                "dataset_path": PRODUCTION_DATASET_PATH,
+                "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+                "api_socket_path": PRODUCTION_API_SOCKET_PATH,
+                "machine_service_token_path": "/etc/wrong/machine-service-token",
+            }
+        )
+
+
+def test_production_accepts_the_fixed_machine_service_token_path() -> None:
+    config = VisionConfig.from_mapping(
+        {
+            "profile": "production",
+            "backend": "v4l2",
+            "device_path": PRODUCTION_DEVICE_PATH,
+            "daemon_socket_path": PRODUCTION_DAEMON_SOCKET_PATH,
+            "dataset_path": PRODUCTION_DATASET_PATH,
+            "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
+            "api_socket_path": PRODUCTION_API_SOCKET_PATH,
+            "machine_service_token_path": PRODUCTION_MACHINE_SERVICE_TOKEN_PATH,
+        }
+    )
+
+    assert config.machine_service_token_path == PRODUCTION_MACHINE_SERVICE_TOKEN_PATH
+
+
+def test_autonomy_thresholds_parses_a_list_of_slot_threshold_tables() -> None:
+    config = VisionConfig.from_mapping(
+        {
+            "profile": "development",
+            "backend": "fixture",
+            "autonomy_thresholds": [{"slot": 3, "threshold": 0.95}, {"slot": 5, "threshold": 1.0}],
+        }
+    )
+
+    assert config.autonomy_thresholds == {3: 0.95, 5: 1.0}
+
+
+def test_autonomy_thresholds_refuses_a_duplicate_slot() -> None:
+    with pytest.raises(ConfigError, match="more than one entry for slot 3"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "development",
+                "backend": "fixture",
+                "autonomy_thresholds": [
+                    {"slot": 3, "threshold": 0.9},
+                    {"slot": 3, "threshold": 0.95},
+                ],
+            }
+        )
+
+
+def test_autonomy_thresholds_refuses_an_out_of_range_threshold() -> None:
+    with pytest.raises(ConfigError, match="threshold must be greater than"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "development",
+                "backend": "fixture",
+                "autonomy_thresholds": [{"slot": 3, "threshold": 0.0}],
+            }
+        )
+    with pytest.raises(ConfigError, match="threshold must be greater than"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "development",
+                "backend": "fixture",
+                "autonomy_thresholds": [{"slot": 3, "threshold": 1.1}],
+            }
+        )
+
+
+def test_autonomy_thresholds_refuses_an_out_of_range_slot() -> None:
+    with pytest.raises(ConfigError, match="slot must be between 0 and"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "development",
+                "backend": "fixture",
+                "autonomy_thresholds": [{"slot": 999, "threshold": 0.9}],
+            }
+        )
+
+
+def test_autonomy_thresholds_refuses_an_entry_missing_a_field() -> None:
+    with pytest.raises(ConfigError, match="exactly slot and threshold"):
+        VisionConfig.from_mapping(
+            {
+                "profile": "development",
+                "backend": "fixture",
+                "autonomy_thresholds": [{"slot": 3}],
+            }
+        )
+
+
 def test_a_valid_production_configuration_is_accepted() -> None:
     config = VisionConfig.from_mapping(
         {
@@ -144,6 +247,8 @@ def test_a_valid_production_configuration_is_accepted() -> None:
             "daemon_service_token_path": PRODUCTION_DAEMON_SERVICE_TOKEN_PATH,
             "api_socket_path": PRODUCTION_API_SOCKET_PATH,
             "minimum_examples_per_class": 25,
+            "machine_service_token_path": PRODUCTION_MACHINE_SERVICE_TOKEN_PATH,
+            "autonomy_thresholds": [{"slot": 3, "threshold": 0.97}],
         }
     )
 
@@ -154,6 +259,8 @@ def test_a_valid_production_configuration_is_accepted() -> None:
     assert config.daemon_service_token_path == PRODUCTION_DAEMON_SERVICE_TOKEN_PATH
     assert config.api_socket_path == PRODUCTION_API_SOCKET_PATH
     assert config.minimum_examples_per_class == 25
+    assert config.machine_service_token_path == PRODUCTION_MACHINE_SERVICE_TOKEN_PATH
+    assert config.autonomy_thresholds == {3: 0.97}
 
 
 def test_minimum_examples_per_class_must_be_positive() -> None:

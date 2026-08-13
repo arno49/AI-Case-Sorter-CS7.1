@@ -388,6 +388,126 @@ describe('reading suggestion accuracy', () => {
 	});
 });
 
+describe('reading autonomy', () => {
+	it('parses thresholds, reviewed accuracy and the pending review queue', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				thresholds: { '3': 0.95 },
+				accuracy_by_class: { '3': { total: 4, correct: 3, false_rate: 0.25 } },
+				pending_review: [
+					{
+						attempt_id: 7,
+						suggestion_id: 42,
+						operation_id: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c',
+						slot: 3,
+						attempted_at: '2026-08-12T12:07:00.000Z'
+					}
+				]
+			})
+		);
+
+		const result = await client.autonomy();
+
+		expect(result).toEqual({
+			thresholds: { 3: 0.95 },
+			accuracyByClass: { 3: { total: 4, correct: 3, falseRate: 0.25 } },
+			pendingReview: [
+				{
+					attemptId: 7,
+					suggestionId: 42,
+					operationId: '0b5f2a7c-1d3e-4f5a-8b9c-0d1e2f3a4b5c',
+					slot: 3,
+					attemptedAt: '2026-08-12T12:07:00.000Z'
+				}
+			]
+		});
+	});
+
+	it('requests /v1/autonomy', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				thresholds: {},
+				accuracy_by_class: {},
+				pending_review: []
+			})
+		);
+
+		await client.autonomy();
+
+		expect(vision.lastRequest().method).toBe('GET');
+		expect(vision.lastRequest().path).toBe('/v1/autonomy');
+	});
+
+	it('omits a class with attempts but no review yet, rather than a fabricated accuracy', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				thresholds: { '3': 0.95 },
+				accuracy_by_class: {},
+				pending_review: []
+			})
+		);
+
+		const result = await client.autonomy();
+
+		expect(result.accuracyByClass).toEqual({});
+	});
+
+	it('is malformed when the pending review queue is missing', async () => {
+		vision.answerWith(replying(200, { api_version: 'v1', thresholds: {}, accuracy_by_class: {} }));
+
+		const error = await raised(() => client.autonomy());
+
+		expect(error.kind).toBe('malformed');
+	});
+});
+
+describe('reviewing an autonomous attempt', () => {
+	it('is a POST to /v1/autonomous-reviews carrying attempt_id and correct', async () => {
+		vision.answerWith(
+			replying(200, {
+				api_version: 'v1',
+				attempt_id: 7,
+				correct: true,
+				reviewed_at: '2026-08-12T12:08:00.000Z'
+			})
+		);
+
+		const result = await client.reviewAutonomousAttempt(7, true);
+
+		expect(vision.lastRequest().method).toBe('POST');
+		expect(vision.lastRequest().path).toBe('/v1/autonomous-reviews');
+		expect(JSON.parse(vision.lastRequest().body)).toEqual({
+			api_version: 'v1',
+			attempt_id: 7,
+			correct: true
+		});
+		expect(result).toEqual({
+			attemptId: 7,
+			correct: true,
+			reviewedAt: '2026-08-12T12:08:00.000Z'
+		});
+	});
+
+	it('rejects a non-positive attempt id before anything is sent', async () => {
+		await expect(client.reviewAutonomousAttempt(0, true)).rejects.toBeInstanceOf(
+			InvalidCommandError
+		);
+		expect(vision.requests).toEqual([]);
+	});
+
+	it('is rejected when cs71-vision does not know that attempt', async () => {
+		vision.answerWith(replying(404, { code: 'RESOURCE_NOT_FOUND', message: 'no' }));
+
+		const error = await raised(() => client.reviewAutonomousAttempt(999, true));
+
+		expect(error.kind).toBe('rejected');
+		expect(error.code).toBe('RESOURCE_NOT_FOUND');
+	});
+});
+
 describe('what goes wrong', () => {
 	it('is unreachable when nothing is listening', async () => {
 		await vision.close();

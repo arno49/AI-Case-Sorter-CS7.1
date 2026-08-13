@@ -12,10 +12,14 @@
 
 export type {
 	ActivationResult,
+	AutonomousAccuracy,
+	AutonomousReviewResult,
+	AutonomySummary,
 	CandidateSummary,
 	DatasetClassSummary,
 	DatasetSummary,
 	ModelsSummary,
+	PendingAutonomousReview,
 	Suggestion,
 	SuggestionAccuracy,
 	TrainResult

@@ -52,11 +52,15 @@ receives this file at all, since it has no legitimate reason to ever act as
 the machine actor kind, and the daemon checks the actual credential
 presented against the actual role claimed (see `appliance/daemon/README.md`'s
 own "The machine actor kind" section) rather than trusting a request body's
-say-so. The file is always provisioned, but `cs71d.toml` does not enable
-the capability by default (`machine_service_token_path` is unset in
-`production.example.toml`) - the file existing is not the same thing as the
-capability being active, and nothing presents this credential until
-PI-VISION-008 configures `cs71-vision` to.
+say-so. The file is always provisioned. `cs71d.toml`'s
+`machine_service_token_path` and `cs71vision.toml`'s own copy are both set
+in `production.example.toml` as of PI-VISION-008 - the *mechanism* is
+enabled - but that is not the same thing as the *policy* being active:
+`cs71vision.toml`'s `autonomy_thresholds` stays empty by default, which
+structurally means no class may ever be sorted autonomously
+(`cs71vision.autonomy.may_autonomously_sort`) until an installation
+explicitly configures one, and even then the primer-presence axis
+(PI-VISION-010) can still block it regardless.
 
 **`/etc/cs71/cs71d.toml`, `/etc/cs71/cs71vision.toml` and `/etc/cs71/web.env`
 are root-owned and world-readable**, deliberately. Every value in them is

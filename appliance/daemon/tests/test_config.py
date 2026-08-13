@@ -80,13 +80,21 @@ def test_unknown_configuration_is_rejected() -> None:
         )
 
 
-def test_machine_service_token_path_is_unset_by_default() -> None:
+def test_machine_service_token_path_is_unset_in_development() -> None:
     # PI-VISION-007's own default: the machine actor kind's credential is
-    # optional even in production, since an installation may run this
-    # daemon capability for a long time before PI-VISION-008 ever
-    # configures anything to present it.
+    # optional even in production, so it stays unset until an installation
+    # actually wants the mechanism available.
     assert DaemonConfig.development().machine_service_token_path is None
-    assert load_config(CONFIG_DIR / "production.example.toml").machine_service_token_path is None
+
+
+def test_production_example_toml_enables_the_machine_service_token_path() -> None:
+    # PI-VISION-008 is the task that actually wires cs71-vision to present
+    # this credential, so the example production profile enables the
+    # mechanism here - `autonomy_thresholds` staying empty on the
+    # cs71-vision side is what keeps this inert by default (ADR-0013:
+    # "starting conservative... mostly manual"), not this being unset.
+    config = load_config(CONFIG_DIR / "production.example.toml")
+    assert config.machine_service_token_path == "/etc/cs71d/machine-service-token"
 
 
 def test_production_accepts_the_fixed_machine_service_token_path() -> None:
